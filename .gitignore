@@ -10,5 +10,6 @@ data/logs/
 *.png
 *.onnx
 *.tgz
+pages/
 apps/web/node_modules/
 apps/api/luckymodels_api/ui/dist/
