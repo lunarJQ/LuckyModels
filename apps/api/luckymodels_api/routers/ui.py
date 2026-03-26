@@ -7,15 +7,30 @@ from fastapi.responses import HTMLResponse
 
 router = APIRouter(tags=["ui"])
 
+FRONTEND_PATHS = [
+    "/",
+    "/dashboard",
+    "/experiments",
+    "/archive",
+    "/models",
+    "/artifacts",
+    "/deployments",
+    "/benchmarks",
+    "/resources",
+    "/logs",
+]
 
-@router.get("/", response_class=HTMLResponse)
-def dashboard() -> HTMLResponse:
+def _render_dashboard() -> HTMLResponse:
     ui_root = Path(__file__).resolve().parents[1] / "ui"
     dist_index = ui_root / "dist" / "index.html"
     html_path = dist_index if dist_index.exists() else ui_root / "dashboard.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-@router.get("/dashboard", response_class=HTMLResponse)
-def dashboard_alias() -> HTMLResponse:
-    return dashboard()
+for frontend_path in FRONTEND_PATHS:
+    router.add_api_route(
+        frontend_path,
+        _render_dashboard,
+        methods=["GET"],
+        response_class=HTMLResponse,
+    )
