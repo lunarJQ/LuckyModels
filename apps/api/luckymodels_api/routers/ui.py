@@ -10,7 +10,9 @@ router = APIRouter(tags=["ui"])
 
 @router.get("/", response_class=HTMLResponse)
 def dashboard() -> HTMLResponse:
-    html_path = Path(__file__).resolve().parents[1] / "ui" / "dashboard.html"
+    ui_root = Path(__file__).resolve().parents[1] / "ui"
+    dist_index = ui_root / "dist" / "index.html"
+    html_path = dist_index if dist_index.exists() else ui_root / "dashboard.html"
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 

@@ -123,11 +123,22 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      width: 100%;
       padding: 11px 12px;
       margin: 4px 0;
       border-radius: 14px;
+      border: 1px solid transparent;
+      background: transparent;
       color: #33414f;
       font-size: 15px;
+      text-align: left;
+      cursor: pointer;
+      transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+    }
+
+    .nav-item:hover {
+      transform: translateX(2px);
+      background: rgba(32, 94, 215, 0.06);
     }
 
     .nav-item.active {
@@ -186,6 +197,11 @@
 
     .content {
       padding: 24px 28px 40px;
+    }
+
+    .content-section {
+      scroll-margin-top: 92px;
+      margin-bottom: 18px;
     }
 
     .hero {
@@ -405,6 +421,40 @@
     .table-shell {
       overflow: hidden;
       margin-bottom: 18px;
+    }
+
+    .section-shell {
+      padding: 20px;
+    }
+
+    .section-shell + .section-shell {
+      margin-top: 18px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .section-head h2,
+    .section-head h3 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .section-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(32, 94, 215, 0.08);
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 700;
     }
 
     .table-head {
@@ -664,6 +714,89 @@
       line-height: 1.55;
     }
 
+    .asset-grid,
+    .resource-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .asset-card,
+    .resource-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel-soft);
+      padding: 16px;
+    }
+
+    .asset-card h4,
+    .resource-card h4 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .asset-meta,
+    .resource-meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 1;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid var(--line);
+      color: #33414f;
+    }
+
+    .list-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .list-card {
+      padding: 16px;
+      border-radius: 16px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+    }
+
+    .list-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .list-card-header h4 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .list-card-body {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
     .footer-note {
       margin-top: 10px;
       color: var(--muted);
@@ -676,7 +809,11 @@
       .toolbar,
       .detail-grid,
       .summary-strip,
-      .filters {
+      .filters,
+      .asset-grid,
+      .resource-grid,
+      .metrics,
+      .relation-grid {
         grid-template-columns: 1fr;
       }
       .app {
@@ -708,25 +845,25 @@
 
       <div class="nav-group">
         <div class="nav-title">工作台</div>
-        <div class="nav-item">资产概览</div>
-        <div class="nav-item">推理试验</div>
-        <div class="nav-item">结果归档</div>
+        <button class="nav-item active" data-target="overview-section" type="button">资产概览</button>
+        <button class="nav-item" data-target="experiment-section" type="button">推理试验</button>
+        <button class="nav-item" data-target="archive-section" type="button">结果归档</button>
       </div>
 
       <div class="nav-group">
         <div class="nav-title">模型资产</div>
-        <div class="nav-item">模型库</div>
-        <div class="nav-item">制品包</div>
-        <div class="nav-item">部署记录</div>
-        <div class="nav-item active">基准剖析</div>
+        <button class="nav-item" data-target="models-section" type="button">模型库</button>
+        <button class="nav-item" data-target="artifacts-section" type="button">制品包</button>
+        <button class="nav-item" data-target="deployments-section" type="button">部署记录</button>
+        <button class="nav-item" data-target="benchmarks-section" type="button">基准剖析</button>
       </div>
 
       <div class="nav-group">
         <div class="nav-title">运行资源</div>
-        <div class="nav-item">计算节点</div>
-        <div class="nav-item">GPU 资源</div>
-        <div class="nav-item">运行时后端</div>
-        <div class="nav-item">日志中心</div>
+        <button class="nav-item" data-target="nodes-section" type="button">计算节点</button>
+        <button class="nav-item" data-target="gpu-section" type="button">GPU 资源</button>
+        <button class="nav-item" data-target="runtime-section" type="button">运行时后端</button>
+        <button class="nav-item" data-target="logs-section" type="button">日志中心</button>
       </div>
 
       <div class="nav-group">
@@ -750,7 +887,7 @@
       </header>
 
       <section class="content">
-        <section class="hero">
+        <section class="hero content-section" id="overview-section">
           <div class="hero-card">
             <div class="hero-kicker">LuckyModels / Knowledge Extraction Runtime</div>
             <h2>模型资产、部署验证与基准实验的统一界面</h2>
@@ -777,6 +914,7 @@
           </div>
         </section>
 
+        <section class="content-section" id="experiment-section">
         <div class="toolbar">
           <div class="filters">
             <label class="field">
@@ -818,8 +956,54 @@
           <div class="summary-card"><div class="title">压测数量</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
           <div class="summary-card"><div class="title">运行状态</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
         </section>
+        </section>
 
-        <section class="card table-shell">
+        <section class="card section-shell content-section" id="archive-section">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Archive / Demo Outputs</div>
+              <h2>结果归档</h2>
+              <div class="detail-note">收拢论文里最常引用的结果文件、当前数据来源和最新样例状态，方便截图和写表格。</div>
+            </div>
+          </div>
+          <div class="metrics" id="archive-metrics"></div>
+          <div class="footer-note mono" id="archive-paths"></div>
+        </section>
+
+        <section class="card section-shell content-section" id="models-section">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Model Library</div>
+              <h2>模型库</h2>
+              <div class="detail-note">展示当前控制平面已识别到的标准模型包，用于说明 luckyModels 的模型登记能力。</div>
+            </div>
+          </div>
+          <div class="asset-grid" id="model-library-grid"></div>
+        </section>
+
+        <section class="card section-shell content-section" id="artifacts-section">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Packages / Manifests</div>
+              <h2>制品包</h2>
+              <div class="detail-note">这里把 manifest 里的关键字段、ONNX 制品、tokenizer 和 profile 信息做成可读化展示。</div>
+            </div>
+          </div>
+          <div class="list-grid" id="artifact-package-list"></div>
+        </section>
+
+        <section class="card section-shell content-section" id="deployments-section">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Deployments</div>
+              <h2>部署记录</h2>
+              <div class="detail-note">展示 runtime 启动记录、服务地址、日志路径和 deployment 状态，便于对部署过程做工程化说明。</div>
+            </div>
+          </div>
+          <div class="table-wrap" id="deployment-table"></div>
+        </section>
+
+        <section class="card table-shell content-section" id="benchmarks-section">
           <div class="table-head">
             <div>
               <h2 class="table-title">部署与基准总览</h2>
@@ -830,7 +1014,7 @@
           <div id="benchmark-table"></div>
         </section>
 
-        <section class="detail-grid">
+        <section class="detail-grid content-section" id="nodes-section">
           <article class="card detail-card">
             <h3 class="detail-title">平台运行摘要</h3>
             <div class="detail-note">这一块面向论文中的系统实现说明，展示当前模型库、部署记录、压测记录和页面挂载信息。</div>
@@ -838,15 +1022,29 @@
             <div class="footer-note mono" id="platform-paths"></div>
           </article>
 
-          <article class="card detail-card">
+          <article class="card detail-card" id="runtime-section">
             <h3 class="detail-title">CasRel 调试报告</h3>
             <div class="detail-note">演示接口会自动创建 deployment、运行 benchmark，并返回当前制品的 token 化与分数分布，用于解释抽取效果现状。</div>
             <div id="report-summary" class="metrics"></div>
             <div class="warn-list" id="warn-list"></div>
             <div class="token-list" id="token-list"></div>
             <div class="score-block" id="score-block"></div>
-            <div class="logs" id="log-block">等待演示报告。</div>
           </article>
+        </section>
+
+        <section class="content-section" id="gpu-section">
+          <div class="resource-grid" id="resource-grid"></div>
+        </section>
+
+        <section class="card section-shell content-section" id="logs-section">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">Runtime Logs</div>
+              <h2>日志中心</h2>
+              <div class="detail-note">保留最新 CasRel runtime 的启动日志和推理访问记录，方便你展示“平台已真正跑通”。</div>
+            </div>
+          </div>
+          <div class="logs" id="log-block">等待演示报告。</div>
         </section>
       </section>
     </main>
@@ -857,6 +1055,7 @@
     const state = {
       summary: null,
       models: [],
+      modelDetails: {},
       deployments: [],
       benchmarks: [],
       report: null,
@@ -922,6 +1121,166 @@
         ${metricCard("Deployment", summary.deployment_count, "部署记录数量")}
         ${metricCard("Benchmark", summary.benchmark_count, "性能压测记录数量")}
         ${metricCard("页面地址", "127.0.0.1:38080", "当前 LuckyModels 控制台挂载地址")}
+      `;
+    }
+
+    function renderArchive(report) {
+      const dataset = report?.dataset || {};
+      const benchmark = report?.benchmark || {};
+      const primary = report?.samples?.primary_case || {};
+      const runtime = primary.runtime || {};
+      $("archive-metrics").innerHTML = `
+        ${metricCard("Report Status", report?.status || "empty", "当前 CasRel 演示报告状态")}
+        ${metricCard("Dataset", dataset.name || "-", "当前演示所使用的数据集")}
+        ${metricCard("Eval Cases", dataset.prepared_eval_count ?? "-", "当前导出的测试样本数量")}
+        ${metricCard("Primary Triples", runtime.triple_count ?? "-", "主样例中 runtime 实际输出的三元组数")}
+        ${metricCard("Benchmark ID", benchmark.benchmark_id || "-", "最新一次基准实验记录编号")}
+        ${metricCard("Sample Sentence", primary.case_name || "-", "当前主展示样例名称")}
+      `;
+      $("archive-paths").innerHTML = `
+        report: ${escapeHtml("/api/v1/demo/casrel/report")}<br/>
+        dataset: ${escapeHtml(dataset.source || "-")}<br/>
+        eval file: ${escapeHtml(dataset.prepared_eval_file || "-")}
+      `;
+    }
+
+    function renderModelLibrary() {
+      const container = $("model-library-grid");
+      if (!state.models.length) {
+        container.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><div class="empty-icon">M</div><div style="font-weight:700;color:#334155;">暂无模型资产</div></div>`;
+        return;
+      }
+      container.innerHTML = state.models.map((model) => {
+        const detail = state.modelDetails[model.model_id] || {};
+        const manifest = detail.manifest || {};
+        return `
+          <article class="asset-card">
+            <h4>${escapeHtml(model.model_name || model.model_id)}</h4>
+            <div class="asset-meta">
+              模型编号：<span class="mono">${escapeHtml(model.model_id)}</span><br/>
+              家族：${escapeHtml(model.model_family)}<br/>
+              语言：${escapeHtml(model.language)}<br/>
+              版本：${escapeHtml(model.version)}<br/>
+              Runtime Adapter：${escapeHtml(model.runtime_adapter)}<br/>
+              任务类型：${escapeHtml(manifest.task_type || "-")}
+            </div>
+            <div class="tag-list">
+              <span class="tag">${escapeHtml(manifest.framework || "-")}</span>
+              <span class="tag">${escapeHtml(manifest.backbone || "-")}</span>
+              <span class="tag">${escapeHtml(model.package_root || "-")}</span>
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderArtifactPackages() {
+      const container = $("artifact-package-list");
+      const entries = Object.values(state.modelDetails);
+      if (!entries.length) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-icon">P</div><div style="font-weight:700;color:#334155;">暂无制品包信息</div></div>`;
+        return;
+      }
+      container.innerHTML = entries.map((detail) => {
+        const manifest = detail.manifest || {};
+        const artifacts = Object.entries(detail.resolved_artifacts || {});
+        const profiles = Object.keys(detail.resolved_profiles || {});
+        return `
+          <article class="list-card">
+            <div class="list-card-header">
+              <div>
+                <h4>${escapeHtml(manifest.model_name || detail.summary?.model_id || "-")}</h4>
+                <div class="mono">${escapeHtml(detail.manifest?.model_id || detail.summary?.model_id || "-")}</div>
+              </div>
+              ${statusPill(manifest.framework || "manifest")}
+            </div>
+            <div class="list-card-body">
+              package_root：<span class="mono">${escapeHtml(detail.summary?.package_root || "-")}</span><br/>
+              tokenizer：${escapeHtml(manifest.tokenizer?.type || "-")}<br/>
+              labels：${escapeHtml(manifest.labels?.relation_map || "-")}<br/>
+              max_length：${escapeHtml(manifest.inference?.max_length ?? "-")}<br/>
+              batch_size：${escapeHtml(manifest.inference?.batch_size ?? "-")}
+            </div>
+            <div class="tag-list">
+              ${artifacts.map(([name, path]) => `<span class="tag">${escapeHtml(name)}: ${escapeHtml(path)}</span>`).join("")}
+              ${profiles.map((name) => `<span class="tag">profile: ${escapeHtml(name)}</span>`).join("")}
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    function renderDeployments() {
+      const rows = state.deployments.slice().reverse();
+      if (!rows.length) {
+        $("deployment-table").innerHTML = `<div class="empty-state"><div class="empty-icon">D</div><div style="font-weight:700;color:#334155;">暂无部署记录</div></div>`;
+        return;
+      }
+      $("deployment-table").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Deployment</th>
+              <th>模型</th>
+              <th>Profile</th>
+              <th>节点</th>
+              <th>状态</th>
+              <th>Service URL</th>
+              <th>日志</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((item) => `
+              <tr>
+                <td><strong>${escapeHtml(item.deployment_id)}</strong><div class="mono">${escapeHtml(item.notes || "-")}</div></td>
+                <td>${escapeHtml(item.model_id)}</td>
+                <td>${escapeHtml(item.profile_name)}</td>
+                <td>${escapeHtml(item.node_name || "-")}</td>
+                <td>${statusPill(item.status)}</td>
+                <td><div class="mono">${escapeHtml(item.service_url || "-")}</div></td>
+                <td><div class="mono">${escapeHtml(item.log_path || "-")}</div></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderResources(report) {
+      const deployment = report?.deployment || {};
+      let healthPayload = {};
+      try {
+        healthPayload = JSON.parse(report?.health?.payload || "{}");
+      } catch (error) {
+        healthPayload = {};
+      }
+      const runtimeProviders = Array.isArray(healthPayload.providers) ? healthPayload.providers.join(", ") : "-";
+      $("resource-grid").innerHTML = `
+        <article class="resource-card">
+          <h4>计算节点</h4>
+          <div class="resource-meta">
+            节点名称：${escapeHtml(deployment.node_name || "local-node")}<br/>
+            运行模式：本机控制平面 + 本地 runtime 进程<br/>
+            服务地址：<span class="mono">${escapeHtml(deployment.service_url || "-")}</span>
+          </div>
+        </article>
+        <article class="resource-card">
+          <h4>GPU 资源</h4>
+          <div class="resource-meta">
+            当前演示 deployment 使用 GPU 数量：${escapeHtml((deployment.gpu_ids || []).length || 0)}<br/>
+            当前 provider：${escapeHtml(runtimeProviders)}<br/>
+            备注：这一版 CasRel 演示主要用于验证 ONNX runtime 接入链路。
+          </div>
+        </article>
+        <article class="resource-card">
+          <h4>运行时后端</h4>
+          <div class="resource-meta">
+            adapter：${escapeHtml(healthPayload.adapter || "-")}<br/>
+            backend：${escapeHtml(healthPayload.session_backend || "-")}<br/>
+            sessions_loaded：${escapeHtml(healthPayload.sessions_loaded ?? "-")}<br/>
+            model_id：${escapeHtml(healthPayload.model_id || "-")}
+          </div>
+        </article>
       `;
     }
 
@@ -1099,19 +1458,68 @@
           fetchJSON("/api/v1/benchmarks"),
           fetchJSON("/api/v1/demo/casrel/report")
         ]);
+        const modelDetails = await Promise.all(
+          models.map(async (model) => {
+            const detail = await fetchJSON(`/api/v1/models/${encodeURIComponent(model.model_id)}`);
+            return [model.model_id, detail];
+          })
+        );
         state.summary = summary;
         state.models = models;
+        state.modelDetails = Object.fromEntries(modelDetails);
         state.deployments = deployments;
         state.benchmarks = benchmarks;
         state.report = report;
         hydrateFilters();
         renderSummary(summary);
+        renderArchive(report);
+        renderModelLibrary();
+        renderArtifactPackages();
+        renderDeployments();
         renderBenchmarks();
         renderReport(report);
+        renderResources(report);
         $("table-status").outerHTML = `<span class="status ok" id="table-status">已加载</span>`;
       } catch (error) {
         $("table-status").outerHTML = `<span class="status failed" id="table-status">加载失败</span>`;
         $("benchmark-table").innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><div style="font-weight:700;color:#334155;">页面加载失败</div><div style="margin-top:8px;">${escapeHtml(error.message)}</div></div>`;
+      }
+    }
+
+    function initSidebarNavigation() {
+      const navItems = [...document.querySelectorAll(".nav-item[data-target]")];
+      const sections = navItems
+        .map((item) => document.getElementById(item.dataset.target))
+        .filter(Boolean);
+
+      function setActive(targetId) {
+        navItems.forEach((item) => {
+          item.classList.toggle("active", item.dataset.target === targetId);
+        });
+      }
+
+      navItems.forEach((item) => {
+        item.addEventListener("click", () => {
+          const target = document.getElementById(item.dataset.target);
+          if (!target) return;
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+          setActive(item.dataset.target);
+        });
+      });
+
+      if ("IntersectionObserver" in window && sections.length) {
+        const observer = new IntersectionObserver((entries) => {
+          const visible = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+          if (visible?.target?.id) {
+            setActive(visible.target.id);
+          }
+        }, {
+          rootMargin: "-20% 0px -65% 0px",
+          threshold: [0.15, 0.35, 0.6],
+        });
+        sections.forEach((section) => observer.observe(section));
       }
     }
 
@@ -1138,6 +1546,7 @@
     });
     $("refresh-btn").addEventListener("click", loadAll);
     $("run-demo-btn").addEventListener("click", runDemo);
+    initSidebarNavigation();
     loadAll();
   </script>
 </body>
