@@ -7,5 +7,6 @@ __pycache__/
 data/state/
 data/logs/
 *.egg-info/
+*.png
 *.onnx
 *.tgz

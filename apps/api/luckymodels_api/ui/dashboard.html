@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LuckyModels 控制台</title>
+  <style>
+    :root {
+      --bg: #f3eee6;
+      --bg-soft: #fbf8f3;
+      --panel: rgba(255, 252, 247, 0.96);
+      --panel-soft: #fff9f1;
+      --line: rgba(57, 67, 78, 0.12);
+      --line-strong: rgba(57, 67, 78, 0.18);
+      --ink: #1e2a32;
+      --muted: #66727d;
+      --brand: #205ed7;
+      --brand-2: #c77a2a;
+      --brand-soft: rgba(32, 94, 215, 0.1);
+      --ok: #168a55;
+      --warn: #b16b11;
+      --danger: #c13c34;
+      --shadow: 0 16px 38px rgba(27, 38, 45, 0.08);
+      --sidebar: 236px;
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(199, 122, 42, 0.16), transparent 26%),
+        radial-gradient(circle at top right, rgba(32, 94, 215, 0.12), transparent 22%),
+        linear-gradient(180deg, #f6f1e8 0%, #efe8de 100%);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar) 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 18px 16px 22px;
+      border-right: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(247, 241, 233, 0.96) 0%, rgba(242, 235, 226, 0.98) 100%);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand-card {
+      padding: 18px;
+      border-radius: 20px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.94), rgba(255,249,241,0.96));
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--brand), #5b8df1 62%, var(--brand-2));
+      color: white;
+      font-weight: 800;
+      font-size: 15px;
+      display: grid;
+      place-items: center;
+      box-shadow: 0 12px 24px rgba(32, 94, 215, 0.18);
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 24px;
+      letter-spacing: -0.04em;
+      color: var(--brand);
+      line-height: 1;
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .brand-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .nav-group {
+      margin-top: 20px;
+    }
+
+    .nav-title {
+      padding: 0 12px 8px;
+      color: #9aa3ab;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 12px;
+      margin: 4px 0;
+      border-radius: 14px;
+      color: #33414f;
+      font-size: 15px;
+    }
+
+    .nav-item.active {
+      background: linear-gradient(135deg, rgba(32, 94, 215, 0.12), rgba(199, 122, 42, 0.08));
+      color: #184fbf;
+      font-weight: 700;
+      border: 1px solid rgba(32, 94, 215, 0.14);
+    }
+
+    .main { min-width: 0; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(250, 246, 239, 0.84);
+      backdrop-filter: blur(10px);
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: -0.04em;
+    }
+
+    .topbar-note {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .topbar-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .top-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.88);
+      box-shadow: var(--shadow);
+    }
+
+    .content {
+      padding: 24px 28px 40px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .hero-card,
+    .hero-side {
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      background: var(--panel);
+    }
+
+    .hero-card {
+      padding: 22px 24px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      right: -36px;
+      bottom: -46px;
+      width: 180px;
+      height: 180px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(199, 122, 42, 0.18), transparent 68%);
+      pointer-events: none;
+    }
+
+    .hero-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(32, 94, 215, 0.08);
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .hero-card h2 {
+      margin: 14px 0 8px;
+      font-size: 32px;
+      line-height: 1.1;
+      letter-spacing: -0.04em;
+    }
+
+    .hero-desc {
+      max-width: 54rem;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.8;
+    }
+
+    .hero-points {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .hero-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--line);
+      color: #33414f;
+      font-size: 13px;
+    }
+
+    .hero-side {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .hero-side .section-title {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .hero-side .section-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .signal {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      width: fit-content;
+      background: rgba(22, 138, 85, 0.1);
+      color: var(--ok);
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line-strong);
+      box-shadow: var(--shadow);
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      height: 44px;
+      padding: 0 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      box-shadow: var(--shadow);
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.65; cursor: wait; }
+
+    .btn-primary {
+      border-color: transparent;
+      color: white;
+      background: linear-gradient(135deg, var(--brand), #4f8ef1 64%, var(--brand-2));
+    }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .summary-card,
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .summary-card {
+      padding: 16px 18px;
+    }
+
+    .summary-card .title {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary-card .big {
+      margin-top: 8px;
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+
+    .summary-card .small {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+
+    .table-shell {
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+
+    .table-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .table-title {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .table-note {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    thead th {
+      background: rgba(250, 247, 241, 0.94);
+      color: #475467;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 249, 241, 0.8);
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .status.completed,
+    .status.running,
+    .status.ok {
+      color: var(--ok);
+      background: rgba(22, 138, 85, 0.11);
+    }
+
+    .status.stopped,
+    .status.planned {
+      color: #566370;
+      background: rgba(96, 112, 128, 0.11);
+    }
+
+    .status.failed,
+    .status.error {
+      color: var(--danger);
+      background: rgba(193, 60, 52, 0.1);
+    }
+
+    .status.partial_success,
+    .status.starting {
+      color: var(--warn);
+      background: rgba(177, 107, 17, 0.12);
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      color: #364152;
+      word-break: break-all;
+    }
+
+    .empty-state {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .empty-icon {
+      width: 58px;
+      height: 58px;
+      margin: 0 auto 14px;
+      border-radius: 18px;
+      background: rgba(32, 94, 215, 0.08);
+      color: var(--brand);
+      display: grid;
+      place-items: center;
+      font-size: 28px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 0.84fr 1.16fr;
+      gap: 18px;
+    }
+
+    .detail-card {
+      padding: 20px;
+    }
+
+    .detail-title {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .detail-note {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      padding: 14px;
+    }
+
+    .metric .title {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .metric .value {
+      margin-top: 8px;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .warn-list,
+    .token-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 1;
+      max-width: 100%;
+    }
+
+    .pill.warn {
+      background: rgba(177, 107, 17, 0.12);
+      color: #9f610b;
+    }
+
+    .pill.token {
+      background: rgba(32, 94, 215, 0.09);
+      color: #255fd1;
+    }
+
+    .score-block {
+      margin-top: 14px;
+    }
+
+    .score-row {
+      display: grid;
+      grid-template-columns: 120px 1fr 74px;
+      gap: 10px;
+      align-items: center;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    .score-bar {
+      height: 10px;
+      border-radius: 999px;
+      background: #ebe7dd;
+      overflow: hidden;
+    }
+
+    .score-bar > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--brand), var(--brand-2));
+    }
+
+    .logs {
+      margin-top: 16px;
+      border-radius: 14px;
+      background: #1b2730;
+      color: #eef2f5;
+      padding: 14px;
+      font-family: "IBM Plex Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
+    .footer-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    @media (max-width: 1280px) {
+      .hero,
+      .toolbar,
+      .detail-grid,
+      .summary-strip,
+      .filters {
+        grid-template-columns: 1fr;
+      }
+      .app {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        position: relative;
+        height: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand-card">
+        <div class="brand">
+          <div class="brand-mark">LM</div>
+          <div>
+            <strong>LuckyModels</strong>
+            <span>知识抽取模型库控制台</span>
+          </div>
+        </div>
+        <div class="brand-note">
+          围绕模型资产、部署验证、运行调试和基准剖析组织的平台界面，
+          更贴近 luckyModels 作为论文原型系统的定位。
+        </div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-title">工作台</div>
+        <div class="nav-item">资产概览</div>
+        <div class="nav-item">推理试验</div>
+        <div class="nav-item">结果归档</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-title">模型资产</div>
+        <div class="nav-item">模型库</div>
+        <div class="nav-item">制品包</div>
+        <div class="nav-item">部署记录</div>
+        <div class="nav-item active">基准剖析</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-title">运行资源</div>
+        <div class="nav-item">计算节点</div>
+        <div class="nav-item">GPU 资源</div>
+        <div class="nav-item">运行时后端</div>
+        <div class="nav-item">日志中心</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-title">当前状态</div>
+        <div class="footer-note" id="sidebar-status">正在加载控制平面状态。</div>
+        <div class="footer-note mono">/api/v1/demo/casrel/report</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>LuckyModels 基准剖析台</h1>
+          <div class="topbar-note">面向知识抽取模型库落地的控制面板，展示 CasRel 演示、部署记录与性能数据。</div>
+        </div>
+        <div class="topbar-meta">
+          <span>thesis-demo v0.1.0</span>
+          <div class="top-icon">?</div>
+          <div class="top-icon">⚙</div>
+        </div>
+      </header>
+
+      <section class="content">
+        <section class="hero">
+          <div class="hero-card">
+            <div class="hero-kicker">LuckyModels / Knowledge Extraction Runtime</div>
+            <h2>模型资产、部署验证与基准实验的统一界面</h2>
+            <div class="hero-desc">
+              这个页面既保留了你希望参考的管理台式信息密度，也更贴近 luckyModels 自己的语义。
+              它强调“模型库”“运行验证”“调试证据”和“实验指标”，适合作为论文中的平台展示页。
+            </div>
+            <div class="hero-points">
+              <span class="hero-pill">标准模型包</span>
+              <span class="hero-pill">统一 Runtime Adapter</span>
+              <span class="hero-pill">基准测试记录</span>
+              <span class="hero-pill">CasRel 调试证据</span>
+            </div>
+          </div>
+          <div class="hero-side">
+            <div class="signal">控制平面状态已联通</div>
+            <div>
+              <h3 class="section-title">演示用途</h3>
+              <div class="section-note">
+                你可以直接用这一页做平台截图，也可以通过右上角按钮重新生成 CasRel 演示报告，刷新最新 benchmark 和 debug 数据。
+              </div>
+            </div>
+            <div class="footer-note mono">Dashboard URL: http://127.0.0.1:38080/</div>
+          </div>
+        </section>
+
+        <div class="toolbar">
+          <div class="filters">
+            <label class="field">
+              <span>🔎</span>
+              <input id="search-input" type="text" placeholder="按基准名称查询" />
+            </label>
+            <label class="field">
+              <span>🧠</span>
+              <select id="model-filter">
+                <option value="">按模型过滤</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>📦</span>
+              <select id="profile-filter">
+                <option value="">按 Profile 过滤</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>●</span>
+              <select id="status-filter">
+                <option value="">按状态过滤</option>
+                <option value="completed">completed</option>
+                <option value="running">running</option>
+                <option value="stopped">stopped</option>
+                <option value="failed">failed</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="refresh-btn">刷新数据</button>
+            <button class="btn-primary" id="run-demo-btn">运行 CasRel 样例</button>
+          </div>
+        </div>
+
+        <section class="summary-strip" id="summary-strip">
+          <div class="summary-card"><div class="title">模型数量</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
+          <div class="summary-card"><div class="title">部署数量</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
+          <div class="summary-card"><div class="title">压测数量</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
+          <div class="summary-card"><div class="title">运行状态</div><div class="big">-</div><div class="small">等待系统摘要</div></div>
+        </section>
+
+        <section class="card table-shell">
+          <div class="table-head">
+            <div>
+              <h2 class="table-title">部署与基准总览</h2>
+              <div class="table-note">统一展示 LuckyModels 控制平面中生成的 benchmark 记录、吞吐量、延迟指标和 deployment 关联信息。</div>
+            </div>
+            <div class="status ok" id="table-status">正在加载</div>
+          </div>
+          <div id="benchmark-table"></div>
+        </section>
+
+        <section class="detail-grid">
+          <article class="card detail-card">
+            <h3 class="detail-title">平台运行摘要</h3>
+            <div class="detail-note">这一块面向论文中的系统实现说明，展示当前模型库、部署记录、压测记录和页面挂载信息。</div>
+            <div class="metrics" id="platform-metrics"></div>
+            <div class="footer-note mono" id="platform-paths"></div>
+          </article>
+
+          <article class="card detail-card">
+            <h3 class="detail-title">CasRel 调试报告</h3>
+            <div class="detail-note">演示接口会自动创建 deployment、运行 benchmark，并返回当前制品的 token 化与分数分布，用于解释抽取效果现状。</div>
+            <div id="report-summary" class="metrics"></div>
+            <div class="warn-list" id="warn-list"></div>
+            <div class="token-list" id="token-list"></div>
+            <div class="score-block" id="score-block"></div>
+            <div class="logs" id="log-block">等待演示报告。</div>
+          </article>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      summary: null,
+      models: [],
+      deployments: [],
+      benchmarks: [],
+      report: null,
+    };
+
+    async function fetchJSON(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      }
+      return response.json();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function metricCard(title, value, note) {
+      return `
+        <div class="metric">
+          <div class="title">${escapeHtml(title)}</div>
+          <div class="value">${escapeHtml(value)}</div>
+          <div class="detail-note">${escapeHtml(note)}</div>
+        </div>
+      `;
+    }
+
+    function renderSummary(summary) {
+      const runningStatus = state.report?.deployment_stopped?.status || "unknown";
+      $("summary-strip").innerHTML = `
+        <div class="summary-card">
+          <div class="title">模型数量</div>
+          <div class="big">${summary.model_count}</div>
+          <div class="small">当前已登记的标准模型包数量</div>
+        </div>
+        <div class="summary-card">
+          <div class="title">部署数量</div>
+          <div class="big">${summary.deployment_count}</div>
+          <div class="small">累计 deployment 记录，包含历史演示与调试</div>
+        </div>
+        <div class="summary-card">
+          <div class="title">压测数量</div>
+          <div class="big">${summary.benchmark_count}</div>
+          <div class="small">可直接用作论文中的延迟与吞吐统计</div>
+        </div>
+        <div class="summary-card">
+          <div class="title">运行状态</div>
+          <div class="big">${escapeHtml(runningStatus)}</div>
+          <div class="small">最新 CasRel 样例 deployment 的最终状态</div>
+        </div>
+      `;
+      $("sidebar-status").textContent = `模型 ${summary.model_count} · 部署 ${summary.deployment_count} · 基准 ${summary.benchmark_count}`;
+      $("platform-paths").innerHTML = `
+        artifacts: ${escapeHtml(summary.artifact_root || "")}<br/>
+        logs: ${escapeHtml(summary.logs_root || "")}
+      `;
+      $("platform-metrics").innerHTML = `
+        ${metricCard("模型包", summary.model_count, "控制平面当前扫描到的模型资产总数")}
+        ${metricCard("Deployment", summary.deployment_count, "部署记录数量")}
+        ${metricCard("Benchmark", summary.benchmark_count, "性能压测记录数量")}
+        ${metricCard("页面地址", "127.0.0.1:38080", "当前 LuckyModels 控制台挂载地址")}
+      `;
+    }
+
+    function hydrateFilters() {
+      const modelFilter = $("model-filter");
+      const profileFilter = $("profile-filter");
+      const models = [...new Set(state.benchmarks.map((item) => item.model_id).filter(Boolean))];
+      const profiles = [...new Set(state.benchmarks.map((item) => item.profile_name).filter(Boolean))];
+      modelFilter.innerHTML = `<option value="">按模型过滤</option>${models.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("")}`;
+      profileFilter.innerHTML = `<option value="">按 Profile 过滤</option>${profiles.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("")}`;
+    }
+
+    function statusPill(status) {
+      const normalized = (status || "unknown").toLowerCase();
+      return `<span class="status ${normalized}">${escapeHtml(status || "unknown")}</span>`;
+    }
+
+    function filteredBenchmarks() {
+      const query = $("search-input").value.trim().toLowerCase();
+      const model = $("model-filter").value;
+      const profile = $("profile-filter").value;
+      const status = $("status-filter").value;
+      return state.benchmarks.filter((item) => {
+        const text = `${item.benchmark_id} ${item.label || ""} ${item.model_id} ${item.profile_name}`.toLowerCase();
+        if (query && !text.includes(query)) return false;
+        if (model && item.model_id !== model) return false;
+        if (profile && item.profile_name !== profile) return false;
+        if (status && item.status !== status) return false;
+        return true;
+      });
+    }
+
+    function renderBenchmarks() {
+      const rows = filteredBenchmarks().slice().reverse();
+      if (!rows.length) {
+        $("benchmark-table").innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">☰</div>
+            <div style="font-size: 20px; font-weight: 700; color: #334155;">暂无基准实验</div>
+            <div style="margin-top: 8px;">还没有生成 benchmark 记录。点击右上角按钮可自动运行一轮 CasRel 样例并生成数据。</div>
+          </div>
+        `;
+        return;
+      }
+
+      $("benchmark-table").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>模型名称</th>
+              <th>Profile</th>
+              <th>GPU</th>
+              <th>状态</th>
+              <th>总吞吐量</th>
+              <th>平均延迟</th>
+              <th>P95</th>
+              <th>操作信息</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((item) => {
+              const deployment = state.deployments.find((dep) => dep.deployment_id === item.deployment_id) || {};
+              const gpu = Array.isArray(deployment.gpu_ids) && deployment.gpu_ids.length ? deployment.gpu_ids.join(", ") : "-";
+              return `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(item.label || item.benchmark_id)}</strong>
+                    <div class="mono">${escapeHtml(item.benchmark_id)}</div>
+                  </td>
+                  <td>${escapeHtml(item.model_id)}</td>
+                  <td>${escapeHtml(item.profile_name)}</td>
+                  <td>${escapeHtml(gpu)}</td>
+                  <td>${statusPill(item.status)}</td>
+                  <td>${item.throughput_qps ?? "-"}</td>
+                  <td>${item.avg_latency_ms ?? "-"}</td>
+                  <td>${item.p95_latency_ms ?? "-"}</td>
+                  <td><div class="mono">${escapeHtml(item.deployment_id)}</div></td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function renderReport(report) {
+      if (!report || report.status === "empty") {
+        $("report-summary").innerHTML = `${metricCard("报告状态", "empty", "还没有生成 CasRel 调试报告")}`;
+        $("warn-list").innerHTML = "";
+        $("token-list").innerHTML = "";
+        $("score-block").innerHTML = "";
+        $("log-block").textContent = "等待演示报告。";
+        return;
+      }
+
+      const benchmark = report.benchmark || {};
+      const deployment = report.deployment || {};
+      const stopped = report.deployment_stopped || {};
+      const english = report.samples?.english_debug || {};
+      const debug = english.debug || {};
+      const warnings = english.warnings || [];
+      const tokens = debug.token_pieces || [];
+      const summary = debug.subject_score_summary || {};
+      const maxScore = Math.max(summary.head_max || 0, summary.tail_max || 0, 0.000001);
+
+      $("report-summary").innerHTML = `
+        ${metricCard("Deployment", deployment.deployment_id || "-", "CasRel 样例自动创建的 deployment")}
+        ${metricCard("Avg Latency", benchmark.avg_latency_ms ?? "-", "平均延迟 / ms")}
+        ${metricCard("P95", benchmark.p95_latency_ms ?? "-", "P95 延迟 / ms")}
+        ${metricCard("QPS", benchmark.throughput_qps ?? "-", "总吞吐量 / qps")}
+        ${metricCard("Runtime URL", deployment.service_url || "-", "样例运行时地址")}
+        ${metricCard("Stop Status", stopped.status || "-", "演示结束后 deployment 自动停止")}
+      `;
+
+      $("warn-list").innerHTML = warnings.map((item) => `<span class="pill warn">${escapeHtml(item)}</span>`).join("");
+      $("token-list").innerHTML = tokens.map((item) => `<span class="pill token">${escapeHtml(item)}</span>`).join("");
+      $("score-block").innerHTML = `
+        <div class="detail-note">以下分数条展示的是英文调试样例的 subject head top positions，用于解释当前制品为什么还没有抽出三元组。</div>
+        ${(summary.top_head_positions || []).slice(0, 6).map((row) => {
+          const label = `${row.position}: ${tokens[row.position] || "?"}`;
+          const percent = Math.max(4, (row.score / maxScore) * 100);
+          return `
+            <div class="score-row">
+              <div>${escapeHtml(label)}</div>
+              <div class="score-bar"><span style="width:${percent}%"></span></div>
+              <div>${row.score.toFixed(6)}</div>
+            </div>
+          `;
+        }).join("")}
+      `;
+      $("log-block").textContent = report.logs?.content || "暂无日志。";
+    }
+
+    async function loadAll() {
+      try {
+        const [summary, models, deployments, benchmarks, report] = await Promise.all([
+          fetchJSON("/api/v1/system/summary"),
+          fetchJSON("/api/v1/models"),
+          fetchJSON("/api/v1/deployments"),
+          fetchJSON("/api/v1/benchmarks"),
+          fetchJSON("/api/v1/demo/casrel/report")
+        ]);
+        state.summary = summary;
+        state.models = models;
+        state.deployments = deployments;
+        state.benchmarks = benchmarks;
+        state.report = report;
+        hydrateFilters();
+        renderSummary(summary);
+        renderBenchmarks();
+        renderReport(report);
+        $("table-status").outerHTML = `<span class="status ok" id="table-status">已加载</span>`;
+      } catch (error) {
+        $("table-status").outerHTML = `<span class="status failed" id="table-status">加载失败</span>`;
+        $("benchmark-table").innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><div style="font-weight:700;color:#334155;">页面加载失败</div><div style="margin-top:8px;">${escapeHtml(error.message)}</div></div>`;
+      }
+    }
+
+    async function runDemo() {
+      const button = $("run-demo-btn");
+      button.disabled = true;
+      button.textContent = "运行中";
+      $("table-status").outerHTML = `<span class="status partial_success" id="table-status">正在生成演示报告</span>`;
+      try {
+        await fetchJSON("/api/v1/demo/casrel/run", { method: "POST" });
+        await loadAll();
+      } catch (error) {
+        $("table-status").outerHTML = `<span class="status failed" id="table-status">演示失败</span>`;
+        $("log-block").textContent = error.message;
+      } finally {
+        button.disabled = false;
+        button.textContent = "运行 CasRel 样例";
+      }
+    }
+
+    ["search-input", "model-filter", "profile-filter", "status-filter"].forEach((id) => {
+      $(id).addEventListener("input", renderBenchmarks);
+      $(id).addEventListener("change", renderBenchmarks);
+    });
+    $("refresh-btn").addEventListener("click", loadAll);
+    $("run-demo-btn").addEventListener("click", runDemo);
+    loadAll();
+  </script>
+</body>
+</html>
