@@ -5,5 +5,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 data/state/
+data/logs/
+*.egg-info/
 *.onnx
 *.tgz

@@ -9,15 +9,20 @@ class Settings:
     root_dir: Path
     artifacts_root: Path
     state_root: Path
+    logs_root: Path
     deployments_file: Path
+    benchmarks_file: Path
 
 
 def get_settings() -> Settings:
     root_dir = Path(__file__).resolve().parents[2]
     state_root = root_dir / "data" / "state"
+    logs_root = root_dir / "data" / "logs"
     return Settings(
         root_dir=root_dir,
         artifacts_root=root_dir / "artifacts" / "models",
         state_root=state_root,
+        logs_root=logs_root,
         deployments_file=state_root / "deployments.json",
+        benchmarks_file=state_root / "benchmarks.json",
     )

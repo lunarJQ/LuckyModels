@@ -18,6 +18,8 @@ This repository currently contains:
 - Shared core schemas and manifest validation logic
 - A first CasRel model-package sample
 - A generic runtime service skeleton with adapter loading
+- Local runtime launch, health-check, stop/restart, and log-tail APIs
+- A first benchmark record + runner foundation for latency/throughput experiments
 - Project documentation written for implementation and onboarding
 
 ## Repository Layout
@@ -53,8 +55,10 @@ This first implementation focuses on the foundation:
 
 - Model package scanning and manifest validation
 - Deployment record management
+- Local runtime process management without relying on Docker
 - Standard profile definitions
 - CasRel package standardization
-- Runtime adapter interface and CasRel adapter scaffold
+- Runtime adapter interface and CasRel adapter
+- Benchmark execution and result persistence for later comparison
 
-Container launching, benchmark execution, and full CasRel decode inference are intentionally staged for the next iteration, but the project structure is now set up for them.
+Triton-style performance tuning, richer dashboards, and more model families are still staged for later iterations, but the local engineering loop is now in place.

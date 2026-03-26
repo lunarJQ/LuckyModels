@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from luckymodels_api.routers import deployments, health, models, system
+from luckymodels_api.routers import benchmarks, deployments, health, models, system
 
 app = FastAPI(
     title="LuckyModels Control Plane",
@@ -12,3 +12,4 @@ app.include_router(health.router)
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(models.router, prefix="/api/v1")
 app.include_router(deployments.router, prefix="/api/v1")
+app.include_router(benchmarks.router, prefix="/api/v1")

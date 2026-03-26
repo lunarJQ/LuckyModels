@@ -6,7 +6,7 @@ services:
       context: ../..
       dockerfile: apps/api/Dockerfile
     ports:
-      - "8080:8080"
+      - "${LUCKYMODELS_API_PORT:-38080}:8080"
     volumes:
       - ../../artifacts:/app/artifacts
       - ../../data:/app/data
@@ -14,6 +14,6 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.0
     ports:
-      - "9090:9090"
+      - "${LUCKYMODELS_PROM_PORT:-39090}:9090"
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro

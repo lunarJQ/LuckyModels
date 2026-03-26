@@ -95,6 +95,7 @@ class DeploymentCreateRequest(BaseModel):
     runtime: str = "runtime-service"
     node_name: str = "local-node"
     gpu_ids: list[int] = Field(default_factory=list)
+    launch_runtime: bool = False
     notes: str | None = None
 
 
@@ -107,11 +108,52 @@ class DeploymentRecord(BaseModel):
     gpu_ids: list[int] = Field(default_factory=list)
     status: str = "planned"
     service_url: str | None = None
+    manifest_path: str | None = None
+    profile_path: str | None = None
+    log_path: str | None = None
+    pid: int | None = None
     created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
     notes: str | None = None
 
 
 class SystemSummary(BaseModel):
     model_count: int
     deployment_count: int
+    benchmark_count: int = 0
     artifact_root: str
+    logs_root: str | None = None
+
+
+class BenchmarkCreateRequest(BaseModel):
+    deployment_id: str
+    text: str
+    iterations: int = 10
+    warmup_runs: int = 1
+    timeout_seconds: float = 30.0
+    label: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class BenchmarkRecord(BaseModel):
+    benchmark_id: str
+    deployment_id: str
+    model_id: str
+    profile_name: str
+    service_url: str
+    label: str | None = None
+    request_text: str
+    iterations: int
+    warmup_runs: int
+    timeout_seconds: float
+    total_requests: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    avg_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
+    throughput_qps: float | None = None
+    remote_avg_latency_ms: float | None = None
+    status: str = "planned"
+    sample_response: dict[str, Any] | None = None
+    errors: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)

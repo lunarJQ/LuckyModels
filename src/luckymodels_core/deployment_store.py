@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from uuid import uuid4
 
-from .schemas import DeploymentCreateRequest, DeploymentRecord
+from .schemas import DeploymentCreateRequest, DeploymentRecord, utc_now
 
 
 class DeploymentStore:
@@ -29,7 +30,6 @@ class DeploymentStore:
             node_name=request.node_name,
             gpu_ids=request.gpu_ids,
             notes=request.notes,
-            service_url=f"http://127.0.0.1:{self._allocate_port()}",
         )
         deployments = self.list()
         deployments.append(deployment)
@@ -37,14 +37,26 @@ class DeploymentStore:
             json.dump([item.model_dump() for item in deployments], handle, ensure_ascii=False, indent=2)
         return deployment
 
+    def update(self, deployment: DeploymentRecord) -> DeploymentRecord:
+        deployment.updated_at = utc_now()
+        deployments = self.list()
+        updated: list[DeploymentRecord] = []
+        found = False
+        for item in deployments:
+            if item.deployment_id == deployment.deployment_id:
+                updated.append(deployment)
+                found = True
+            else:
+                updated.append(item)
+
+        if not found:
+            updated.append(deployment)
+
+        with self.deployments_file.open("w", encoding="utf-8") as handle:
+            json.dump([item.model_dump() for item in updated], handle, ensure_ascii=False, indent=2)
+        return deployment
+
     def _allocate_port(self) -> int:
-        base_port = 18081
-        used_ports = {
-            int(item.service_url.rsplit(":", maxsplit=1)[-1])
-            for item in self.list()
-            if item.service_url
-        }
-        candidate = base_port
-        while candidate in used_ports:
-            candidate += 1
-        return candidate
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
