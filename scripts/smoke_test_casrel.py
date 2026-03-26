@@ -24,10 +24,22 @@ def main() -> None:
     print(json.dumps(adapter.metadata(), ensure_ascii=False, indent=2))
     print()
 
-    text = "ABC设备主轴发生振动异常，需要检查主轴轴承。"
-    result = adapter.predict(text)
-    print("Predict Result:")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    samples = [
+        "ABC设备主轴发生振动异常，需要检查主轴轴承。",
+        "The 1st runway length in feet is 14000.",
+    ]
+    for text in samples:
+        result = adapter.predict(
+            text,
+            {
+                "subject_threshold": 0.001,
+                "object_threshold": 0.001,
+                "debug": True,
+            },
+        )
+        print(f"Predict Result: {text}")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print()
 
 
 if __name__ == "__main__":

@@ -15,4 +15,12 @@ Current status:
 - package validation: ready
 - control-plane registration: ready
 - runtime metadata loading: ready
-- runtime full predict decode: pending next iteration
+- runtime process launch: ready
+- runtime predict path: ready
+- deployment benchmark path: ready
+
+Important notes:
+
+- the uploaded relation schema currently looks like a WebNLG-style English schema
+- the uploaded package is useful as a runtime compatibility sample, but it should not yet be treated as the final Chinese equipment-domain CasRel package
+- the adapter now exposes warnings and debug output to help diagnose tokenization, thresholds, and score distributions
