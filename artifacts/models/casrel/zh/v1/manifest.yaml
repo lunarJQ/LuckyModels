@@ -1,0 +1,34 @@
+model_id: casrel-zh-v1
+model_name: CasRel
+model_family: casrel
+task_type: relation_extraction
+language: zh
+framework: onnxruntime
+runtime_adapter: casrel_adapter
+version: v1
+backbone: bert-base-chinese
+
+artifacts:
+  subject_model: artifacts/casrel_subject.onnx
+  object_model: artifacts/casrel_object.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/vocab.txt
+
+labels:
+  relation_map: labels/rel2id.json
+
+inference:
+  max_length: 256
+  batch_size: 1
+  thresholds:
+    subject: 0.5
+    object: 0.5
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml

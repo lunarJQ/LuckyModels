@@ -1,0 +1,112 @@
+% !TeX root = ../thesis.tex
+\chapter{知识抽取模型库构建方法}
+
+\section{模型选型方法}
+\subsection{模型选型原则}
+面向装备制造业知识平台的知识抽取模型库建设，不以单一模型性能极致为唯一目标，而以“可覆盖、可比较、可部署、可扩展”为核心原则。本文所构建的模型库主要服务于三类业务文本：工艺文件、设备故障报告和标准规范条文。对应地，模型库需要同时具备关系抽取、联合抽取和复杂上下文建模能力。
+
+本文工作聚焦于大模型普及之前的经典知识抽取路线，并不将通用大语言模型作为核心比较对象。这样的研究边界与企业项目的阶段性条件一致：一方面，当时平台主要依赖预训练 BERT 与 Transformer 类模型完成知识抽取；另一方面，工程实现更强调稳定制品和可控部署，而非开放式生成能力。
+此外，本文训练阶段主要采用公开中文通用数据集完成多模型统一训练与基础能力验证，装备制造业知识平台场景则主要体现在模型选型依据、系统约束设定以及典型业务文本验证中。
+
+\begin{table}[htbp]
+  \centering
+  \caption{模型库纳入的代表模型及其用途定位}
+  \vspace{0.5em}\wuhao
+  \begin{tabularx}{\textwidth}{l l X}
+    \toprule
+    模型名称 & 模型类别 & 用途定位 \\
+    \midrule
+    CasRel & 级联式关系抽取 & 面向低延迟接口化调用的核心候选模型 \\
+    SpERT & Span-based 联合抽取 & 面向结构化结果展示与复杂实体边界识别 \\
+    TPLinker & Token-pair 抽取 & 面向重叠关系和复杂三元组场景 \\
+    PURE & 分阶段抽取 & 作为精度与部署成本平衡模型 \\
+    PRGC & 关系解耦抽取 & 作为制造业文本抽取的主力候选模型 \\
+    OneRel, CopyMTL & 关系抽取扩展模型 & 作为模型库的补充能力模型 \\
+    DyGIE++, GraphRel & 图结构联合抽取 & 面向离线补录和长文本复杂依赖建模 \\
+    \bottomrule
+  \end{tabularx}
+\label{tab:model_library_scope}
+\end{table}
+
+\subsection{模型纳入范围}
+
+\section{中文化适配方法}
+\subsection{编码器替换策略}
+由于模型来源和原始实现环境并不统一，本文将支持预训练语言模型编码器的模型统一迁移至 bert-base-chinese。对任一可迁移模型 $m$，其中文化适配过程可表示为
+\begin{equation}
+m^{zh}=\Phi(m,\mathcal{D}_{zh},\mathcal{V}_{zh},\mathcal{L}_{zh}),
+\end{equation}
+其中 $\mathcal{D}_{zh}$ 表示中文训练语料，$\mathcal{V}_{zh}$ 表示中文词表与分词器，$\mathcal{L}_{zh}$ 表示领域标签集合。该过程的关键不只是替换编码器，还包括输入格式改造、标签映射、样本构造和训练脚本适配。
+
+考虑到制造业术语较多，本文以词表覆盖率评价中文词表适配效果。设领域术语集合为 $\mathcal{W}$，则覆盖率定义为
+\begin{equation}
+\eta=\frac{|\mathcal{W}\cap \mathcal{V}_{zh}|}{|\mathcal{W}|}.
+\end{equation}
+该指标虽然不能完全代表模型性能，但能够辅助分析中文迁移过程中术语切分与编码器适配的难度。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    box/.style={draw, rectangle, text width=2.35cm, minimum height=0.95cm, align=center, inner sep=3pt, font=\wuhao},
+    arr/.style={-Latex, semithick}
+  ]
+    \node[box] (a) at (0,0) {原始模型实现};
+    \node[box] (b) at (3.0,0) {替换中文编码器};
+    \node[box] (c) at (6.0,0) {重构数据处理};
+    \node[box] (d) at (9.0,0) {训练至收敛};
+    \node[box] (e) at (12.0,0) {导出标准制品};
+    \draw[arr] (a) -- (b);
+    \draw[arr] (b) -- (c);
+    \draw[arr] (c) -- (d);
+    \draw[arr] (d) -- (e);
+  \end{tikzpicture}
+  \caption{知识抽取模型中文化适配与制品化流程}
+  \label{fig:model_library_flow}
+\end{figure}
+
+\begin{algorithm}[htbp]
+\caption{知识抽取模型中文化适配流程}
+\KwIn{原始模型实现 $m$，中文语料集 $\mathcal{D}_{zh}$，中文标签集 $\mathcal{L}_{zh}$}
+\KwOut{可部署模型制品 $a$}
+替换模型编码器为 bert-base-chinese\;
+重构分词、样本生成和标签映射逻辑\;
+按统一训练规范在公开中文通用数据集上训练至收敛\;
+执行精度检查与结构输出检查\;
+导出 ONNX、标签映射、元数据和版本说明\;
+\Return{$a$}\;
+\end{algorithm}
+
+\subsection{训练流程适配方法}
+
+\section{模型制品组织方法}
+\subsection{制品结构设计}
+为支持统一部署和后续平台接入，本文将每个模型组织为“模型文件 + 元数据 + 标签配置 + Profile 默认项”的制品包形式。设某模型制品为 $a_i$，则有
+\begin{equation}
+a_i=\langle f_i,meta_i,label_i,profile_i \rangle.
+\end{equation}
+其中 $f_i$ 表示 ONNX 文件，$meta_i$ 记录模型名称、版本、适用场景和输入限制，$label_i$ 记录实体标签与关系标签，$profile_i$ 给出默认部署配置。这样做的好处在于，训练结果可以直接转化为工程资产，而不是停留在实验权重层面。
+
+\subsection{元数据字段设计}
+\begin{table}[htbp]
+  \centering
+  \caption{模型库元数据字段设计}
+  \vspace{0.5em}\wuhao
+  \begin{tabularx}{\textwidth}{l X}
+    \toprule
+    元数据字段 & 字段说明 \\
+    \midrule
+    \texttt{model\_id} & 模型唯一标识，关联模型文件、日志和基准结果 \\
+    \texttt{task\_type} & 任务类型，如关系抽取、联合抽取或图结构抽取 \\
+    \texttt{encoder} & 编码器信息，用于标识中文化适配基础模型 \\
+    \texttt{schema\_version} & 标签体系版本，用于保证结果结构稳定 \\
+    \texttt{default\_profile} & 默认部署配置，用于首次部署或回滚恢复 \\
+    \texttt{scene\_tag} & 适用场景标签，用于系统路由与推荐 \\
+    \bottomrule
+  \end{tabularx}
+  \label{tab:model_metadata_compact}
+\end{table}
+
+\section{本章小结}
+经过统一训练、中文化适配和制品化整理后，本文形成了一套能够直接进入部署流程的知识抽取模型库原型。与传统“单模型论文实现”相比，该模型库更强调以下三点：第一，多模型共存而非单模型最优；第二，制品统一而非代码分散；第三，面向平台接入而非停留在离线实验阶段。
+
+本章完成了知识抽取模型库的主体构建工作，为后续统一服务封装、Profile 驱动部署和系统演示奠定了模型资产基础。

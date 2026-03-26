@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luckymodels"
+version = "0.1.0"
+description = "LuckyModels control plane and runtime foundation for knowledge-extraction model libraries"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn>=0.30.0",
+  "pydantic>=2.7.0",
+  "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+runtime = [
+  "onnxruntime>=1.18.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

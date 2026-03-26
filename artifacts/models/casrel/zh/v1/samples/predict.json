@@ -1,0 +1,7 @@
+{
+  "text": "ABC设备主轴发生振动异常，需要检查主轴轴承。",
+  "scene": "fault_report",
+  "options": {
+    "return_evidence": true
+  }
+}
