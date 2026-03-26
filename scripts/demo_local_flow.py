@@ -11,10 +11,14 @@ from fastapi.testclient import TestClient
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root / "apps" / "api"))
+    sys.path.insert(0, str(repo_root / "src"))
 
     from main import app  # noqa: WPS433
+    from luckymodels_core.webnlg_demo import get_webnlg_demo_cases  # noqa: WPS433
 
     client = TestClient(app)
+    demo_cases = get_webnlg_demo_cases()
+    benchmark_case = demo_cases["language_case"]
 
     print("== System Summary ==")
     print(json.dumps(client.get("/api/v1/system/summary").json(), ensure_ascii=False, indent=2))
@@ -56,10 +60,14 @@ def main() -> int:
         "/api/v1/benchmarks",
         json={
             "deployment_id": deployment_id,
-            "text": "ABC设备主轴发生振动异常，需要检查主轴轴承。",
+            "text": benchmark_case["sentText"],
             "iterations": 3,
             "warmup_runs": 1,
             "label": "demo_local_flow",
+            "options": {
+                "subject_threshold": benchmark_case["threshold"],
+                "object_threshold": benchmark_case["threshold"],
+            },
         },
     )
     benchmark.raise_for_status()

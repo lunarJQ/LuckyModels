@@ -128,11 +128,23 @@ curl -X POST http://127.0.0.1:38080/api/v1/benchmarks \
   -H 'Content-Type: application/json' \
   -d '{
     "deployment_id": "<deployment_id>",
-    "text": "ABC设备主轴发生振动异常，需要检查主轴轴承。",
+    "text": "The ground of A.S. Gubbio 1910 is located in Italy , where the capital is Rome , the leader is Sergio Mattarella and the language spoken is Italian .",
     "iterations": 5,
-    "warmup_runs": 1
+    "warmup_runs": 1,
+    "options": {
+      "subject_threshold": 0.0001,
+      "object_threshold": 0.0001
+    }
   }'
 ```
+
+If you want the platform to prepare a reusable WebNLG evaluation subset first:
+
+```bash
+curl -X POST 'http://127.0.0.1:38080/api/v1/demo/casrel/prepare-webnlg?limit=128'
+```
+
+The exported file is written to `data/state/reports/webnlg_eval_cases.json`.
 
 ## 6. What To Do Next
 

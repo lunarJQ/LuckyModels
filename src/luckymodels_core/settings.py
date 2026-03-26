@@ -14,6 +14,7 @@ class Settings:
     deployments_file: Path
     benchmarks_file: Path
     casrel_demo_report_file: Path
+    webnlg_eval_cases_file: Path
 
 
 def get_settings() -> Settings:
@@ -30,4 +31,5 @@ def get_settings() -> Settings:
         deployments_file=state_root / "deployments.json",
         benchmarks_file=state_root / "benchmarks.json",
         casrel_demo_report_file=reports_root / "casrel_demo_report.json",
+        webnlg_eval_cases_file=reports_root / "webnlg_eval_cases.json",
     )

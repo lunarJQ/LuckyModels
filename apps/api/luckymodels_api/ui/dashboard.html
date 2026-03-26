@@ -631,6 +631,39 @@
       white-space: pre-wrap;
     }
 
+    .relation-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .relation-box {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      padding: 14px;
+    }
+
+    .relation-box h4 {
+      margin: 0 0 10px;
+      font-size: 14px;
+    }
+
+    .relation-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .relation-item {
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.78);
+      border: 1px solid var(--line);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
     .footer-note {
       margin-top: 10px;
       color: var(--muted);
@@ -988,18 +1021,23 @@
       const benchmark = report.benchmark || {};
       const deployment = report.deployment || {};
       const stopped = report.deployment_stopped || {};
-      const english = report.samples?.english_debug || {};
-      const debug = english.debug || {};
-      const warnings = english.warnings || [];
+      const dataset = report.dataset || {};
+      const primary = report.samples?.primary_case || {};
+      const runtime = primary.runtime || {};
+      const debug = runtime.debug || {};
+      const warnings = runtime.warnings || [];
       const tokens = debug.token_pieces || [];
       const summary = debug.subject_score_summary || {};
       const maxScore = Math.max(summary.head_max || 0, summary.tail_max || 0, 0.000001);
+      const goldRelations = primary.gold_relations || [];
+      const predictedTriples = runtime.triples || [];
 
       $("report-summary").innerHTML = `
         ${metricCard("Deployment", deployment.deployment_id || "-", "CasRel 样例自动创建的 deployment")}
         ${metricCard("Avg Latency", benchmark.avg_latency_ms ?? "-", "平均延迟 / ms")}
         ${metricCard("P95", benchmark.p95_latency_ms ?? "-", "P95 延迟 / ms")}
         ${metricCard("QPS", benchmark.throughput_qps ?? "-", "总吞吐量 / qps")}
+        ${metricCard("Eval Cases", dataset.prepared_eval_count ?? "-", "已生成的 WebNLG 测试样本数量")}
         ${metricCard("Runtime URL", deployment.service_url || "-", "样例运行时地址")}
         ${metricCard("Stop Status", stopped.status || "-", "演示结束后 deployment 自动停止")}
       `;
@@ -1007,7 +1045,9 @@
       $("warn-list").innerHTML = warnings.map((item) => `<span class="pill warn">${escapeHtml(item)}</span>`).join("");
       $("token-list").innerHTML = tokens.map((item) => `<span class="pill token">${escapeHtml(item)}</span>`).join("");
       $("score-block").innerHTML = `
-        <div class="detail-note">以下分数条展示的是英文调试样例的 subject head top positions，用于解释当前制品为什么还没有抽出三元组。</div>
+        <div class="detail-note">${escapeHtml(primary.sentText || runtime.text || "")}</div>
+        <div class="detail-note">数据集来源：${escapeHtml(dataset.source || "-")}；测试样本导出文件：${escapeHtml(dataset.prepared_eval_file || "-")}；选中的演示样例：${escapeHtml((dataset.selected_cases || []).join(", ") || "-")}。</div>
+        <div class="detail-note">以下分数条展示的是当前 WebNLG 样例的 subject head top positions。当前制品已经能在真实 WebNLG 文本上输出非空三元组。</div>
         ${(summary.top_head_positions || []).slice(0, 6).map((row) => {
           const label = `${row.position}: ${tokens[row.position] || "?"}`;
           const percent = Math.max(4, (row.score / maxScore) * 100);
@@ -1019,6 +1059,33 @@
             </div>
           `;
         }).join("")}
+        <div class="relation-grid">
+          <div class="relation-box">
+            <h4>Gold Relations</h4>
+            <div class="relation-list">
+              ${goldRelations.length ? goldRelations.slice(0, 6).map((item) => `
+                <div class="relation-item">
+                  <strong>${escapeHtml(item.em1Text)}</strong>
+                  <span> -- ${escapeHtml(item.label)} -- </span>
+                  <strong>${escapeHtml(item.em2Text)}</strong>
+                </div>
+              `).join("") : `<div class="relation-item">暂无 gold relations</div>`}
+            </div>
+          </div>
+          <div class="relation-box">
+            <h4>Runtime Triples</h4>
+            <div class="relation-list">
+              ${predictedTriples.length ? predictedTriples.slice(0, 6).map((item) => `
+                <div class="relation-item">
+                  <strong>${escapeHtml(item.subject)}</strong>
+                  <span> -- ${escapeHtml(item.predicate)} -- </span>
+                  <strong>${escapeHtml(item.object)}</strong><br/>
+                  <span class="mono">confidence=${escapeHtml(item.confidence)}</span>
+                </div>
+              `).join("") : `<div class="relation-item">当前样例未输出三元组</div>`}
+            </div>
+          </div>
+        </div>
       `;
       $("log-block").textContent = report.logs?.content || "暂无日志。";
     }

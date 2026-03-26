@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from luckymodels_core.schemas import BenchmarkCreateRequest, DeploymentCreateRequest
 from luckymodels_core.settings import get_settings
+from luckymodels_core.webnlg_demo import export_webnlg_eval_cases, get_webnlg_demo_cases
 
 from .benchmarks import create_benchmark
 from .deployments import (
@@ -37,6 +38,11 @@ def get_casrel_demo_report() -> dict[str, object]:
 def run_casrel_demo() -> dict[str, object]:
     settings = get_settings()
     settings.reports_root.mkdir(parents=True, exist_ok=True)
+    demo_cases = get_webnlg_demo_cases()
+    prepared_eval = export_webnlg_eval_cases()
+    benchmark_case = demo_cases["language_case"]
+    primary_case = demo_cases["location_case"]
+    secondary_case = demo_cases["ethnic_group_case"]
 
     deployment = None
     report: dict[str, object] = {}
@@ -56,23 +62,25 @@ def run_casrel_demo() -> dict[str, object]:
         benchmark = create_benchmark(
             BenchmarkCreateRequest(
                 deployment_id=deployment.deployment_id,
-                text="The 1st runway length in feet is 14000.",
+                text=benchmark_case["sentText"],
                 iterations=5,
                 warmup_runs=1,
-                label="casrel_demo_run",
+                label=f"casrel_demo_{benchmark_case['name']}",
                 options={
-                    "subject_threshold": 0.001,
-                    "object_threshold": 0.001,
+                    "subject_threshold": benchmark_case["threshold"],
+                    "object_threshold": benchmark_case["threshold"],
                 },
             )
         )
-        chinese_debug = _predict_debug(
+        primary_runtime = _predict_debug(
             deployment.service_url,
-            "ABC设备主轴发生振动异常，需要检查主轴轴承。",
+            primary_case["sentText"],
+            threshold=primary_case["threshold"],
         )
-        english_debug = _predict_debug(
+        secondary_runtime = _predict_debug(
             deployment.service_url,
-            "The 1st runway length in feet is 14000.",
+            secondary_case["sentText"],
+            threshold=secondary_case["threshold"],
         )
         logs = get_deployment_logs(deployment.deployment_id, lines=80)
 
@@ -81,14 +89,40 @@ def run_casrel_demo() -> dict[str, object]:
             "deployment": deployment.model_dump(),
             "health": health,
             "benchmark": benchmark.model_dump(),
+            "dataset": {
+                "name": "WebNLG dev",
+                "source": prepared_eval["dataset_source"],
+                "prepared_eval_file": prepared_eval["output_path"],
+                "prepared_eval_count": prepared_eval["record_count"],
+                "selected_cases": [
+                    benchmark_case["name"],
+                    primary_case["name"],
+                    secondary_case["name"],
+                ],
+                "note": "CasRel uploaded artifact is evaluated with real WebNLG text samples reconstructed from the local dataset.",
+            },
             "samples": {
-                "chinese_debug": chinese_debug,
-                "english_debug": english_debug,
+                "primary_case": {
+                    "case_name": primary_case["name"],
+                    "description": primary_case["description"],
+                    "threshold": primary_case["threshold"],
+                    "sentText": primary_case["sentText"],
+                    "gold_relations": primary_case["relationMentions"],
+                    "runtime": primary_runtime,
+                },
+                "secondary_case": {
+                    "case_name": secondary_case["name"],
+                    "description": secondary_case["description"],
+                    "threshold": secondary_case["threshold"],
+                    "sentText": secondary_case["sentText"],
+                    "gold_relations": secondary_case["relationMentions"],
+                    "runtime": secondary_runtime,
+                },
             },
             "logs": logs,
             "report_note": (
                 "This report demonstrates the LuckyModels control plane, runtime launch, "
-                "benchmark path, and CasRel debug output for the current uploaded artifact."
+                "benchmark path, and real WebNLG dataset-driven CasRel outputs for the current uploaded artifact."
             ),
         }
     finally:
@@ -104,13 +138,18 @@ def run_casrel_demo() -> dict[str, object]:
     return report
 
 
-def _predict_debug(service_url: str, text: str) -> dict[str, object]:
+@router.post("/demo/casrel/prepare-webnlg")
+def prepare_casrel_webnlg_eval(limit: int = 128) -> dict[str, object]:
+    return export_webnlg_eval_cases(limit=limit)
+
+
+def _predict_debug(service_url: str, text: str, threshold: float) -> dict[str, object]:
     payload = json.dumps(
         {
             "text": text,
             "options": {
-                "subject_threshold": 0.001,
-                "object_threshold": 0.001,
+                "subject_threshold": threshold,
+                "object_threshold": threshold,
                 "debug": True,
             },
         },
