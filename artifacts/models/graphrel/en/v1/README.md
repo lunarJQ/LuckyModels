@@ -1,6 +1,6 @@
-# GraphRel English WebNLG v1
+# GraphRel English NYT v1
 
-This package registers the GraphRel ONNX export in the LuckyModels model library.
+This package registers the GraphRel ONNX export in the LuckyModels model library with the NYT test dataset configuration.
 
 Current status:
 
@@ -12,4 +12,4 @@ Important notes:
 
 - the exported ONNX covers only the neural network core
 - deployment must still run spaCy preprocessing, vector extraction, POS encoding, and dependency-graph construction
-- the original export directory is `graphrel_nyt_model`, but the platform currently labels this package with the WebNLG test dataset by project requirement
+- the original export directory is `graphrel_nyt_model`, and the platform now keeps the same NYT dataset label

@@ -1,4 +1,4 @@
-model_id: graphrel-en-webnlg-v1
+model_id: graphrel-en-nyt-v1
 model_name: GraphRel
 model_family: graphrel
 task_type: relation_extraction
@@ -6,8 +6,8 @@ language: en
 framework: onnxruntime
 runtime_adapter: metadata_only_adapter
 version: v1
-dataset_name: webnlg
-dataset_split: dev
+dataset_name: nyt
+dataset_split: test
 stage_count: 1
 predict_ready: false
 backbone: graphrel-2p-spacy
@@ -40,4 +40,4 @@ deployment_requirements:
   - Decode entity and relation outputs into triples after ONNX execution.
 
 runtime_notes:
-  - The raw export folder is named graphrel_nyt_model, but LuckyModels currently maps this package to WebNLG evaluation according to the project requirement.
+  - The raw export folder and current evaluation source both target the NYT relation extraction dataset.

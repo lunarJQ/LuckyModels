@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import {
@@ -101,6 +101,22 @@ function resolveProfileName(modelId, details, preferredProfileName = "") {
     return "default";
   }
   return profiles[0];
+}
+
+function normalizeKeyword(value) {
+  return String(value || "").toLowerCase().trim();
+}
+
+function matchesKeyword(values, keyword) {
+  const term = normalizeKeyword(keyword);
+  if (!term) {
+    return true;
+  }
+  return values.some((value) => normalizeKeyword(value).includes(term));
+}
+
+function sortByCreatedDesc(items) {
+  return [...items].sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")));
 }
 
 function buildInitialBenchmarkForm(deployments) {
@@ -769,6 +785,39 @@ function ArchivePage({ derived }) {
 }
 
 function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeployment, onDeploymentFormChange }) {
+  const [search, setSearch] = useState("");
+  const [runtimeFilter, setRuntimeFilter] = useState("all");
+  const [availabilityFilter, setAvailabilityFilter] = useState("all");
+  const deferredSearch = useDeferredValue(search);
+
+  const filteredModels = useMemo(() => {
+    return [...derived.models]
+      .filter((model) =>
+        matchesKeyword(
+          [
+            model.model_id,
+            model.model_name,
+            model.dataset_name,
+            model.runtime_status,
+            model.runtime_adapter,
+            model.backbone,
+          ],
+          deferredSearch,
+        ),
+      )
+      .filter((model) => runtimeFilter === "all" || model.runtime_status === runtimeFilter)
+      .filter((model) => {
+        if (availabilityFilter === "all") {
+          return true;
+        }
+        return availabilityFilter === "predict_ready" ? model.predict_ready : !model.predict_ready;
+      })
+      .sort(
+        (left, right) =>
+          Number(right.predict_ready) - Number(left.predict_ready) || left.model_name.localeCompare(right.model_name),
+      );
+  }, [availabilityFilter, deferredSearch, derived.models, runtimeFilter]);
+
   return (
     <>
       <section className="page-shell card section-shell">
@@ -831,8 +880,52 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
 
       <section className="page-shell card section-shell">
         <SectionHeader kicker="Model Library" title="模型资产" note="模型卡片支持快速查看 runtime 状态，并为可推理模型直接创建 deployment。" />
+        <div className="filter-panel">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>搜索模型</span>
+              <input
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="模型名 / model_id / dataset / adapter"
+                type="text"
+                value={search}
+              />
+            </label>
+            <label className="stack-field">
+              <span>运行状态</span>
+              <select onChange={(event) => setRuntimeFilter(event.target.value)} value={runtimeFilter}>
+                <option value="all">全部状态</option>
+                <option value="inference_ready">可推理</option>
+                <option value="package_ready">仅制品就绪</option>
+              </select>
+            </label>
+            <label className="stack-field">
+              <span>可用性</span>
+              <select onChange={(event) => setAvailabilityFilter(event.target.value)} value={availabilityFilter}>
+                <option value="all">全部模型</option>
+                <option value="predict_ready">仅可推理</option>
+                <option value="package_only">仅待适配</option>
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前显示 {filteredModels.length} / {derived.models.length} 个模型
+            </div>
+            <button
+              onClick={() => {
+                setSearch("");
+                setRuntimeFilter("all");
+                setAvailabilityFilter("all");
+              }}
+              type="button"
+            >
+              清空筛选
+            </button>
+          </div>
+        </div>
         <div className="asset-grid">
-          {derived.models.map((model) => {
+          {filteredModels.map((model) => {
             const detail = data.modelDetails[model.model_id] || {};
             const manifest = detail.manifest || {};
             return (
@@ -874,6 +967,14 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
               </article>
             );
           })}
+          {!filteredModels.length ? (
+            <EmptyState
+              icon="M"
+              note="当前筛选条件下没有匹配模型，试试放宽状态或关键词。"
+              title="没有匹配的模型"
+              wide
+            />
+          ) : null}
         </div>
       </section>
     </>
@@ -926,6 +1027,34 @@ function DeploymentsPage({
   selectedHealth,
   selectedLogs,
 }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [scopeFilter, setScopeFilter] = useState("recent");
+  const deferredSearch = useDeferredValue(search);
+
+  const filteredDeployments = useMemo(() => {
+    let next = sortByCreatedDesc(derived.deployments).filter((item) =>
+      matchesKeyword(
+        [item.deployment_id, item.model_id, item.profile_name, item.notes, item.service_url, item.status],
+        deferredSearch,
+      ),
+    );
+
+    if (statusFilter !== "all") {
+      next = next.filter((item) => item.status === statusFilter);
+    }
+
+    if (scopeFilter === "active") {
+      next = next.filter((item) => ["running", "starting", "planned", "stopping"].includes(item.status));
+    } else if (scopeFilter === "with_logs") {
+      next = next.filter((item) => item.log_path);
+    } else if (scopeFilter === "recent") {
+      next = next.slice(0, 12);
+    }
+
+    return next;
+  }, [deferredSearch, derived.deployments, scopeFilter, statusFilter]);
+
   return (
     <>
       <section className="page-shell card section-shell">
@@ -988,8 +1117,57 @@ function DeploymentsPage({
 
       <section className="page-shell card section-shell">
         <SectionHeader kicker="Deployment List" title="部署列表" />
+        <div className="filter-panel">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>搜索 deployment</span>
+              <input
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="deployment_id / model_id / notes / service_url"
+                type="text"
+                value={search}
+              />
+            </label>
+            <label className="stack-field">
+              <span>状态</span>
+              <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+                <option value="all">全部状态</option>
+                <option value="running">运行中</option>
+                <option value="starting">启动中</option>
+                <option value="planned">已规划</option>
+                <option value="stopping">停止中</option>
+                <option value="stopped">已停止</option>
+                <option value="deleted">已删除</option>
+              </select>
+            </label>
+            <label className="stack-field">
+              <span>显示范围</span>
+              <select onChange={(event) => setScopeFilter(event.target.value)} value={scopeFilter}>
+                <option value="recent">最近 12 条</option>
+                <option value="active">仅活动 deployment</option>
+                <option value="with_logs">仅有日志</option>
+                <option value="all">全部记录</option>
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前显示 {filteredDeployments.length} / {derived.deployments.length} 条 deployment 记录
+            </div>
+            <button
+              onClick={() => {
+                setSearch("");
+                setStatusFilter("all");
+                setScopeFilter("recent");
+              }}
+              type="button"
+            >
+              恢复默认视图
+            </button>
+          </div>
+        </div>
         <div className="table-wrap">
-          {derived.deployments.length ? (
+          {filteredDeployments.length ? (
             <table>
               <thead>
                 <tr>
@@ -1001,7 +1179,7 @@ function DeploymentsPage({
                 </tr>
               </thead>
               <tbody>
-                {[...derived.deployments].reverse().map((item) => (
+                {filteredDeployments.map((item) => (
                   <tr key={item.deployment_id}>
                     <td>
                       <strong>{item.deployment_id}</strong>
@@ -1024,7 +1202,11 @@ function DeploymentsPage({
               </tbody>
             </table>
           ) : (
-            <EmptyState icon="D" title="暂无部署记录" />
+            <EmptyState
+              icon="D"
+              note={derived.deployments.length ? "当前筛选条件下没有匹配 deployment。" : "平台里还没有创建 deployment。"}
+              title="暂无部署记录"
+            />
           )}
         </div>
       </section>
@@ -1051,6 +1233,34 @@ function BenchmarksPage({
   onCreateBenchmark,
   onDeleteBenchmark,
 }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [scopeFilter, setScopeFilter] = useState("recent");
+  const deferredSearch = useDeferredValue(search);
+
+  const filteredBenchmarks = useMemo(() => {
+    let next = sortByCreatedDesc(derived.benchmarks).filter((item) =>
+      matchesKeyword(
+        [item.benchmark_id, item.label, item.model_id, item.deployment_id, item.profile_name, item.status],
+        deferredSearch,
+      ),
+    );
+
+    if (statusFilter !== "all") {
+      next = next.filter((item) => item.status === statusFilter);
+    }
+
+    if (scopeFilter === "completed") {
+      next = next.filter((item) => item.status === "completed");
+    } else if (scopeFilter === "problematic") {
+      next = next.filter((item) => item.failure_count > 0 || item.status === "failed");
+    } else if (scopeFilter === "recent") {
+      next = next.slice(0, 12);
+    }
+
+    return next;
+  }, [deferredSearch, derived.benchmarks, scopeFilter, statusFilter]);
+
   return (
     <>
       <section className="page-shell card section-shell">
@@ -1117,8 +1327,54 @@ function BenchmarksPage({
 
       <section className="page-shell card table-shell">
         <SectionHeader kicker="Benchmark Records" title="基准记录" />
+        <div className="filter-panel filter-panel-table">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>搜索 benchmark</span>
+              <input
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="benchmark_id / label / model_id / deployment_id"
+                type="text"
+                value={search}
+              />
+            </label>
+            <label className="stack-field">
+              <span>状态</span>
+              <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+                <option value="all">全部状态</option>
+                <option value="completed">已完成</option>
+                <option value="planned">已规划</option>
+                <option value="failed">失败</option>
+              </select>
+            </label>
+            <label className="stack-field">
+              <span>显示范围</span>
+              <select onChange={(event) => setScopeFilter(event.target.value)} value={scopeFilter}>
+                <option value="recent">最近 12 条</option>
+                <option value="completed">仅已完成</option>
+                <option value="problematic">仅异常记录</option>
+                <option value="all">全部记录</option>
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前显示 {filteredBenchmarks.length} / {derived.benchmarks.length} 条 benchmark 记录
+            </div>
+            <button
+              onClick={() => {
+                setSearch("");
+                setStatusFilter("all");
+                setScopeFilter("recent");
+              }}
+              type="button"
+            >
+              恢复默认视图
+            </button>
+          </div>
+        </div>
         <div className="table-wrap">
-          {derived.benchmarks.length ? (
+          {filteredBenchmarks.length ? (
             <table>
               <thead>
                 <tr>
@@ -1132,7 +1388,7 @@ function BenchmarksPage({
                 </tr>
               </thead>
               <tbody>
-                {[...derived.benchmarks].reverse().map((item) => (
+                {filteredBenchmarks.map((item) => (
                   <tr key={item.benchmark_id}>
                     <td>
                       <strong>{item.label || item.benchmark_id}</strong>
@@ -1157,7 +1413,11 @@ function BenchmarksPage({
               </tbody>
             </table>
           ) : (
-            <EmptyState icon="☰" title="暂无基准记录" note="创建 benchmark 后会在这里出现。" />
+            <EmptyState
+              icon="☰"
+              note={derived.benchmarks.length ? "当前筛选条件下没有匹配 benchmark。" : "创建 benchmark 后会在这里出现。"}
+              title="暂无基准记录"
+            />
           )}
         </div>
       </section>

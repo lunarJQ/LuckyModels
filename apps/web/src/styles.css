@@ -461,6 +461,38 @@ button:disabled {
   gap: 14px;
 }
 
+.filter-panel {
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 251, 245, 0.88);
+}
+
+.filter-panel-table {
+  margin: 0 20px 16px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.filter-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.filter-meta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .stack-field,
 .stack-check {
   display: grid;
@@ -809,6 +841,7 @@ tbody tr:hover {
   .toolbar,
   .filters,
   .form-grid,
+  .filter-grid,
   .summary-strip,
   .detail-grid,
   .metrics,
@@ -821,6 +854,15 @@ tbody tr:hover {
   .sidebar {
     position: relative;
     height: auto;
+  }
+
+  .filter-panel-table {
+    margin: 0 0 16px;
+  }
+
+  .filter-foot {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .stack-field-wide {
