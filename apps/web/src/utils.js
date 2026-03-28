@@ -6,6 +6,9 @@ export function escapeValue(value) {
 }
 
 export function safeJsonParse(value) {
+  if (value && typeof value === "object") {
+    return value;
+  }
   try {
     return JSON.parse(value);
   } catch {

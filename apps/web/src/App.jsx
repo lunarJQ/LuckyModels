@@ -119,6 +119,34 @@ function sortByCreatedDesc(items) {
   return [...items].sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")));
 }
 
+function getDeploymentHealthPayload(deployment) {
+  return safeJsonParse(deployment?.health?.payload || {});
+}
+
+function getDeploymentExecution(deployment) {
+  const payload = getDeploymentHealthPayload(deployment);
+  return payload.execution || deployment.execution || {};
+}
+
+function getDeploymentProviders(deployment) {
+  const payload = getDeploymentHealthPayload(deployment);
+  return Array.isArray(payload.providers) ? payload.providers : [];
+}
+
+function formatExecutionSummary(deployment) {
+  const execution = getDeploymentExecution(deployment);
+  const workers = execution.instance_count ?? 1;
+  const batchSize = execution.batch_size ?? 1;
+  const intraThreads = execution.intra_op_threads ?? 0;
+  const interThreads = execution.inter_op_threads ?? 0;
+  return `workers=${workers} · batch=${batchSize} · intra=${intraThreads} · inter=${interThreads}`;
+}
+
+function formatProviderSummary(deployment) {
+  const providers = getDeploymentProviders(deployment);
+  return providers.length ? providers.join(", ") : "pending";
+}
+
 function buildInitialBenchmarkForm(deployments) {
   const running = deployments.find((item) => item.status === "running") || deployments[0];
   return {
@@ -1058,7 +1086,14 @@ function DeploymentsPage({
   return (
     <>
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="Deployment Control" title="部署控制" note="可以在这里创建、停止、重启和删除 deployment。" />
+        <SectionHeader
+          kicker="Deployment Control"
+          title="部署控制"
+          note="可以在这里创建、停止、重启和删除 deployment。threads / instance_count / batch_size 已接入 runtime。"
+        />
+        <div className="banner banner-muted">
+          如果某个 deployment 是在 2026-03-28 这次 profile 更新前创建且一直没有重启，它仍可能运行旧参数。重启一次后，新的线程数、worker 数和 batch 配置才会真正生效。
+        </div>
         <div className="form-grid">
           <label className="stack-field">
             <span>模型</span>
@@ -1173,6 +1208,7 @@ function DeploymentsPage({
                 <tr>
                   <th>Deployment</th>
                   <th>模型</th>
+                  <th>Profile / 执行参数</th>
                   <th>状态</th>
                   <th>Service URL</th>
                   <th>操作</th>
@@ -1186,8 +1222,17 @@ function DeploymentsPage({
                       <div className="mono">{item.notes || "-"}</div>
                     </td>
                     <td>{item.model_id}</td>
+                    <td>
+                      <div><strong>{item.profile_name}</strong></div>
+                      <div className="table-note">{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}</div>
+                      <div className="table-note">{formatExecutionSummary(item)}</div>
+                      <div className="table-note">provider: {formatProviderSummary(item)}</div>
+                    </td>
                     <td><StatusPill status={item.status} /></td>
-                    <td><div className="mono">{item.service_url || "-"}</div></td>
+                    <td>
+                      <div className="mono">{item.service_url || "-"}</div>
+                      <div className="table-note">pid: {item.pid || "-"}</div>
+                    </td>
                     <td>
                       <div className="actions row-actions">
                         <button onClick={() => void onInspectDeployment("health", item.deployment_id)} type="button">健康</button>
@@ -1427,42 +1472,102 @@ function BenchmarksPage({
 
 function ResourcesPage({ derived }) {
   const providerSet = new Set();
-  derived.deployments.forEach((item) => {
-    const payload = safeJsonParse(item.health?.payload || "{}");
-    (payload.providers || []).forEach((provider) => providerSet.add(provider));
+  const runtimeSnapshots = sortByCreatedDesc(derived.runningDeployments).map((item) => {
+    const payload = getDeploymentHealthPayload(item);
+    const providers = getDeploymentProviders(item);
+    providers.forEach((provider) => providerSet.add(provider));
+    return {
+      item,
+      payload,
+      providers,
+      execution: getDeploymentExecution(item),
+    };
   });
 
   return (
-    <section className="page-shell">
-      <div className="resource-grid">
-        <article className="resource-card">
-          <h4>控制面</h4>
-          <div className="resource-meta">
-            可推理模型：{derived.predictableModels.length}
-            <br />
-            运行中 deployment：{derived.runningDeployments.length}
-            <br />
-            当前地址：<span className="mono">127.0.0.1:38080</span>
+    <>
+      <section className="page-shell">
+        <div className="resource-grid">
+          <article className="resource-card">
+            <h4>控制面</h4>
+            <div className="resource-meta">
+              可推理模型：{derived.predictableModels.length}
+              <br />
+              运行中 deployment：{derived.runningDeployments.length}
+              <br />
+              当前地址：<span className="mono">127.0.0.1:38080</span>
+            </div>
+          </article>
+          <article className="resource-card">
+            <h4>资源使用</h4>
+            <div className="resource-meta">
+              历史 deployment：{derived.deployments.length}
+              <br />
+              历史 benchmark：{derived.benchmarks.length}
+              <br />
+              Provider：{Array.from(providerSet).join(" / ") || "pending"}
+            </div>
+          </article>
+          <article className="resource-card">
+            <h4>可用模型</h4>
+            <div className="resource-meta">
+              {derived.predictableModels.map((item) => item.model_name).join(" / ") || "暂无"}
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Runtime Snapshot"
+          title="运行实例快照"
+          note="这里展示运行中 deployment 的真实 profile 执行参数与 runtime 健康信息。"
+        />
+        <div className="banner banner-muted">
+          当前机器还没有启用 CUDA Execution Provider，所以这里看到的 provider 大概率仍是 CPU。Profile 已先接入 CPU 侧线程数、worker 数和 batch 行为。
+        </div>
+        {runtimeSnapshots.length ? (
+          <div className="list-grid runtime-grid">
+            {runtimeSnapshots.map(({ item, payload, providers, execution }) => (
+              <article className="list-card" key={item.deployment_id}>
+                <div className="list-card-header">
+                  <div>
+                    <h4>{item.deployment_id}</h4>
+                    <div className="mono">{item.model_id}</div>
+                  </div>
+                  <StatusPill status={item.status} />
+                </div>
+                <div className="runtime-meta">
+                  profile：<strong>{item.profile_name}</strong>
+                  <br />
+                  device / runtime：{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}
+                  <br />
+                  workers：{execution.instance_count ?? 1}
+                  <br />
+                  batch_size：{execution.batch_size ?? 1}
+                  <br />
+                  intra / inter threads：{execution.intra_op_threads ?? 0} / {execution.inter_op_threads ?? 0}
+                  <br />
+                  providers：{providers.join(", ") || "pending"}
+                  <br />
+                  pid_alive：{String(item.health?.pid_alive ?? false)}
+                  <br />
+                  sessions_loaded：{String(payload.sessions_loaded ?? false)}
+                  <br />
+                  service_url：<span className="mono">{item.service_url || "-"}</span>
+                </div>
+              </article>
+            ))}
           </div>
-        </article>
-        <article className="resource-card">
-          <h4>资源使用</h4>
-          <div className="resource-meta">
-            历史 deployment：{derived.deployments.length}
-            <br />
-            历史 benchmark：{derived.benchmarks.length}
-            <br />
-            当前页面全部走控制面代理接口。
-          </div>
-        </article>
-        <article className="resource-card">
-          <h4>可用模型</h4>
-          <div className="resource-meta">
-            {derived.predictableModels.map((item) => item.model_name).join(" / ") || "暂无"}
-          </div>
-        </article>
-      </div>
-    </section>
+        ) : (
+          <EmptyState
+            icon="R"
+            title="暂无运行快照"
+            note="先启动一个 deployment，平台才会自动采集 healthz 并展示真实执行参数。"
+          />
+        )}
+      </section>
+    </>
   );
 }
 

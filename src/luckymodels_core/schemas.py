@@ -120,6 +120,10 @@ class DeploymentRecord(BaseModel):
     runtime: str
     node_name: str
     gpu_ids: list[int] = Field(default_factory=list)
+    profile_runtime: str | None = None
+    device: str | None = None
+    execution: dict[str, Any] = Field(default_factory=dict)
+    health: dict[str, Any] | None = None
     status: str = "planned"
     service_url: str | None = None
     manifest_path: str | None = None

@@ -16,6 +16,28 @@ export async function loadDashboardData() {
     fetchJSON("/api/v1/demo/casrel/report"),
   ]);
 
+  const deploymentEntries = await Promise.all(
+    deployments.map(async (deployment) => {
+      if (!deployment.service_url || !["running", "starting"].includes(deployment.status)) {
+        return deployment;
+      }
+      try {
+        const health = await getDeploymentHealth(deployment.deployment_id);
+        return { ...deployment, health };
+      } catch (error) {
+        return {
+          ...deployment,
+          health: {
+            deployment_id: deployment.deployment_id,
+            reachable: false,
+            pid_alive: false,
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+    }),
+  );
+
   const modelDetailsEntries = await Promise.all(
     models.map(async (model) => {
       const detail = await fetchJSON(`/api/v1/models/${encodeURIComponent(model.model_id)}`);
@@ -26,7 +48,7 @@ export async function loadDashboardData() {
   return {
     summary,
     models,
-    deployments,
+    deployments: deploymentEntries,
     benchmarks,
     report,
     modelDetails: Object.fromEntries(modelDetailsEntries),

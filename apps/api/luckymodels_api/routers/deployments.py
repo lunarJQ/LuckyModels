@@ -12,6 +12,7 @@ from luckymodels_core.launcher import (
     tail_log,
     wait_for_runtime,
 )
+from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import DeploymentCreateRequest, DeploymentRecord
 from luckymodels_core.settings import get_settings
 
@@ -29,7 +30,7 @@ class DeploymentPredictRequest(BaseModel):
 
 @router.get("/deployments", response_model=list[DeploymentRecord])
 def list_deployments() -> list[DeploymentRecord]:
-    return get_deployment_store().list()
+    return [_hydrate_deployment_runtime_snapshot(item) for item in get_deployment_store().list()]
 
 
 @router.post("/deployments", response_model=DeploymentRecord)
@@ -63,6 +64,7 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     deployment.service_url = deployment.service_url or f"http://127.0.0.1:{store._allocate_port()}"
     settings = get_settings()
     deployment.log_path = str(settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
+    deployment = _hydrate_deployment_runtime_snapshot(deployment)
 
     if request.launch_runtime:
         port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
@@ -95,7 +97,7 @@ def check_deployment_health(deployment_id: str) -> dict[str, object]:
         }
     try:
         with urlopen(deployment.service_url + "/healthz", timeout=2) as response:  # noqa: S310
-            payload = response.read().decode("utf-8")
+            payload = json.loads(response.read().decode("utf-8"))
         return {
             "deployment_id": deployment_id,
             "reachable": True,
@@ -184,6 +186,7 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         port=port,
         log_path=deployment.log_path,
     )
+    deployment = _hydrate_deployment_runtime_snapshot(deployment)
     deployment.pid = pid
     deployment.service_url = service_url
     deployment.status = "running" if wait_for_runtime(service_url) else "starting"
@@ -210,5 +213,24 @@ def _get_deployment_or_404(deployment_id: str) -> DeploymentRecord:
     store = get_deployment_store()
     for deployment in store.list():
         if deployment.deployment_id == deployment_id:
-            return deployment
+            return _hydrate_deployment_runtime_snapshot(deployment)
     raise HTTPException(status_code=404, detail=f"Deployment not found: {deployment_id}")
+
+
+def _hydrate_deployment_runtime_snapshot(deployment: DeploymentRecord) -> DeploymentRecord:
+    if not deployment.profile_path:
+        return deployment
+
+    profile_file = Path(deployment.profile_path)
+    if not profile_file.exists():
+        return deployment
+
+    try:
+        profile = load_profile(profile_file)
+    except Exception:  # noqa: BLE001
+        return deployment
+
+    deployment.profile_runtime = profile.runtime
+    deployment.device = profile.device
+    deployment.execution = profile.execution
+    return deployment
