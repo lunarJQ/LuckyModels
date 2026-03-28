@@ -8,6 +8,7 @@ import numpy as np
 from .base import BaseAdapter
 from .bert_utils import (
     decode_bio_spans,
+    create_inference_session,
     infer_do_lower_case,
     load_vocab,
     load_relation_maps,
@@ -41,13 +42,15 @@ class PRGCAdapter(BaseAdapter):
         )
         self.vocab = load_vocab(self.manifest.resolved_tokenizer["vocab_path"])
         self.providers = provider_list(self.profile.device)
-        self.stage1_session = ort.InferenceSession(
+        self.stage1_session = create_inference_session(
             self.manifest.resolved_artifacts["stage1_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
-        self.stage2_session = ort.InferenceSession(
+        self.stage2_session = create_inference_session(
             self.manifest.resolved_artifacts["stage2_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -60,6 +63,7 @@ class PRGCAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "predict_ready": True,
         }
 

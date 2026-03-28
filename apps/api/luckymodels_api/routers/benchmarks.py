@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from luckymodels_core.benchmark_runner import run_benchmark
+from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import BenchmarkCreateRequest, BenchmarkRecord
 
 from ..dependencies import get_benchmark_store, get_deployment_store
@@ -39,7 +40,11 @@ def create_benchmark(request: BenchmarkCreateRequest) -> BenchmarkRecord:
         profile_name=deployment.profile_name,
         service_url=deployment.service_url,
     )
-    finished = run_benchmark(request, record)
+    batch_size = 1
+    if deployment.profile_path:
+        profile = load_profile(deployment.profile_path)
+        batch_size = max(1, int(profile.execution.get("batch_size", 1) or 1))
+    finished = run_benchmark(request, record, batch_size=batch_size)
     return store.update(finished)
 
 

@@ -11,7 +11,8 @@ from luckymodels_core.manifest import load_manifest, load_profile
 
 
 class PredictRequest(BaseModel):
-    text: str
+    text: str | None = None
+    texts: list[str] | None = None
     scene: str | None = None
     options: dict[str, Any] | None = None
 
@@ -63,7 +64,11 @@ def predict(request: PredictRequest) -> dict[str, Any]:
     if startup_error:
         raise HTTPException(status_code=500, detail=startup_error)
     try:
-        return adapter.predict(request.text, request.options)
+        if request.texts:
+            return adapter.predict_many(request.texts, request.options)
+        if request.text:
+            return adapter.predict(request.text, request.options)
+        raise HTTPException(status_code=400, detail="Either text or texts must be provided")
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except Exception as exc:

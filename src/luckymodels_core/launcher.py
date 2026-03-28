@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from urllib.request import urlopen
 
+from .manifest import load_profile
+
 
 def launch_runtime_process(
     root_dir: Path,
@@ -18,6 +20,12 @@ def launch_runtime_process(
     env = os.environ.copy()
     env["LUCKYMODELS_MANIFEST_PATH"] = manifest_path
     env["LUCKYMODELS_PROFILE_PATH"] = profile_path
+    worker_count = 1
+    try:
+        profile = load_profile(profile_path)
+        worker_count = max(1, int(profile.execution.get("instance_count", 1) or 1))
+    except Exception:
+        worker_count = 1
 
     cmd = [
         str(root_dir / ".venv" / "bin" / "python"),
@@ -29,6 +37,8 @@ def launch_runtime_process(
         "--port",
         str(port),
     ]
+    if worker_count > 1:
+        cmd.extend(["--workers", str(worker_count)])
     stdout_target = subprocess.DEVNULL
     stderr_target = subprocess.DEVNULL
     log_handle = None
@@ -38,7 +48,8 @@ def launch_runtime_process(
         log_handle = log_file.open("a", encoding="utf-8")
         log_handle.write(
             f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] launching runtime "
-            f"for {Path(manifest_path).parent.name} on 127.0.0.1:{port}\n"
+            f"for {Path(manifest_path).parent.name} on 127.0.0.1:{port} "
+            f"with workers={worker_count}\n"
         )
         log_handle.flush()
         stdout_target = log_handle

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from .base import BaseAdapter
+from .bert_utils import create_inference_session, provider_list
 
 
 class CasRelAdapter(BaseAdapter):
@@ -74,19 +75,16 @@ class CasRelAdapter(BaseAdapter):
             self.sessions_loaded = False
             return
 
-        available = ort.get_available_providers()
-        if self.profile.device.lower().startswith("cuda") and "CUDAExecutionProvider" in available:
-            self.providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            self.providers = ["CPUExecutionProvider"]
-
-        self.subject_session = ort.InferenceSession(
+        self.providers = provider_list(self.profile.device)
+        self.subject_session = create_inference_session(
             self.manifest.resolved_artifacts["subject_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
-        self.object_session = ort.InferenceSession(
+        self.object_session = create_inference_session(
             self.manifest.resolved_artifacts["object_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -99,6 +97,7 @@ class CasRelAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "package_warnings": self.package_warnings,
         }
 

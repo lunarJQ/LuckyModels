@@ -21,7 +21,8 @@ router = APIRouter(tags=["deployments"])
 
 
 class DeploymentPredictRequest(BaseModel):
-    text: str
+    text: str | None = None
+    texts: list[str] | None = None
     scene: str | None = None
     options: dict[str, object] | None = None
 

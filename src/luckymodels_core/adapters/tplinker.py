@@ -8,6 +8,7 @@ import numpy as np
 from .base import BaseAdapter
 from .bert_utils import (
     build_handshaking_index,
+    create_inference_session,
     load_bert_tokenizer,
     load_relation_maps,
     provider_list,
@@ -42,9 +43,10 @@ class TPLinkerAdapter(BaseAdapter):
             self.manifest.manifest.backbone,
         )
         self.providers = provider_list(self.profile.device)
-        self.session = ort.InferenceSession(
+        self.session = create_inference_session(
             self.manifest.resolved_artifacts["model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -57,6 +59,7 @@ class TPLinkerAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "predict_ready": True,
         }
 

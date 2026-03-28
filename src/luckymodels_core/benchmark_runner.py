@@ -12,17 +12,22 @@ from .schemas import BenchmarkCreateRequest, BenchmarkRecord
 def run_benchmark(
     request: BenchmarkCreateRequest,
     record: BenchmarkRecord,
+    *,
+    batch_size: int = 1,
 ) -> BenchmarkRecord:
     latencies_ms: list[float] = []
     remote_latencies_ms: list[float] = []
     errors: list[str] = []
     last_response: dict[str, Any] | None = None
 
+    effective_batch_size = max(1, int(batch_size))
+    batch_texts = [request.text] * effective_batch_size
+
     for _ in range(max(0, request.warmup_runs)):
         try:
             _post_predict(
                 record.service_url,
-                text=request.text,
+                texts=batch_texts,
                 options=request.options,
                 timeout_seconds=request.timeout_seconds,
             )
@@ -35,7 +40,7 @@ def run_benchmark(
         try:
             response = _post_predict(
                 record.service_url,
-                text=request.text,
+                texts=batch_texts,
                 options=request.options,
                 timeout_seconds=request.timeout_seconds,
             )
@@ -49,12 +54,12 @@ def run_benchmark(
             errors.append(str(exc))
 
     total_elapsed = perf_counter() - bench_started
-    record.total_requests = request.iterations
-    record.success_count = len(latencies_ms)
+    record.total_requests = request.iterations * effective_batch_size
+    record.success_count = len(latencies_ms) * effective_batch_size
     record.failure_count = len(errors)
     record.avg_latency_ms = _average(latencies_ms)
     record.p95_latency_ms = _percentile(latencies_ms, 95)
-    record.throughput_qps = round((len(latencies_ms) / total_elapsed), 3) if total_elapsed > 0 else None
+    record.throughput_qps = round((record.success_count / total_elapsed), 3) if total_elapsed > 0 else None
     record.remote_avg_latency_ms = _average(remote_latencies_ms)
     record.sample_response = last_response
     record.errors = errors[:20]
@@ -70,13 +75,13 @@ def run_benchmark(
 def _post_predict(
     service_url: str,
     *,
-    text: str,
+    texts: list[str],
     options: dict[str, Any],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     payload = json.dumps(
         {
-            "text": text,
+            "texts": texts,
             "options": options,
         },
         ensure_ascii=False,

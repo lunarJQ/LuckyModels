@@ -201,6 +201,29 @@ def provider_list(profile_device: str) -> list[str]:
     return ["CPUExecutionProvider"]
 
 
+def build_session_options(profile: Any):
+    import onnxruntime as ort  # type: ignore
+
+    session_options = ort.SessionOptions()
+    intra_threads = int(profile.execution.get("intra_op_threads", 0) or 0)
+    inter_threads = int(profile.execution.get("inter_op_threads", 0) or 0)
+    if intra_threads > 0:
+        session_options.intra_op_num_threads = intra_threads
+    if inter_threads > 0:
+        session_options.inter_op_num_threads = inter_threads
+    return session_options
+
+
+def create_inference_session(model_path: str, providers: list[str], profile: Any):
+    import onnxruntime as ort  # type: ignore
+
+    return ort.InferenceSession(
+        model_path,
+        sess_options=build_session_options(profile),
+        providers=providers,
+    )
+
+
 def load_vocab(vocab_path: str) -> dict[str, int]:
     vocab: dict[str, int] = {}
     with Path(vocab_path).open("r", encoding="utf-8") as handle:

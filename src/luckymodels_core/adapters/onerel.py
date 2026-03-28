@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from .base import BaseAdapter
-from .bert_utils import load_relation_maps, provider_list, softmax
+from .bert_utils import create_inference_session, load_relation_maps, provider_list, softmax
 
 
 class OneRelAdapter(BaseAdapter):
@@ -52,9 +52,10 @@ class OneRelAdapter(BaseAdapter):
                 self.id2token[index] = clean
 
         self.providers = provider_list(self.profile.device)
-        self.session = ort.InferenceSession(
+        self.session = create_inference_session(
             self.manifest.resolved_artifacts["model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -67,6 +68,7 @@ class OneRelAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "predict_ready": True,
         }
 

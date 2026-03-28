@@ -7,6 +7,7 @@ import numpy as np
 
 from .base import BaseAdapter
 from .bert_utils import (
+    create_inference_session,
     load_json,
     load_vocab,
     provider_list,
@@ -39,13 +40,15 @@ class SpERTAdapter(BaseAdapter):
         self.relation_labels = list(relation_types.keys())
         self.vocab = load_vocab(self.manifest.resolved_tokenizer["vocab_path"])
         self.providers = provider_list(self.profile.device)
-        self.entity_session = ort.InferenceSession(
+        self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_encoder"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
-        self.relation_session = ort.InferenceSession(
+        self.relation_session = create_inference_session(
             self.manifest.resolved_artifacts["relation_head"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -58,6 +61,7 @@ class SpERTAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "predict_ready": True,
         }
 

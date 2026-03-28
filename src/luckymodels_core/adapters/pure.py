@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .base import BaseAdapter
 from .bert_utils import (
+    create_inference_session,
     load_json,
     load_vocab,
     provider_list,
@@ -45,13 +46,15 @@ class PUREAdapter(BaseAdapter):
         self.relation_labels = load_json(self.manifest.resolved_labels.get("relation_map")) or []
         self.special_tokens = load_json(str(relation_config_path / "special_tokens.json")) or {}
         self.providers = provider_list(self.profile.device)
-        self.entity_session = ort.InferenceSession(
+        self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
-        self.relation_session = ort.InferenceSession(
+        self.relation_session = create_inference_session(
             self.manifest.resolved_artifacts["relation_model"],
-            providers=self.providers,
+            self.providers,
+            self.profile,
         )
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -64,6 +67,7 @@ class PUREAdapter(BaseAdapter):
             "sessions_loaded": self.sessions_loaded,
             "session_backend": self.session_backend,
             "providers": self.providers,
+            "execution": self.profile.execution,
             "predict_ready": True,
         }
 
