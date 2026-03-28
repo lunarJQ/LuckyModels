@@ -742,6 +742,139 @@ tbody tr:hover {
   padding: 16px;
 }
 
+.paper-summary-grid,
+.paper-chart-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.paper-summary-grid {
+  grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr));
+}
+
+.paper-chart-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.paper-hero-card,
+.paper-chart-card,
+.paper-table-shell {
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.98), rgba(250, 245, 236, 0.96));
+  box-shadow: var(--shadow);
+}
+
+.paper-hero-card {
+  padding: 20px;
+}
+
+.paper-hero-kicker {
+  display: inline-flex;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(195, 117, 28, 0.1);
+  color: #b3670f;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.paper-hero-card h3,
+.paper-chart-title {
+  margin: 12px 0 8px;
+}
+
+.paper-hero-card p,
+.paper-chart-note,
+.paper-caption {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.paper-chart-card {
+  padding: 18px;
+}
+
+.paper-bar-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.paper-bar-row {
+  display: grid;
+  gap: 8px;
+}
+
+.paper-bar-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: #4c5a66;
+}
+
+.paper-bar-label strong {
+  color: #243342;
+}
+
+.paper-bar-track {
+  position: relative;
+  overflow: hidden;
+  min-height: 40px;
+  border-radius: 14px;
+  border: 1px solid rgba(210, 198, 178, 0.75);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.paper-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 6%;
+  border-radius: 13px;
+}
+
+.paper-bar-latency {
+  background: linear-gradient(90deg, #d77c2a, #f3b15f);
+}
+
+.paper-bar-throughput {
+  background: linear-gradient(90deg, #2061b8, #63a4ff);
+}
+
+.paper-bar-success {
+  background: linear-gradient(90deg, #1f8a5c, #60c38f);
+}
+
+.paper-bar-value {
+  position: absolute;
+  inset: 0 14px 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  color: #233142;
+  font-weight: 700;
+}
+
+.paper-table-shell {
+  margin-top: 14px;
+  overflow: hidden;
+}
+
+.paper-table th {
+  background: rgba(245, 238, 226, 0.95);
+}
+
+.paper-caption {
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--line);
+}
+
 .warn-list {
   gap: 8px;
   margin-top: 12px;
@@ -863,6 +996,8 @@ tbody tr:hover {
   .summary-strip,
   .detail-grid,
   .metrics,
+  .paper-summary-grid,
+  .paper-chart-grid,
   .relation-grid,
   .asset-grid,
   .resource-grid,

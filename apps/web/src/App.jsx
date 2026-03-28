@@ -147,6 +147,59 @@ function formatProviderSummary(deployment) {
   return providers.length ? providers.join(", ") : "pending";
 }
 
+function formatFixed(value, digits = 3) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toFixed(digits);
+}
+
+function meanBy(items, selector) {
+  const values = items
+    .map((item) => selector(item))
+    .filter((value) => value !== null && value !== undefined && Number.isFinite(Number(value)))
+    .map((value) => Number(value));
+  if (!values.length) {
+    return null;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function csvEscape(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function downloadCsvFile(filename, rows) {
+  if (!rows.length) {
+    return;
+  }
+  const headers = Object.keys(rows[0]);
+  const lines = [
+    headers.map(csvEscape).join(","),
+    ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
+  ];
+  const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
 function buildInitialBenchmarkForm(deployments) {
   const running = deployments.find((item) => item.status === "running") || deployments[0];
   return {
@@ -1281,7 +1334,39 @@ function BenchmarksPage({
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [scopeFilter, setScopeFilter] = useState("recent");
+  const [compareModelId, setCompareModelId] = useState("all");
+  const [paperModelDraftId, setPaperModelDraftId] = useState("all");
+  const [paperModelId, setPaperModelId] = useState("all");
   const deferredSearch = useDeferredValue(search);
+
+  const completedBenchmarks = useMemo(
+    () => sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed"),
+    [derived.benchmarks],
+  );
+
+  const compareModelOptions = useMemo(() => {
+    return Array.from(new Set(completedBenchmarks.map((item) => item.model_id))).sort((left, right) =>
+      left.localeCompare(right),
+    );
+  }, [completedBenchmarks]);
+
+  useEffect(() => {
+    if (!compareModelOptions.length) {
+      setCompareModelId("all");
+      setPaperModelDraftId("all");
+      setPaperModelId("all");
+      return;
+    }
+    if (compareModelId !== "all" && !compareModelOptions.includes(compareModelId)) {
+      setCompareModelId(compareModelOptions[0]);
+    }
+    if (paperModelDraftId !== "all" && !compareModelOptions.includes(paperModelDraftId)) {
+      setPaperModelDraftId(compareModelOptions[0]);
+    }
+    if (paperModelId !== "all" && !compareModelOptions.includes(paperModelId)) {
+      setPaperModelId(compareModelOptions[0]);
+    }
+  }, [compareModelId, compareModelOptions, paperModelDraftId, paperModelId]);
 
   const filteredBenchmarks = useMemo(() => {
     let next = sortByCreatedDesc(derived.benchmarks).filter((item) =>
@@ -1305,6 +1390,203 @@ function BenchmarksPage({
 
     return next;
   }, [deferredSearch, derived.benchmarks, scopeFilter, statusFilter]);
+
+  const compareRows = useMemo(() => {
+    const deploymentMap = new Map(derived.deployments.map((item) => [item.deployment_id, item]));
+    const scoped = completedBenchmarks.filter((item) => compareModelId === "all" || item.model_id === compareModelId);
+    const grouped = new Map();
+    scoped.forEach((item) => {
+      const key = `${item.model_id}::${item.profile_name}`;
+      const current = grouped.get(key) || {
+        model_id: item.model_id,
+        profile_name: item.profile_name,
+        items: [],
+      };
+      current.items.push(item);
+      grouped.set(key, current);
+    });
+
+    return Array.from(grouped.values())
+      .map(({ model_id, profile_name, items }) => {
+        const totalRequests = items.reduce((sum, item) => sum + Number(item.total_requests || 0), 0);
+        const successCount = items.reduce((sum, item) => sum + Number(item.success_count || 0), 0);
+        const latest = sortByCreatedDesc(items)[0];
+        const latestDeployment = deploymentMap.get(latest?.deployment_id);
+        const execution = latestDeployment ? getDeploymentExecution(latestDeployment) : {};
+        const providers = latestDeployment ? getDeploymentProviders(latestDeployment) : [];
+        return {
+          model_id,
+          profile_name,
+          run_count: items.length,
+          avg_latency_ms: meanBy(items, (item) => item.avg_latency_ms),
+          p95_latency_ms: meanBy(items, (item) => item.p95_latency_ms),
+          throughput_qps: meanBy(items, (item) => item.throughput_qps),
+          remote_avg_latency_ms: meanBy(items, (item) => item.remote_avg_latency_ms),
+          success_rate: totalRequests ? successCount / totalRequests : null,
+          avg_batch_size: meanBy(items, (item) => item.sample_response?.batch_size ?? 1),
+          instance_count: execution.instance_count ?? null,
+          intra_op_threads: execution.intra_op_threads ?? null,
+          inter_op_threads: execution.inter_op_threads ?? null,
+          max_length: execution.max_length ?? null,
+          device: latestDeployment?.device || null,
+          providers: providers.join(" / "),
+          latest_benchmark_id: latest?.benchmark_id || "-",
+          latest_created_at: latest?.created_at || "-",
+        };
+      })
+      .sort((left, right) => {
+        if (left.model_id !== right.model_id) {
+          return left.model_id.localeCompare(right.model_id);
+        }
+        return left.profile_name.localeCompare(right.profile_name);
+      });
+  }, [compareModelId, completedBenchmarks, derived.deployments]);
+
+  const bestLatencyRow = useMemo(() => {
+    return [...compareRows]
+      .filter((item) => item.avg_latency_ms !== null)
+      .sort((left, right) => Number(left.avg_latency_ms) - Number(right.avg_latency_ms))[0] || null;
+  }, [compareRows]);
+
+  const bestThroughputRow = useMemo(() => {
+    return [...compareRows]
+      .filter((item) => item.throughput_qps !== null)
+      .sort((left, right) => Number(right.throughput_qps) - Number(left.throughput_qps))[0] || null;
+  }, [compareRows]);
+
+  const thesisRows = useMemo(() => {
+    const scoped = compareRows.filter((item) => paperModelId === "all" || item.model_id === paperModelId);
+    return scoped.sort((left, right) => {
+      if (left.model_id !== right.model_id) {
+        return left.model_id.localeCompare(right.model_id);
+      }
+      return left.profile_name.localeCompare(right.profile_name);
+    });
+  }, [compareRows, paperModelId]);
+
+  const selectedPaperModelRows = useMemo(() => {
+    if (paperModelId === "all") {
+      return [];
+    }
+    return thesisRows.filter((item) => item.model_id === paperModelId);
+  }, [paperModelId, thesisRows]);
+
+  const selectedPaperModelSummary = useMemo(() => {
+    if (!selectedPaperModelRows.length) {
+      return { bestLatency: null, bestThroughput: null, bestSuccess: null };
+    }
+    return {
+      bestLatency:
+        [...selectedPaperModelRows]
+          .filter((item) => item.avg_latency_ms !== null)
+          .sort((left, right) => Number(left.avg_latency_ms) - Number(right.avg_latency_ms))[0] || null,
+      bestThroughput:
+        [...selectedPaperModelRows]
+          .filter((item) => item.throughput_qps !== null)
+          .sort((left, right) => Number(right.throughput_qps) - Number(left.throughput_qps))[0] || null,
+      bestSuccess:
+        [...selectedPaperModelRows]
+          .filter((item) => item.success_rate !== null)
+          .sort((left, right) => Number(right.success_rate) - Number(left.success_rate))[0] || null,
+    };
+  }, [selectedPaperModelRows]);
+
+  const chartMaxima = useMemo(() => {
+    return {
+      latency: Math.max(...selectedPaperModelRows.map((item) => Number(item.avg_latency_ms || 0)), 1),
+      throughput: Math.max(...selectedPaperModelRows.map((item) => Number(item.throughput_qps || 0)), 1),
+      success: Math.max(...selectedPaperModelRows.map((item) => Number(item.success_rate || 0)), 1),
+    };
+  }, [selectedPaperModelRows]);
+
+  function handleExportFilteredBenchmarks() {
+    if (!filteredBenchmarks.length) {
+      return;
+    }
+    downloadCsvFile(
+      "luckymodels-benchmarks.csv",
+      filteredBenchmarks.map((item) => ({
+        benchmark_id: item.benchmark_id,
+        label: item.label || "",
+        model_id: item.model_id,
+        profile_name: item.profile_name,
+        deployment_id: item.deployment_id,
+        status: item.status,
+        iterations: item.iterations,
+        warmup_runs: item.warmup_runs,
+        total_requests: item.total_requests,
+        success_count: item.success_count,
+        failure_count: item.failure_count,
+        avg_latency_ms: item.avg_latency_ms ?? "",
+        p95_latency_ms: item.p95_latency_ms ?? "",
+        throughput_qps: item.throughput_qps ?? "",
+        remote_avg_latency_ms: item.remote_avg_latency_ms ?? "",
+        batch_size: item.sample_response?.batch_size ?? "",
+        item_count: item.sample_response?.item_count ?? "",
+        total_triple_count: item.sample_response?.total_triple_count ?? "",
+        created_at: item.created_at,
+        service_url: item.service_url,
+      })),
+    );
+  }
+
+  function handleExportCompareRows() {
+    if (!compareRows.length) {
+      return;
+    }
+    downloadCsvFile(
+      "luckymodels-benchmark-profile-compare.csv",
+      compareRows.map((item) => ({
+        model_id: item.model_id,
+        profile_name: item.profile_name,
+        run_count: item.run_count,
+        avg_latency_ms: item.avg_latency_ms?.toFixed(3) ?? "",
+        p95_latency_ms: item.p95_latency_ms?.toFixed(3) ?? "",
+        throughput_qps: item.throughput_qps?.toFixed(3) ?? "",
+        remote_avg_latency_ms: item.remote_avg_latency_ms?.toFixed(3) ?? "",
+        success_rate: item.success_rate ?? "",
+        avg_batch_size: item.avg_batch_size?.toFixed(2) ?? "",
+        latest_benchmark_id: item.latest_benchmark_id,
+        latest_created_at: item.latest_created_at,
+      })),
+    );
+  }
+
+  function handleExportPaperRows() {
+    if (!thesisRows.length) {
+      return;
+    }
+    downloadCsvFile(
+      "luckymodels-paper-table.csv",
+      thesisRows.map((item) => ({
+        model_id: item.model_id,
+        profile_name: item.profile_name,
+        device: item.device || "",
+        providers: item.providers || "",
+        batch_size: item.avg_batch_size?.toFixed(2) ?? "",
+        instance_count: item.instance_count ?? "",
+        intra_op_threads: item.intra_op_threads ?? "",
+        inter_op_threads: item.inter_op_threads ?? "",
+        max_length: item.max_length ?? "",
+        avg_latency_ms: item.avg_latency_ms?.toFixed(3) ?? "",
+        p95_latency_ms: item.p95_latency_ms?.toFixed(3) ?? "",
+        throughput_qps: item.throughput_qps?.toFixed(3) ?? "",
+        remote_avg_latency_ms: item.remote_avg_latency_ms?.toFixed(3) ?? "",
+        success_rate: item.success_rate?.toFixed(4) ?? "",
+        run_count: item.run_count,
+        latest_benchmark_id: item.latest_benchmark_id,
+        latest_created_at: item.latest_created_at,
+      })),
+    );
+  }
+
+  function handleGeneratePaperView() {
+    const nextModelId = paperModelDraftId || "all";
+    setPaperModelId(nextModelId);
+    if (nextModelId !== "all") {
+      setCompareModelId(nextModelId);
+    }
+  }
 
   return (
     <>
@@ -1406,16 +1688,21 @@ function BenchmarksPage({
             <div className="filter-meta">
               当前显示 {filteredBenchmarks.length} / {derived.benchmarks.length} 条 benchmark 记录
             </div>
-            <button
-              onClick={() => {
-                setSearch("");
-                setStatusFilter("all");
-                setScopeFilter("recent");
-              }}
-              type="button"
-            >
-              恢复默认视图
-            </button>
+            <div className="actions">
+              <button disabled={!filteredBenchmarks.length} onClick={handleExportFilteredBenchmarks} type="button">
+                导出当前 CSV
+              </button>
+              <button
+                onClick={() => {
+                  setSearch("");
+                  setStatusFilter("all");
+                  setScopeFilter("recent");
+                }}
+                type="button"
+              >
+                恢复默认视图
+              </button>
+            </div>
           </div>
         </div>
         <div className="table-wrap">
@@ -1465,6 +1752,319 @@ function BenchmarksPage({
             />
           )}
         </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Paper Snapshot"
+          title="论文截图视图"
+          note="选择单个模型后，一键生成更适合论文截图的 profile 对比条形图和结论卡片。导出文件仍会下载到你本地浏览器默认下载目录。"
+          right={
+            <div className="actions">
+              <button className="btn-primary" disabled={!compareModelOptions.length} onClick={handleGeneratePaperView} type="button">
+                生成论文视图
+              </button>
+            </div>
+          }
+        />
+        <div className="filter-panel compare-panel">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>论文模型</span>
+              <select onChange={(event) => setPaperModelDraftId(event.target.value)} value={paperModelDraftId}>
+                <option value="all">全部模型</option>
+                {compareModelOptions.map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {modelId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前展示对象：{paperModelId === "all" ? "全部模型聚合结果" : paperModelId}
+            </div>
+          </div>
+        </div>
+
+        {paperModelId !== "all" && selectedPaperModelRows.length ? (
+          <>
+            <div className="paper-summary-grid">
+              <article className="paper-hero-card">
+                <div className="paper-hero-kicker">Paper Ready</div>
+                <h3>{paperModelId}</h3>
+                <p>
+                  当前页面已经按 profile 聚合了该模型的已完成 benchmark，可直接用于论文截图、性能趋势说明和实验对比表整理。
+                </p>
+                <div className="tag-list">
+                  <span className="tag">profiles: {selectedPaperModelRows.length}</span>
+                  <span className="tag">runs: {selectedPaperModelRows.reduce((sum, item) => sum + item.run_count, 0)}</span>
+                  <span className="tag">provider: {selectedPaperModelRows[0]?.providers || "pending"}</span>
+                </div>
+              </article>
+              <MetricCard
+                title="最低平均延迟"
+                value={selectedPaperModelSummary.bestLatency ? formatFixed(selectedPaperModelSummary.bestLatency.avg_latency_ms) : "-"}
+                note={selectedPaperModelSummary.bestLatency ? selectedPaperModelSummary.bestLatency.profile_name : "暂无"}
+              />
+              <MetricCard
+                title="最高吞吐量"
+                value={selectedPaperModelSummary.bestThroughput ? formatFixed(selectedPaperModelSummary.bestThroughput.throughput_qps) : "-"}
+                note={selectedPaperModelSummary.bestThroughput ? selectedPaperModelSummary.bestThroughput.profile_name : "暂无"}
+              />
+              <MetricCard
+                title="最高成功率"
+                value={selectedPaperModelSummary.bestSuccess ? formatPercent(selectedPaperModelSummary.bestSuccess.success_rate) : "-"}
+                note={selectedPaperModelSummary.bestSuccess ? selectedPaperModelSummary.bestSuccess.profile_name : "暂无"}
+              />
+            </div>
+
+            <div className="paper-chart-grid">
+              <article className="paper-chart-card">
+                <div className="paper-chart-title">平均延迟对比</div>
+                <div className="paper-chart-note">单位 ms，越低越好</div>
+                <div className="paper-bar-list">
+                  {selectedPaperModelRows.map((item) => (
+                    <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-latency`}>
+                      <div className="paper-bar-label">
+                        <strong>{item.profile_name}</strong>
+                        <span>batch {formatFixed(item.avg_batch_size, 2)} / workers {item.instance_count ?? "-"}</span>
+                      </div>
+                      <div className="paper-bar-track">
+                        <div
+                          className="paper-bar-fill paper-bar-latency"
+                          style={{ width: `${Math.max((Number(item.avg_latency_ms || 0) / chartMaxima.latency) * 100, 6)}%` }}
+                        />
+                        <span className="paper-bar-value">{formatFixed(item.avg_latency_ms)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+
+              <article className="paper-chart-card">
+                <div className="paper-chart-title">吞吐量对比</div>
+                <div className="paper-chart-note">单位 qps，越高越好</div>
+                <div className="paper-bar-list">
+                  {selectedPaperModelRows.map((item) => (
+                    <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-throughput`}>
+                      <div className="paper-bar-label">
+                        <strong>{item.profile_name}</strong>
+                        <span>intra {item.intra_op_threads ?? "-"} / inter {item.inter_op_threads ?? "-"}</span>
+                      </div>
+                      <div className="paper-bar-track">
+                        <div
+                          className="paper-bar-fill paper-bar-throughput"
+                          style={{ width: `${Math.max((Number(item.throughput_qps || 0) / chartMaxima.throughput) * 100, 6)}%` }}
+                        />
+                        <span className="paper-bar-value">{formatFixed(item.throughput_qps)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+
+              <article className="paper-chart-card">
+                <div className="paper-chart-title">成功率对比</div>
+                <div className="paper-chart-note">按 total_requests 统计</div>
+                <div className="paper-bar-list">
+                  {selectedPaperModelRows.map((item) => (
+                    <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-success`}>
+                      <div className="paper-bar-label">
+                        <strong>{item.profile_name}</strong>
+                        <span>max_len {item.max_length ?? "-"} / device {item.device || "-"}</span>
+                      </div>
+                      <div className="paper-bar-track">
+                        <div
+                          className="paper-bar-fill paper-bar-success"
+                          style={{ width: `${Math.max((Number(item.success_rate || 0) / chartMaxima.success) * 100, 6)}%` }}
+                        />
+                        <span className="paper-bar-value">{formatPercent(item.success_rate)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="S"
+            title="先生成一个单模型论文视图"
+            note="选择某个模型后点击“生成论文视图”，这里就会出现更适合截图的 profile 图表。"
+          />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Profile Compare"
+          title="Profile 对比视图"
+          note="按模型聚合已完成 benchmark，直接比较不同 profile 的平均延迟、P95、吞吐和成功率。CSV 导出会由浏览器下载到你本地电脑。"
+          right={
+            <div className="actions">
+              <button disabled={!compareRows.length} onClick={handleExportCompareRows} type="button">
+                导出对比 CSV
+              </button>
+            </div>
+          }
+        />
+        <div className="filter-panel compare-panel">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>比较模型</span>
+              <select onChange={(event) => setCompareModelId(event.target.value)} value={compareModelId}>
+                <option value="all">全部模型</option>
+                {compareModelOptions.map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {modelId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前聚合 {compareRows.length} 个 model/profile 组合，基于 {completedBenchmarks.length} 条已完成 benchmark。
+            </div>
+          </div>
+        </div>
+
+        {compareRows.length ? (
+          <>
+            <div className="metrics">
+              <MetricCard
+                title="最低平均延迟"
+                value={bestLatencyRow ? Number(bestLatencyRow.avg_latency_ms).toFixed(3) : "-"}
+                note={bestLatencyRow ? `${bestLatencyRow.model_id} · ${bestLatencyRow.profile_name}` : "暂无"}
+              />
+              <MetricCard
+                title="最高吞吐量"
+                value={bestThroughputRow ? Number(bestThroughputRow.throughput_qps).toFixed(3) : "-"}
+                note={bestThroughputRow ? `${bestThroughputRow.model_id} · ${bestThroughputRow.profile_name}` : "暂无"}
+              />
+              <MetricCard
+                title="对比组合数"
+                value={compareRows.length}
+                note={compareModelId === "all" ? "全部模型" : compareModelId}
+              />
+              <MetricCard
+                title="已完成记录"
+                value={completedBenchmarks.length}
+                note="仅 completed benchmark 纳入聚合"
+              />
+            </div>
+            <div className="table-wrap compare-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>Profile</th>
+                    <th>样本数</th>
+                    <th>平均延迟</th>
+                    <th>P95</th>
+                    <th>吞吐量</th>
+                    <th>成功率</th>
+                    <th>平均 Batch</th>
+                    <th>最新记录</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {compareRows.map((item) => (
+                    <tr key={`${item.model_id}-${item.profile_name}`}>
+                      <td>{item.model_id}</td>
+                      <td>{item.profile_name}</td>
+                      <td>{item.run_count}</td>
+                      <td>{item.avg_latency_ms !== null ? item.avg_latency_ms.toFixed(3) : "-"}</td>
+                      <td>{item.p95_latency_ms !== null ? item.p95_latency_ms.toFixed(3) : "-"}</td>
+                      <td>{item.throughput_qps !== null ? item.throughput_qps.toFixed(3) : "-"}</td>
+                      <td>{formatPercent(item.success_rate)}</td>
+                      <td>{item.avg_batch_size !== null ? item.avg_batch_size.toFixed(2) : "-"}</td>
+                      <td>
+                        <strong>{item.latest_benchmark_id}</strong>
+                        <div className="table-note">{item.latest_created_at}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="P"
+            title="暂无可对比的 benchmark"
+            note="先运行至少一条 completed benchmark，Profile 对比视图才会出现聚合结果。"
+          />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Paper Table"
+          title="论文表格视图"
+          note="这一块按模型聚合生成更规整的实验表，适合直接截图或抄到论文正文。"
+          right={
+            <div className="actions">
+              <button disabled={!thesisRows.length} onClick={handleExportPaperRows} type="button">
+                导出论文表 CSV
+              </button>
+            </div>
+          }
+        />
+        {thesisRows.length ? (
+          <div className="paper-table-shell">
+            <table className="paper-table">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>Profile</th>
+                  <th>Batch</th>
+                  <th>Workers</th>
+                  <th>Intra</th>
+                  <th>Inter</th>
+                  <th>MaxLen</th>
+                  <th>Avg Latency</th>
+                  <th>P95</th>
+                  <th>Throughput</th>
+                  <th>Success</th>
+                  <th>Runs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {thesisRows.map((item) => (
+                  <tr key={`${item.model_id}-${item.profile_name}-paper`}>
+                    <td>
+                      <strong>{item.model_id}</strong>
+                      <div className="table-note">{item.providers || "-"}</div>
+                    </td>
+                    <td>{item.profile_name}</td>
+                    <td>{formatFixed(item.avg_batch_size, 2)}</td>
+                    <td>{item.instance_count ?? "-"}</td>
+                    <td>{item.intra_op_threads ?? "-"}</td>
+                    <td>{item.inter_op_threads ?? "-"}</td>
+                    <td>{item.max_length ?? "-"}</td>
+                    <td>{formatFixed(item.avg_latency_ms)}</td>
+                    <td>{formatFixed(item.p95_latency_ms)}</td>
+                    <td>{formatFixed(item.throughput_qps)}</td>
+                    <td>{formatPercent(item.success_rate)}</td>
+                    <td>{item.run_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="paper-caption">
+              建议截图方式：选定单模型后先截“论文截图视图”，再截当前“论文表格视图”，两张图就足够支撑一小节 profile 对比实验。
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            icon="T"
+            title="暂无论文表格数据"
+            note="先运行 completed benchmark，或者在上方生成某个模型的论文视图。"
+          />
+        )}
       </section>
     </>
   );
