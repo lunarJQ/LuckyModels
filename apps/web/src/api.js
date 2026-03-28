@@ -36,3 +36,59 @@ export async function loadDashboardData() {
 export async function runCasrelDemo() {
   return fetchJSON("/api/v1/demo/casrel/run", { method: "POST" });
 }
+
+export async function createDeployment(payload) {
+  return fetchJSON("/api/v1/deployments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function stopDeployment(deploymentId) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export async function restartDeployment(deploymentId) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/restart`, {
+    method: "POST",
+  });
+}
+
+export async function deleteDeployment(deploymentId) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function createBenchmark(payload) {
+  return fetchJSON("/api/v1/benchmarks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteBenchmark(benchmarkId) {
+  return fetchJSON(`/api/v1/benchmarks/${encodeURIComponent(benchmarkId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getDeploymentHealth(deploymentId) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/health`);
+}
+
+export async function getDeploymentLogs(deploymentId) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`);
+}
+
+export async function predictWithDeployment(deploymentId, payload) {
+  return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}

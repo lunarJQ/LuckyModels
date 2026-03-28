@@ -36,7 +36,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -231,6 +232,28 @@ a {
 
 .page-shell {
   margin-bottom: 18px;
+}
+
+.banner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.banner-ok {
+  color: #155f42;
+  background: rgba(22, 138, 85, 0.08);
+  border-color: rgba(22, 138, 85, 0.16);
+}
+
+.banner-error {
+  color: #8f2f2f;
+  background: rgba(193, 60, 52, 0.08);
+  border-color: rgba(193, 60, 52, 0.16);
 }
 
 .hero {
@@ -430,6 +453,89 @@ button:disabled {
   border-color: transparent;
   color: white;
   background: linear-gradient(135deg, var(--brand), #4f8ef1 64%, var(--brand-2));
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.stack-field,
+.stack-check {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.stack-field span {
+  color: #4c5a66;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stack-field input,
+.stack-field select,
+.stack-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.stack-field textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.stack-field input:focus,
+.stack-field select:focus,
+.stack-field textarea:focus {
+  border-color: rgba(32, 94, 215, 0.38);
+  box-shadow: 0 0 0 3px rgba(32, 94, 215, 0.12);
+}
+
+.stack-field-wide {
+  grid-column: 1 / -1;
+}
+
+.stack-check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow);
+  color: #314150;
+  font-weight: 700;
+}
+
+.stack-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.inline-actions {
+  margin-top: 14px;
+}
+
+.row-actions {
+  gap: 8px;
+}
+
+.row-actions button,
+.inline-actions button {
+  height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .summary-strip,
@@ -702,6 +808,7 @@ tbody tr:hover {
   .hero,
   .toolbar,
   .filters,
+  .form-grid,
   .summary-strip,
   .detail-grid,
   .metrics,
@@ -714,5 +821,9 @@ tbody tr:hover {
   .sidebar {
     position: relative;
     height: auto;
+  }
+
+  .stack-field-wide {
+    grid-column: auto;
   }
 }

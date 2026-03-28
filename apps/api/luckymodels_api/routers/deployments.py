@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from luckymodels_core.launcher import (
     launch_runtime_process,
@@ -16,6 +18,12 @@ from luckymodels_core.settings import get_settings
 from ..dependencies import get_deployment_store, get_registry
 
 router = APIRouter(tags=["deployments"])
+
+
+class DeploymentPredictRequest(BaseModel):
+    text: str
+    scene: str | None = None
+    options: dict[str, object] | None = None
 
 
 @router.get("/deployments", response_model=list[DeploymentRecord])
@@ -116,6 +124,29 @@ def get_deployment_logs(deployment_id: str, lines: int = 100) -> dict[str, objec
     }
 
 
+@router.post("/deployments/{deployment_id}/predict")
+def predict_with_deployment(
+    deployment_id: str,
+    request: DeploymentPredictRequest,
+) -> dict[str, object]:
+    deployment = _get_deployment_or_404(deployment_id)
+    if not deployment.service_url:
+        raise HTTPException(status_code=400, detail="Deployment is missing a service_url")
+
+    payload = json.dumps(request.model_dump(), ensure_ascii=False).encode("utf-8")
+    runtime_request = Request(
+        deployment.service_url.rstrip("/") + "/predict",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(runtime_request, timeout=90) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.post("/deployments/{deployment_id}/stop", response_model=DeploymentRecord)
 def stop_deployment(deployment_id: str) -> DeploymentRecord:
     store = get_deployment_store()
@@ -156,6 +187,22 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
     deployment.service_url = service_url
     deployment.status = "running" if wait_for_runtime(service_url) else "starting"
     return store.update(deployment)
+
+
+@router.delete("/deployments/{deployment_id}", response_model=DeploymentRecord)
+def delete_deployment(deployment_id: str) -> DeploymentRecord:
+    store = get_deployment_store()
+    deployment = _get_deployment_or_404(deployment_id)
+    if deployment.pid:
+        stop_runtime_process(deployment.pid)
+        deployment.pid = None
+    deployment.status = "deleted"
+    deleted = store.delete(deployment_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail=f"Deployment not found: {deployment_id}")
+    deleted.status = "deleted"
+    deleted.pid = None
+    return deleted
 
 
 def _get_deployment_or_404(deployment_id: str) -> DeploymentRecord:

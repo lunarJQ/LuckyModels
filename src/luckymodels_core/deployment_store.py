@@ -56,6 +56,23 @@ class DeploymentStore:
             json.dump([item.model_dump() for item in updated], handle, ensure_ascii=False, indent=2)
         return deployment
 
+    def delete(self, deployment_id: str) -> DeploymentRecord | None:
+        deployments = self.list()
+        remaining: list[DeploymentRecord] = []
+        deleted: DeploymentRecord | None = None
+        for item in deployments:
+            if item.deployment_id == deployment_id:
+                deleted = item
+            else:
+                remaining.append(item)
+
+        if deleted is None:
+            return None
+
+        with self.deployments_file.open("w", encoding="utf-8") as handle:
+            json.dump([item.model_dump() for item in remaining], handle, ensure_ascii=False, indent=2)
+        return deleted
+
     def _allocate_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))

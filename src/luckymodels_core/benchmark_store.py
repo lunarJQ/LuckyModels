@@ -62,6 +62,22 @@ class BenchmarkStore:
         self._write(updated)
         return record
 
+    def delete(self, benchmark_id: str) -> BenchmarkRecord | None:
+        benchmarks = self.list()
+        remaining: list[BenchmarkRecord] = []
+        deleted: BenchmarkRecord | None = None
+        for item in benchmarks:
+            if item.benchmark_id == benchmark_id:
+                deleted = item
+            else:
+                remaining.append(item)
+
+        if deleted is None:
+            return None
+
+        self._write(remaining)
+        return deleted
+
     def _write(self, benchmarks: list[BenchmarkRecord]) -> None:
         with self.benchmarks_file.open("w", encoding="utf-8") as handle:
             json.dump([item.model_dump() for item in benchmarks], handle, ensure_ascii=False, indent=2)

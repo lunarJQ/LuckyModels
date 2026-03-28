@@ -43,6 +43,15 @@ def create_benchmark(request: BenchmarkCreateRequest) -> BenchmarkRecord:
     return store.update(finished)
 
 
+@router.delete("/benchmarks/{benchmark_id}", response_model=BenchmarkRecord)
+def delete_benchmark(benchmark_id: str) -> BenchmarkRecord:
+    store = get_benchmark_store()
+    deleted = store.delete(benchmark_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail=f"Benchmark not found: {benchmark_id}")
+    return deleted
+
+
 def _get_deployment_or_404(deployment_id: str):
     for deployment in get_deployment_store().list():
         if deployment.deployment_id == deployment_id:
