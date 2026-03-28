@@ -241,6 +241,32 @@ function csvEscape(value) {
   return text;
 }
 
+function buildDownloadFilename(filename) {
+  const text = String(filename || "luckymodels-export").trim();
+  const lastDot = text.lastIndexOf(".");
+  const hasExtension = lastDot > 0 && lastDot < text.length - 1;
+  const baseName = hasExtension ? text.slice(0, lastDot) : text;
+  const extension = hasExtension ? text.slice(lastDot) : "";
+  const safeBaseName = baseName
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "luckymodels-export";
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    "-",
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+    "-",
+    String(now.getMilliseconds()).padStart(3, "0"),
+  ].join("");
+  return `${safeBaseName}-${timestamp}${extension}`;
+}
+
 function downloadCsvFile(filename, rows) {
   if (!rows.length) {
     return;
@@ -254,7 +280,7 @@ function downloadCsvFile(filename, rows) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.download = buildDownloadFilename(filename);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -266,7 +292,7 @@ function downloadJsonFile(filename, value) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.download = buildDownloadFilename(filename);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
