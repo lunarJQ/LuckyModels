@@ -1,0 +1,49 @@
+model_id: spert-zh-duie-v1
+model_name: SpERT
+model_family: spert
+task_type: relation_extraction
+language: zh
+framework: onnxruntime
+runtime_adapter: spert_adapter
+version: v1
+dataset_name: duie
+dataset_split: dev
+stage_count: 2
+predict_ready: true
+backbone: bert-base-chinese
+
+artifacts:
+  entity_encoder: artifacts/spert_entity_encoder.onnx
+  relation_head: artifacts/spert_relation_head.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/vocab.txt
+  tokenizer_path: tokenizer/tokenizer_config.json
+
+labels:
+  schema_path: labels/types.json
+  entity_map: labels/config.json
+
+inference:
+  max_length: 256
+  batch_size: 1
+  relation_threshold: 0.4
+  max_span_size: 16
+  do_lower_case: false
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Enumerate candidate spans before relation scoring.
+  - Construct pairwise relation samples in the Python inference service.
+  - Decode final entities and relations outside the exported ONNX subgraphs.
+
+runtime_notes:
+  - This Chinese SpERT package targets the DuIE2.0 relation extraction dataset.
+  - The ONNX export keeps entity encoding and relation scoring as two runtime stages.

@@ -19,7 +19,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _resolve_path(package_root: Path, raw_path: str | None) -> str | None:
     if not raw_path:
         return None
-    return str((package_root / raw_path).resolve())
+    # Keep the package-facing path stable instead of dereferencing symlinks.
+    # Some model exports are normalized via outer-level links, and using
+    # resolve() would leak the raw nested source layout back into the platform.
+    return str((package_root / raw_path).absolute())
 
 
 def load_manifest(manifest_path: str | Path) -> LoadedManifest:

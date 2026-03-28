@@ -1,0 +1,8 @@
+{
+  "text": "摩尔多瓦共和国的首都是基希讷乌。",
+  "scene": "duie_relation_extraction",
+  "options": {
+    "max_length": 256,
+    "relation_threshold": 0.4
+  }
+}

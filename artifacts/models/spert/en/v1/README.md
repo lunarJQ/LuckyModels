@@ -7,10 +7,11 @@ Current status:
 - package validation: ready
 - control-plane registration: ready
 - runtime metadata loading: ready
-- live predict path: not implemented yet
+- live predict path: ready
 
 Important notes:
 
 - the current export contains two ONNX stages: entity encoding and relation scoring
 - deployment still requires Python-side span enumeration and relation sample construction
-- this package is ready for platform management, but not yet for end-to-end runtime predict
+- the raw `onnx/spert_scierc_model` export was normalized with outer-level links so the package can keep a flat model artifact layout
+- this package is ready for end-to-end LuckyModels runtime predict and benchmark flows

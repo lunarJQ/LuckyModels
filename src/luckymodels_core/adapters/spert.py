@@ -8,6 +8,7 @@ import numpy as np
 from .base import BaseAdapter
 from .bert_utils import (
     create_inference_session,
+    infer_do_lower_case,
     load_json,
     load_vocab,
     provider_list,
@@ -29,16 +30,33 @@ class SpERTAdapter(BaseAdapter):
         self.vocab: dict[str, int] = {}
         self.entity_labels: list[str] = []
         self.relation_labels: list[str] = []
+        self.do_lower_case = False
+        self.default_max_span_size = 10
+        self.default_relation_threshold = 0.4
 
     def load(self) -> None:
         import onnxruntime as ort  # type: ignore
 
         types_payload = load_json(self.manifest.resolved_labels.get("schema_path")) or {}
+        tokenizer_payload = load_json(self.manifest.resolved_tokenizer.get("tokenizer_path")) or {}
         entity_types = types_payload.get("entities", {})
         relation_types = types_payload.get("relations", {})
         self.entity_labels = list(entity_types.keys())
         self.relation_labels = list(relation_types.keys())
         self.vocab = load_vocab(self.manifest.resolved_tokenizer["vocab_path"])
+        manifest_inference = self.manifest.manifest.inference
+        tokenizer_lowercase = tokenizer_payload.get("do_lower_case")
+        self.do_lower_case = (
+            manifest_inference.do_lower_case
+            if manifest_inference.do_lower_case is not None
+            else (
+                bool(tokenizer_lowercase)
+                if isinstance(tokenizer_lowercase, bool)
+                else infer_do_lower_case(self.manifest.manifest.backbone)
+            )
+        )
+        self.default_max_span_size = int(manifest_inference.max_span_size or 10)
+        self.default_relation_threshold = float(manifest_inference.relation_threshold or 0.4)
         self.providers = provider_list(self.profile.device)
         self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_encoder"],
@@ -78,6 +96,9 @@ class SpERTAdapter(BaseAdapter):
             "relation_label_count": len(self.relation_labels),
             "artifact_count": len(self.manifest.resolved_artifacts),
             "profile": self.profile.model_dump(),
+            "do_lower_case": self.do_lower_case,
+            "max_span_size": self.default_max_span_size,
+            "relation_threshold": self.default_relation_threshold,
         }
 
     def predict(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -91,13 +112,15 @@ class SpERTAdapter(BaseAdapter):
         started = perf_counter()
         options = options or {}
         max_length = int(options.get("max_length") or self.manifest.manifest.inference.max_length)
-        max_span_size = int(options.get("max_span_size", 10))
-        relation_threshold = float(options.get("relation_threshold", 0.4))
+        max_span_size = int(options.get("max_span_size") or self.default_max_span_size)
+        relation_threshold = float(
+            options.get("relation_threshold") or self.default_relation_threshold
+        )
         tokenized = tokenize_with_wordpiece_vocab(
             text,
             self.vocab,
             max_length=max_length,
-            do_lower_case=True,
+            do_lower_case=self.do_lower_case,
         )
 
         spans = self._enumerate_spans(tokenized.valid_start, tokenized.valid_end, max_span_size)

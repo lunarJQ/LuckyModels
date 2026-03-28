@@ -31,6 +31,9 @@ class InferenceConfig(BaseModel):
     max_length: int = 256
     batch_size: int = 1
     thresholds: ThresholdConfig | None = None
+    relation_threshold: float | None = None
+    max_span_size: int | None = None
+    do_lower_case: bool | None = None
 
 
 class ManifestModel(BaseModel):

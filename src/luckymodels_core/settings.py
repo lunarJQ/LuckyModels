@@ -15,6 +15,7 @@ class Settings:
     benchmarks_file: Path
     casrel_demo_report_file: Path
     webnlg_eval_cases_file: Path
+    dataset_eval_cases_dir: Path
 
 
 def get_settings() -> Settings:
@@ -32,4 +33,5 @@ def get_settings() -> Settings:
         benchmarks_file=state_root / "benchmarks.json",
         casrel_demo_report_file=reports_root / "casrel_demo_report.json",
         webnlg_eval_cases_file=reports_root / "webnlg_eval_cases.json",
+        dataset_eval_cases_dir=reports_root / "datasets",
     )
