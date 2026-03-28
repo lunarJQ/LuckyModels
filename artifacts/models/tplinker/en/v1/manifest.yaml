@@ -4,12 +4,12 @@ model_family: tplinker
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: tplinker_adapter
 version: v1
 dataset_name: webnlg
 dataset_split: dev
 stage_count: 1
-predict_ready: false
+predict_ready: true
 backbone: bert-base-cased
 
 artifacts:
@@ -41,4 +41,4 @@ deployment_requirements:
   - Reconstruct triples from entity and relation shaking logits after ONNX execution.
 
 runtime_notes:
-  - TPLinker is exported as a single ONNX graph, but final triple decoding is still external.
+  - TPLinker is now exposed as a live LuckyModels runtime with Python shaking-tag decoding.

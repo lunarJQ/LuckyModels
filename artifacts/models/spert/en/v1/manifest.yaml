@@ -4,12 +4,12 @@ model_family: spert
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: spert_adapter
 version: v1
 dataset_name: scierc
 dataset_split: raw
 stage_count: 2
-predict_ready: false
+predict_ready: true
 backbone: bert-base-cased
 
 artifacts:
@@ -42,5 +42,5 @@ deployment_requirements:
   - Decode final entities and relations outside the exported ONNX subgraphs.
 
 runtime_notes:
-  - SpERT is packaged and registered, but live predict is not implemented in LuckyModels yet.
+  - SpERT is now exposed as a live LuckyModels runtime with span enumeration and relation pairing in Python.
   - The current ONNX export separates entity encoding and relation scoring stages.

@@ -4,12 +4,12 @@ model_family: onerel
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: onerel_adapter
 version: v1
 dataset_name: webnlg
 dataset_split: dev
 stage_count: 1
-predict_ready: false
+predict_ready: true
 backbone: bert-base-cased-hbtokenizer
 
 artifacts:
@@ -41,4 +41,4 @@ deployment_requirements:
   - Preserve the model-specific square tag matrix interpretation.
 
 runtime_notes:
-  - OneRel is packaged and validated, but LuckyModels has not implemented the live decoder yet.
+  - OneRel is now exposed as a live LuckyModels runtime with HBTokenizer-compatible preprocessing.

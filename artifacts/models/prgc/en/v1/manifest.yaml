@@ -4,12 +4,12 @@ model_family: prgc
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: prgc_adapter
 version: v1
 dataset_name: webnlg
 dataset_split: dev
 stage_count: 2
-predict_ready: false
+predict_ready: true
 backbone: bert-base-cased
 
 artifacts:
@@ -42,4 +42,4 @@ deployment_requirements:
   - Decode final triples from relation, correspondence, and sequence-tag outputs in Python.
 
 runtime_notes:
-  - PRGC is exported as two ONNX stages with external relation filtering and final decoding.
+  - PRGC is now exposed as a live LuckyModels runtime with two-stage ONNX orchestration.

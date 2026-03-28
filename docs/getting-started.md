@@ -11,7 +11,8 @@ This repository now includes:
 - a FastAPI-based control plane
 - a runtime service with local launch and health-check support
 - eight standardized English ONNX model packages
-- one live CasRel WebNLG runtime sample and seven package-ready model entries
+- six live runtime samples: CasRel, TPLinker, OneRel, PRGC, SpERT, and PURE
+- two package-ready entries that still need extra preprocessing support: CopyMTL and GraphRel
 
 ## 2. Recommended Reading Order
 
@@ -151,9 +152,9 @@ The exported file is written to `data/state/reports/webnlg_eval_cases.json`.
 
 Recommended next steps:
 
-1. Verify the eight registered package manifests and profile fields
-2. Improve the CasRel decode quality and thresholds
-3. Implement live adapters for SpERT, TPLinker, PRGC, and the remaining model families
+1. Verify the six live runtime packages through the deployment API and frontend views
+2. Improve model-family-specific decode quality and thresholds for CasRel, TPLinker, OneRel, and PRGC
+3. Implement the remaining live adapters for CopyMTL and GraphRel
 4. Add richer benchmark dimensions such as concurrency and batch size
 5. Add container launch orchestration from the control plane when needed
 
