@@ -33,6 +33,8 @@ class SpERTAdapter(BaseAdapter):
         self.do_lower_case = False
         self.default_max_span_size = 10
         self.default_relation_threshold = 0.4
+        self.default_entity_threshold = 0.0
+        self.default_max_entity_candidates = 24
 
     def load(self) -> None:
         import onnxruntime as ort  # type: ignore
@@ -57,6 +59,10 @@ class SpERTAdapter(BaseAdapter):
         )
         self.default_max_span_size = int(manifest_inference.max_span_size or 10)
         self.default_relation_threshold = float(manifest_inference.relation_threshold or 0.4)
+        self.default_entity_threshold = float(manifest_inference.entity_threshold or 0.0)
+        self.default_max_entity_candidates = int(
+            manifest_inference.max_entity_candidates or 24
+        )
         self.providers = provider_list(self.profile.device)
         self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_encoder"],
@@ -99,6 +105,8 @@ class SpERTAdapter(BaseAdapter):
             "do_lower_case": self.do_lower_case,
             "max_span_size": self.default_max_span_size,
             "relation_threshold": self.default_relation_threshold,
+            "entity_threshold": self.default_entity_threshold,
+            "max_entity_candidates": self.default_max_entity_candidates,
         }
 
     def predict(self, text: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -116,6 +124,13 @@ class SpERTAdapter(BaseAdapter):
         relation_threshold = float(
             options.get("relation_threshold") or self.default_relation_threshold
         )
+        entity_threshold = float(
+            options.get("entity_threshold") or self.default_entity_threshold
+        )
+        max_entity_candidates = int(
+            options.get("max_entity_candidates") or self.default_max_entity_candidates
+        )
+        allow_nested_entities = bool(options.get("allow_nested_entities", False))
         tokenized = tokenize_with_wordpiece_vocab(
             text,
             self.vocab,
@@ -143,28 +158,42 @@ class SpERTAdapter(BaseAdapter):
         )
 
         entity_probs = entity_probs[0]
-        predicted_entities: list[dict[str, Any]] = []
+        raw_entities: list[dict[str, Any]] = []
         for index, probs in enumerate(entity_probs):
             label_id = int(np.argmax(probs))
             if label_id <= 0 or label_id > len(self.entity_labels):
+                continue
+            confidence = float(probs[label_id])
+            if confidence < entity_threshold:
                 continue
             start_idx, end_idx = span_tensor[index]
             entity_text = span_text_from_offsets(text, tokenized.offsets, start_idx, end_idx)
             if not entity_text:
                 continue
-            predicted_entities.append(
+            raw_entities.append(
                 {
                     "span_index": index,
                     "start": start_idx,
                     "end": end_idx,
                     "text": entity_text,
                     "label": self.entity_labels[label_id - 1],
-                    "confidence": float(probs[label_id]),
+                    "confidence": confidence,
                 }
             )
+        predicted_entities = self._select_entities(
+            raw_entities,
+            max_entity_candidates=max_entity_candidates,
+            allow_nested_entities=allow_nested_entities,
+        )
 
         triples: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
+        warnings: list[str] = []
+        if len(raw_entities) > len(predicted_entities):
+            warnings.append(
+                f"SpERT entity candidates were reduced from {len(raw_entities)} to "
+                f"{len(predicted_entities)} using entity_threshold={entity_threshold}."
+            )
         if len(predicted_entities) >= 2:
             pooled = entity_spans_pool[:, [item["span_index"] for item in predicted_entities], :]
             sized = size_embeddings[:, [item["span_index"] for item in predicted_entities], :]
@@ -235,12 +264,16 @@ class SpERTAdapter(BaseAdapter):
             "text": text,
             "triple_count": len(triples),
             "triples": triples,
-            "warnings": [],
+            "warnings": warnings,
         }
         if options.get("debug") or options.get("return_debug"):
             result["debug"] = {
                 "entity_candidate_count": len(spans),
+                "raw_entity_count": len(raw_entities),
                 "predicted_entity_count": len(predicted_entities),
+                "entity_threshold": entity_threshold,
+                "max_entity_candidates": max_entity_candidates,
+                "allow_nested_entities": allow_nested_entities,
                 "tokens": tokenized.tokens,
             }
         return result
@@ -274,3 +307,42 @@ class SpERTAdapter(BaseAdapter):
         else:
             mask[min(subject_start, object_start) : max(subject_end, object_end) + 1] = True
         return mask
+
+    @staticmethod
+    def _select_entities(
+        entities: list[dict[str, Any]],
+        *,
+        max_entity_candidates: int,
+        allow_nested_entities: bool,
+    ) -> list[dict[str, Any]]:
+        ranked = sorted(
+            entities,
+            key=lambda item: (
+                -float(item["confidence"]),
+                int(item["end"]) - int(item["start"]),
+                int(item["start"]),
+            ),
+        )
+        selected: list[dict[str, Any]] = []
+        seen_spans: set[tuple[int, int, str]] = set()
+        for entity in ranked:
+            span_key = (int(entity["start"]), int(entity["end"]), str(entity["label"]))
+            if span_key in seen_spans:
+                continue
+            if not allow_nested_entities and any(
+                SpERTAdapter._spans_overlap(entity, existing) for existing in selected
+            ):
+                continue
+            selected.append(entity)
+            seen_spans.add(span_key)
+            if len(selected) >= max(1, max_entity_candidates):
+                break
+        return sorted(selected, key=lambda item: (int(item["start"]), int(item["end"])))
+
+    @staticmethod
+    def _spans_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_start = int(left["start"])
+        left_end = int(left["end"])
+        right_start = int(right["start"])
+        right_end = int(right["end"])
+        return not (left_end < right_start or right_end < left_start)

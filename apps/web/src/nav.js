@@ -11,6 +11,7 @@ export const navGroups = [
     title: "模型资产",
     items: [
       { id: "models", path: "/models", label: "模型库" },
+      { id: "capability-matrix", path: "/capability-matrix", label: "能力矩阵" },
       { id: "artifacts", path: "/artifacts", label: "制品包" },
       { id: "deployments", path: "/deployments", label: "部署记录" },
       { id: "benchmarks", path: "/benchmarks", label: "基准剖析" },

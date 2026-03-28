@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException
 
 from luckymodels_core.dataset_samples import export_dataset_eval_cases, get_dataset_eval_cases
 from luckymodels_core.manifest import load_profile
-from luckymodels_core.schemas import ModelDetail, ModelSummary, ProfileConfig
+from luckymodels_core.schemas import CapabilityMatrixRow, ModelDetail, ModelSummary, ProfileConfig
 
-from ..dependencies import get_registry
+from ..dependencies import get_benchmark_store, get_deployment_store, get_registry
 
 router = APIRouter(tags=["models"])
 
@@ -12,6 +12,43 @@ router = APIRouter(tags=["models"])
 @router.get("/models", response_model=list[ModelSummary])
 def list_models() -> list[ModelSummary]:
     return get_registry().list_models()
+
+
+@router.get("/models/capability-matrix", response_model=list[CapabilityMatrixRow])
+def get_model_capability_matrix() -> list[CapabilityMatrixRow]:
+    registry = get_registry()
+    deployments = get_deployment_store().list()
+    benchmarks = get_benchmark_store().list()
+    rows: list[CapabilityMatrixRow] = []
+
+    for model in registry.list_models():
+        detail = registry.get_model(model.model_id)
+        model_deployments = [item for item in deployments if item.model_id == model.model_id]
+        model_benchmarks = [item for item in benchmarks if item.model_id == model.model_id]
+        completed_benchmarks = [item for item in model_benchmarks if item.status == "completed"]
+        limitations = _collect_limitations(detail, completed_benchmarks)
+        rows.append(
+            CapabilityMatrixRow(
+                model_id=model.model_id,
+                model_name=model.model_name,
+                model_family=model.model_family,
+                language=model.language,
+                dataset_name=model.dataset_name,
+                runtime_status=model.runtime_status,
+                inference_ready=model.runtime_status == "inference_ready",
+                supports_online_predict=bool(model.predict_ready and model.adapter_available),
+                supports_benchmark=bool(model.predict_ready and detail.resolved_profiles),
+                supports_batch_predict=bool(model.predict_ready and model.adapter_available),
+                profile_count=len(detail.resolved_profiles),
+                benchmark_count=len(model_benchmarks),
+                deployment_count=len(model_deployments),
+                latest_benchmark_id=completed_benchmarks[-1].benchmark_id if completed_benchmarks else None,
+                latest_deployment_id=model_deployments[-1].deployment_id if model_deployments else None,
+                known_limitations="；".join(limitations),
+            )
+        )
+
+    return rows
 
 
 @router.get("/models/{model_id}", response_model=ModelDetail)
@@ -76,3 +113,29 @@ def prepare_model_eval_cases(model_id: str, limit: int = 128) -> dict[str, objec
         "dataset_name": dataset_name,
         **payload,
     }
+
+
+def _collect_limitations(
+    detail: ModelDetail,
+    completed_benchmarks,
+) -> list[str]:
+    limitations: list[str] = []
+    for note in detail.manifest.runtime_notes:
+        text = str(note).strip()
+        if text and text not in limitations:
+            limitations.append(text)
+    for note in detail.manifest.deployment_requirements:
+        text = str(note).strip()
+        if text and text not in limitations:
+            limitations.append(text)
+    if completed_benchmarks:
+        warnings = completed_benchmarks[-1].sample_response.get("warnings") or []
+        for warning in warnings[:3]:
+            text = str(warning).strip()
+            if text and text not in limitations:
+                limitations.append(text)
+    else:
+        limitations.append("尚未生成该模型的 benchmark 证据。")
+    if not limitations:
+        limitations.append("暂无显式限制。")
+    return limitations[:4]

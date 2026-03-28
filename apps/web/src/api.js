@@ -8,12 +8,14 @@ export async function fetchJSON(url, options) {
 }
 
 export async function loadDashboardData() {
-  const [summary, models, deployments, benchmarks, report] = await Promise.all([
+  const [summary, models, deployments, benchmarks, report, capabilityMatrix, gpuStatus] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     fetchJSON("/api/v1/models"),
     fetchJSON("/api/v1/deployments"),
     fetchJSON("/api/v1/benchmarks"),
     fetchJSON("/api/v1/demo/casrel/report"),
+    fetchJSON("/api/v1/models/capability-matrix"),
+    fetchJSON("/api/v1/system/gpus"),
   ]);
 
   const deploymentEntries = await Promise.all(
@@ -51,6 +53,8 @@ export async function loadDashboardData() {
     deployments: deploymentEntries,
     benchmarks,
     report,
+    capabilityMatrix,
+    gpuStatus,
     modelDetails: Object.fromEntries(modelDetailsEntries),
   };
 }

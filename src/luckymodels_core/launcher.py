@@ -16,16 +16,33 @@ def launch_runtime_process(
     profile_path: str,
     port: int,
     log_path: str | None = None,
+    gpu_ids: list[int] | None = None,
+    use_gpu: bool = True,
 ) -> tuple[int, str]:
     env = os.environ.copy()
     env["LUCKYMODELS_MANIFEST_PATH"] = manifest_path
     env["LUCKYMODELS_PROFILE_PATH"] = profile_path
     worker_count = 1
+    selected_gpu_ids: list[int] = []
     try:
         profile = load_profile(profile_path)
         worker_count = max(1, int(profile.execution.get("instance_count", 1) or 1))
+        selected_gpu_ids = list(profile.gpu_ids or [])
     except Exception:
         worker_count = 1
+        selected_gpu_ids = []
+
+    if gpu_ids:
+        selected_gpu_ids = [int(value) for value in gpu_ids]
+
+    env.pop("CUDA_VISIBLE_DEVICES", None)
+    env.pop("LUCKYMODELS_GPU_IDS", None)
+    env.pop("LUCKYMODELS_FORCE_CPU", None)
+    if use_gpu and selected_gpu_ids:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(value) for value in selected_gpu_ids)
+        env["LUCKYMODELS_GPU_IDS"] = ",".join(str(value) for value in selected_gpu_ids)
+    if not use_gpu:
+        env["LUCKYMODELS_FORCE_CPU"] = "1"
 
     cmd = [
         str(root_dir / ".venv" / "bin" / "python"),
@@ -49,7 +66,9 @@ def launch_runtime_process(
         log_handle.write(
             f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] launching runtime "
             f"for {Path(manifest_path).parent.name} on 127.0.0.1:{port} "
-            f"with workers={worker_count}\n"
+            f"with workers={worker_count} "
+            f"use_gpu={use_gpu} "
+            f"gpu_ids={selected_gpu_ids or ['auto']}\n"
         )
         log_handle.flush()
         stdout_target = log_handle

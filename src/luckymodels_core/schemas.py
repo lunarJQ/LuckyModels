@@ -32,7 +32,9 @@ class InferenceConfig(BaseModel):
     batch_size: int = 1
     thresholds: ThresholdConfig | None = None
     relation_threshold: float | None = None
+    entity_threshold: float | None = None
     max_span_size: int | None = None
+    max_entity_candidates: int | None = None
     do_lower_case: bool | None = None
 
 
@@ -106,11 +108,31 @@ class ModelDetail(BaseModel):
     resolved_labels: dict[str, str]
 
 
+class CapabilityMatrixRow(BaseModel):
+    model_id: str
+    model_name: str
+    model_family: str
+    language: str
+    dataset_name: str | None = None
+    runtime_status: str
+    inference_ready: bool
+    supports_online_predict: bool
+    supports_benchmark: bool
+    supports_batch_predict: bool
+    profile_count: int = 0
+    benchmark_count: int = 0
+    deployment_count: int = 0
+    latest_benchmark_id: str | None = None
+    latest_deployment_id: str | None = None
+    known_limitations: str = ""
+
+
 class DeploymentCreateRequest(BaseModel):
     model_id: str
     profile_name: str = "default"
     runtime: str = "runtime-service"
     node_name: str = "local-node"
+    use_gpu: bool = True
     gpu_ids: list[int] = Field(default_factory=list)
     launch_runtime: bool = False
     notes: str | None = None
@@ -122,6 +144,7 @@ class DeploymentRecord(BaseModel):
     profile_name: str
     runtime: str
     node_name: str
+    use_gpu: bool = True
     gpu_ids: list[int] = Field(default_factory=list)
     profile_runtime: str | None = None
     device: str | None = None

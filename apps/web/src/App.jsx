@@ -22,9 +22,11 @@ const initialData = {
   summary: null,
   models: [],
   modelDetails: {},
+  capabilityMatrix: [],
   deployments: [],
   benchmarks: [],
   report: null,
+  gpuStatus: null,
 };
 
 const pageMeta = {
@@ -48,6 +50,10 @@ const pageMeta = {
     title: "模型库",
     note: "查看模型资产并从平台直接发起新的 deployment。",
   },
+  "/capability-matrix": {
+    title: "能力矩阵",
+    note: "固化展示模型接入状态、推理能力、benchmark 支持情况与当前限制，直接服务论文表格整理。",
+  },
   "/artifacts": {
     title: "制品包",
     note: "查看 manifest、ONNX 制品、tokenizer 和 profile 解析结果。",
@@ -62,7 +68,7 @@ const pageMeta = {
   },
   "/resources": {
     title: "运行资源",
-    note: "汇总当前控制面中的可推理模型、运行中 deployment 和 provider 信息。",
+    note: "汇总 GPU 设备状态、deployment 绑定关系、provider 信息与运行中推理进程。",
   },
   "/logs": {
     title: "日志中心",
@@ -77,6 +83,8 @@ function buildInitialDeploymentForm(models, details) {
   return {
     modelId,
     profileName: profiles.includes("default") ? "default" : profiles[0] || "",
+    useGpu: true,
+    gpuIdsText: "",
     notes: "",
     launchRuntime: true,
   };
@@ -145,6 +153,45 @@ function formatExecutionSummary(deployment) {
 function formatProviderSummary(deployment) {
   const providers = getDeploymentProviders(deployment);
   return providers.length ? providers.join(", ") : "pending";
+}
+
+function getDeploymentAssignedGpuIds(deployment) {
+  const payload = getDeploymentHealthPayload(deployment);
+  if (Array.isArray(payload.assigned_gpu_ids) && payload.assigned_gpu_ids.length) {
+    return payload.assigned_gpu_ids;
+  }
+  return Array.isArray(deployment?.gpu_ids) ? deployment.gpu_ids : [];
+}
+
+function formatGpuIds(ids) {
+  if (!Array.isArray(ids) || !ids.length) {
+    return "auto";
+  }
+  return ids.join(", ");
+}
+
+function parseGpuIdsText(value) {
+  const text = String(value || "").replaceAll("，", ",").trim();
+  if (!text) {
+    return [];
+  }
+  const seen = new Set();
+  return text
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map((token) => {
+      if (!/^\d+$/.test(token)) {
+        throw new Error(`GPU 卡号格式无效：${token}`);
+      }
+      return Number.parseInt(token, 10);
+    })
+    .filter((gpuId) => {
+      if (seen.has(gpuId)) {
+        return false;
+      }
+      seen.add(gpuId);
+      return true;
+    });
 }
 
 function formatFixed(value, digits = 3) {
@@ -352,6 +399,22 @@ export default function App() {
   }
 
   async function handleCreateDeployment(payloadOverride) {
+    let gpuIds;
+    try {
+      gpuIds =
+        payloadOverride?.gpu_ids ??
+        parseGpuIdsText(payloadOverride?.gpuIdsText ?? deploymentForm.gpuIdsText);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+      return;
+    }
+
+    const useGpu = payloadOverride?.use_gpu ?? deploymentForm.useGpu;
+    if (!useGpu) {
+      gpuIds = [];
+    }
+
     const requestedModelId = payloadOverride?.model_id || deploymentForm.modelId;
     const payload = {
       ...payloadOverride,
@@ -362,6 +425,8 @@ export default function App() {
         payloadOverride?.profile_name || deploymentForm.profileName,
       ),
       launch_runtime: payloadOverride?.launch_runtime ?? deploymentForm.launchRuntime,
+      use_gpu: useGpu,
+      gpu_ids: gpuIds,
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
     await runAction("create-deployment", () => createDeployment(payload), `Deployment 已创建：${payload.model_id}`);
@@ -459,9 +524,11 @@ export default function App() {
     const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0 };
     const models = data.models || [];
     const modelDetails = data.modelDetails || {};
+    const capabilityMatrix = data.capabilityMatrix || [];
     const deployments = data.deployments || [];
     const benchmarks = data.benchmarks || [];
     const report = data.report || {};
+    const gpuStatus = data.gpuStatus || { available: false, gpu_count: 0, devices: [] };
     const runningDeployments = deployments.filter((item) => item.status === "running");
     const predictableModels = models.filter((item) => item.predict_ready);
     const latestDeployment = deployments.length ? [...deployments].reverse()[0] : null;
@@ -472,8 +539,10 @@ export default function App() {
       report,
       models,
       modelDetails,
+      capabilityMatrix,
       deployments,
       benchmarks,
+      gpuStatus,
       runningDeployments,
       predictableModels,
       latestDeployment,
@@ -623,6 +692,10 @@ function Shell(props) {
               path="/experiments"
             />
             <Route element={<ArchivePage derived={derived} />} path="/archive" />
+            <Route
+              element={<CapabilityMatrixPage derived={derived} />}
+              path="/capability-matrix"
+            />
             <Route
               element={
                 <ModelsPage
@@ -931,12 +1004,36 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
             </select>
           </label>
           <label className="stack-field">
+            <span>GPU 卡号</span>
+            <input
+              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, gpuIdsText: event.target.value }))}
+              disabled={!deploymentForm.useGpu}
+              placeholder="留空=自动，示例：0 或 1,2"
+              type="text"
+              value={deploymentForm.gpuIdsText}
+            />
+          </label>
+          <label className="stack-field">
             <span>备注</span>
             <input
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, notes: event.target.value }))}
               type="text"
               value={deploymentForm.notes}
             />
+          </label>
+          <label className="stack-check">
+            <input
+              checked={deploymentForm.useGpu}
+              onChange={(event) =>
+                onDeploymentFormChange((current) => ({
+                  ...current,
+                  useGpu: event.target.checked,
+                  gpuIdsText: event.target.checked ? current.gpuIdsText : "",
+                }))
+              }
+              type="checkbox"
+            />
+            使用 GPU
           </label>
           <label className="stack-check">
             <input
@@ -1062,6 +1159,164 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
   );
 }
 
+function CapabilityMatrixPage({ derived }) {
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const filteredRows = useMemo(() => {
+    return derived.capabilityMatrix.filter((item) => {
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "ready" && item.inference_ready) ||
+        (statusFilter === "limited" && !item.inference_ready);
+      if (!matchesStatus) {
+        return false;
+      }
+      return matchesKeyword(
+        [
+          item.model_id,
+          item.model_name,
+          item.model_family,
+          item.language,
+          item.dataset_name,
+          item.runtime_status,
+          item.known_limitations,
+        ],
+        deferredSearch,
+      );
+    });
+  }, [deferredSearch, derived.capabilityMatrix, statusFilter]);
+
+  function handleExportCapabilityMatrix() {
+    if (!filteredRows.length) {
+      return;
+    }
+    downloadCsvFile(
+      "luckymodels-capability-matrix.csv",
+      filteredRows.map((item) => ({
+        model_id: item.model_id,
+        model_name: item.model_name,
+        dataset_name: item.dataset_name,
+        runtime_status: item.runtime_status,
+        inference_ready: item.inference_ready ? "yes" : "no",
+        supports_online_predict: item.supports_online_predict ? "yes" : "no",
+        supports_benchmark: item.supports_benchmark ? "yes" : "no",
+        supports_batch_predict: item.supports_batch_predict ? "yes" : "no",
+        profile_count: item.profile_count,
+        deployment_count: item.deployment_count,
+        benchmark_count: item.benchmark_count,
+        latest_deployment_id: item.latest_deployment_id || "-",
+        latest_benchmark_id: item.latest_benchmark_id || "-",
+        known_limitations: item.known_limitations,
+      })),
+    );
+  }
+
+  return (
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Evidence Matrix"
+          title="模型能力矩阵"
+          note="统一汇总模型库当前的接入状态、在线推理能力、benchmark 支持和已知限制，适合作为论文中的模型构成表与平台接入结果表。"
+          right={
+            <div className="actions">
+              <button disabled={!filteredRows.length} onClick={handleExportCapabilityMatrix} type="button">
+                导出矩阵 CSV
+              </button>
+            </div>
+          }
+        />
+
+        <div className="metrics">
+          <MetricCard title="模型总数" value={derived.capabilityMatrix.length} note="当前矩阵覆盖模型数" />
+          <MetricCard title="Inference Ready" value={derived.capabilityMatrix.filter((item) => item.inference_ready).length} note="runtime_status = inference_ready" />
+          <MetricCard title="已含 Benchmark 证据" value={derived.capabilityMatrix.filter((item) => item.benchmark_count > 0).length} note="至少一条 benchmark 记录" />
+          <MetricCard title="支持批量推理" value={derived.capabilityMatrix.filter((item) => item.supports_batch_predict).length} note="平台支持 texts 批量入口" />
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="Filter"
+          title="矩阵筛选"
+          note={`当前显示 ${filteredRows.length} / ${derived.capabilityMatrix.length} 个模型条目。`}
+        />
+        <div className="filter-panel">
+          <label className="field">
+            <span>搜索模型</span>
+            <input
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="model_id / model_name / dataset / limitation"
+              value={search}
+            />
+          </label>
+          <label className="field">
+            <span>运行状态</span>
+            <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+              <option value="all">全部</option>
+              <option value="ready">仅 inference_ready</option>
+              <option value="limited">仅受限模型</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      {filteredRows.length ? (
+        <section className="page-shell card section-shell">
+          <SectionHeader
+            kicker="Matrix Table"
+            title="固定能力总表"
+            note="这里的列已经对齐论文里最常用的能力描述口径，可直接截图或导出后整理。"
+          />
+          <div className="table-wrap compare-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>数据集</th>
+                  <th>Inference Ready</th>
+                  <th>在线推理</th>
+                  <th>Benchmark</th>
+                  <th>批量推理</th>
+                  <th>证据</th>
+                  <th>当前已知限制</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((item) => (
+                  <tr key={item.model_id}>
+                    <td>
+                      <strong>{item.model_name}</strong>
+                      <div className="mono">{item.model_id}</div>
+                    </td>
+                    <td>{item.dataset_name || "-"}</td>
+                    <td><StatusPill status={item.inference_ready ? "running" : "stopped"} /></td>
+                    <td>{item.supports_online_predict ? "是" : "否"}</td>
+                    <td>{item.supports_benchmark ? "是" : "否"}</td>
+                    <td>{item.supports_batch_predict ? "是" : "否"}</td>
+                    <td>
+                      <div>deployment: {item.deployment_count}</div>
+                      <div>benchmark: {item.benchmark_count}</div>
+                      <div className="mono">{item.latest_benchmark_id || item.latest_deployment_id || "-"}</div>
+                    </td>
+                    <td className="limitation-cell">{item.known_limitations || "暂无显式限制。"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : (
+        <section className="page-shell">
+          <EmptyState icon="M" title="暂无匹配的能力矩阵条目" note="调整筛选条件后，这里会展示固定的模型能力总表。" wide />
+        </section>
+      )}
+    </>
+  );
+}
+
 function ArtifactsPage({ data }) {
   return (
     <section className="page-shell card section-shell">
@@ -1110,7 +1365,7 @@ function DeploymentsPage({
 }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [scopeFilter, setScopeFilter] = useState("recent");
+  const [modelFilter, setModelFilter] = useState("all");
   const deferredSearch = useDeferredValue(search);
 
   const filteredDeployments = useMemo(() => {
@@ -1125,16 +1380,12 @@ function DeploymentsPage({
       next = next.filter((item) => item.status === statusFilter);
     }
 
-    if (scopeFilter === "active") {
-      next = next.filter((item) => ["running", "starting", "planned", "stopping"].includes(item.status));
-    } else if (scopeFilter === "with_logs") {
-      next = next.filter((item) => item.log_path);
-    } else if (scopeFilter === "recent") {
-      next = next.slice(0, 12);
+    if (modelFilter !== "all") {
+      next = next.filter((item) => item.model_id === modelFilter);
     }
 
     return next;
-  }, [deferredSearch, derived.deployments, scopeFilter, statusFilter]);
+  }, [deferredSearch, derived.deployments, modelFilter, statusFilter]);
 
   return (
     <>
@@ -1175,12 +1426,36 @@ function DeploymentsPage({
             </select>
           </label>
           <label className="stack-field">
+            <span>GPU 卡号</span>
+            <input
+              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, gpuIdsText: event.target.value }))}
+              disabled={!deploymentForm.useGpu}
+              placeholder="留空=自动，示例：0 或 1,2"
+              type="text"
+              value={deploymentForm.gpuIdsText}
+            />
+          </label>
+          <label className="stack-field">
             <span>备注</span>
             <input
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, notes: event.target.value }))}
               type="text"
               value={deploymentForm.notes}
             />
+          </label>
+          <label className="stack-check">
+            <input
+              checked={deploymentForm.useGpu}
+              onChange={(event) =>
+                onDeploymentFormChange((current) => ({
+                  ...current,
+                  useGpu: event.target.checked,
+                  gpuIdsText: event.target.checked ? current.gpuIdsText : "",
+                }))
+              }
+              type="checkbox"
+            />
+            使用 GPU
           </label>
           <label className="stack-check">
             <input
@@ -1229,12 +1504,14 @@ function DeploymentsPage({
               </select>
             </label>
             <label className="stack-field">
-              <span>显示范围</span>
-              <select onChange={(event) => setScopeFilter(event.target.value)} value={scopeFilter}>
-                <option value="recent">最近 12 条</option>
-                <option value="active">仅活动 deployment</option>
-                <option value="with_logs">仅有日志</option>
-                <option value="all">全部记录</option>
+              <span>按模型查看</span>
+              <select onChange={(event) => setModelFilter(event.target.value)} value={modelFilter}>
+                <option value="all">全部模型</option>
+                {derived.models.map((model) => (
+                  <option key={model.model_id} value={model.model_id}>
+                    {model.model_id}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -1246,7 +1523,7 @@ function DeploymentsPage({
               onClick={() => {
                 setSearch("");
                 setStatusFilter("all");
-                setScopeFilter("recent");
+                setModelFilter("all");
               }}
               type="button"
             >
@@ -1261,7 +1538,8 @@ function DeploymentsPage({
                 <tr>
                   <th>Deployment</th>
                   <th>模型</th>
-                  <th>Profile / 执行参数</th>
+                  <th>Profile</th>
+                  <th>执行参数</th>
                   <th>状态</th>
                   <th>Service URL</th>
                   <th>操作</th>
@@ -1276,8 +1554,12 @@ function DeploymentsPage({
                     </td>
                     <td>{item.model_id}</td>
                     <td>
-                      <div><strong>{item.profile_name}</strong></div>
+                      <strong>{item.profile_name}</strong>
+                    </td>
+                    <td>
                       <div className="table-note">{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}</div>
+                      <div className="table-note">use_gpu: {item.use_gpu ? "yes" : "no"}</div>
+                      <div className="table-note">gpu: {formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
                       <div className="table-note">{formatExecutionSummary(item)}</div>
                       <div className="table-note">provider: {formatProviderSummary(item)}</div>
                     </td>
@@ -2083,6 +2365,12 @@ function ResourcesPage({ derived }) {
       execution: getDeploymentExecution(item),
     };
   });
+  const gpuStatus = derived.gpuStatus || { available: false, gpu_count: 0, devices: [] };
+  const activeGpuProcesses = (gpuStatus.devices || []).reduce(
+    (sum, device) => sum + Number(device.active_processes?.length || 0),
+    0,
+  );
+  const explicitGpuBindings = derived.deployments.filter((item) => Array.isArray(item.gpu_ids) && item.gpu_ids.length);
 
   return (
     <>
@@ -2099,19 +2387,19 @@ function ResourcesPage({ derived }) {
             </div>
           </article>
           <article className="resource-card">
-            <h4>资源使用</h4>
+            <h4>GPU 资源</h4>
             <div className="resource-meta">
-              历史 deployment：{derived.deployments.length}
+              GPU 数量：{gpuStatus.gpu_count || 0}
               <br />
-              历史 benchmark：{derived.benchmarks.length}
+              活跃 GPU 进程：{activeGpuProcesses}
               <br />
-              Provider：{Array.from(providerSet).join(" / ") || "pending"}
+              显式绑定 deployment：{explicitGpuBindings.length}
             </div>
           </article>
           <article className="resource-card">
-            <h4>可用模型</h4>
+            <h4>Provider</h4>
             <div className="resource-meta">
-              {derived.predictableModels.map((item) => item.model_name).join(" / ") || "暂无"}
+              {Array.from(providerSet).join(" / ") || "pending"}
             </div>
           </article>
         </div>
@@ -2119,13 +2407,86 @@ function ResourcesPage({ derived }) {
 
       <section className="page-shell card section-shell">
         <SectionHeader
+          kicker="GPU Status"
+          title="GPU 状态总览"
+          note="直接读取服务器 nvidia-smi，展示每张卡的显存占用、活跃进程，以及 LuckyModels deployment 的绑定关系。"
+        />
+        {gpuStatus.available ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>GPU</th>
+                  <th>显存</th>
+                  <th>利用率</th>
+                  <th>温度 / 功耗</th>
+                  <th>绑定 Deployment</th>
+                  <th>活跃进程</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(gpuStatus.devices || []).map((device) => (
+                  <tr key={device.uuid || device.index}>
+                    <td>
+                      <strong>GPU {device.index ?? "-"}</strong>
+                      <div>{device.name || "-"}</div>
+                      <div className="mono">{device.uuid || "-"}</div>
+                    </td>
+                    <td>
+                      {formatFixed(device.memory_used_mb, 0)} / {formatFixed(device.memory_total_mb, 0)} MB
+                    </td>
+                    <td>{formatFixed(device.utilization_gpu_pct, 0)}%</td>
+                    <td>
+                      {formatFixed(device.temperature_c, 0)} C
+                      <br />
+                      {formatFixed(device.power_draw_w, 0)} W
+                    </td>
+                    <td>
+                      {device.assigned_deployments?.length ? (
+                        device.assigned_deployments.map((deployment) => (
+                          <div key={deployment.deployment_id}>
+                            <strong>{deployment.deployment_id}</strong>
+                            <div className="table-note">{deployment.model_id} · {deployment.status}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="table-note">无显式绑定</span>
+                      )}
+                    </td>
+                    <td>
+                      {device.active_processes?.length ? (
+                        device.active_processes.map((process) => (
+                          <div key={`${process.pid}-${process.gpu_uuid}`}>
+                            <strong>pid {process.pid}</strong>
+                            <div className="table-note">
+                              {process.used_gpu_memory_mb ?? "-"} MB · {process.deployment_id || process.process_name}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="table-note">暂无活跃进程</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState
+            icon="G"
+            title="暂时无法读取 GPU 状态"
+            note={gpuStatus.detail || "当前 API 没有拿到 nvidia-smi 返回结果。"}
+          />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
           kicker="Runtime Snapshot"
           title="运行实例快照"
-          note="这里展示运行中 deployment 的真实 profile 执行参数与 runtime 健康信息。"
+          note="这里展示运行中 deployment 的真实 GPU 绑定、provider、threads、batch 和健康状态。"
         />
-        <div className="banner banner-muted">
-          当前机器还没有启用 CUDA Execution Provider，所以这里看到的 provider 大概率仍是 CPU。Profile 已先接入 CPU 侧线程数、worker 数和 batch 行为。
-        </div>
         {runtimeSnapshots.length ? (
           <div className="list-grid runtime-grid">
             {runtimeSnapshots.map(({ item, payload, providers, execution }) => (
@@ -2141,6 +2502,12 @@ function ResourcesPage({ derived }) {
                   profile：<strong>{item.profile_name}</strong>
                   <br />
                   device / runtime：{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}
+                  <br />
+                  use_gpu：{item.use_gpu ? "yes" : "no"}
+                  <br />
+                  assigned gpu：{formatGpuIds(getDeploymentAssignedGpuIds(item))}
+                  <br />
+                  visible gpu：{payload.cuda_visible_devices || "all"}
                   <br />
                   workers：{execution.instance_count ?? 1}
                   <br />

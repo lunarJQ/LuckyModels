@@ -74,6 +74,8 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
             profile_path=deployment.profile_path,
             port=port,
             log_path=deployment.log_path,
+            gpu_ids=deployment.gpu_ids,
+            use_gpu=deployment.use_gpu,
         )
         deployment.pid = pid
         deployment.service_url = service_url
@@ -185,6 +187,8 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         profile_path=deployment.profile_path,
         port=port,
         log_path=deployment.log_path,
+        gpu_ids=deployment.gpu_ids,
+        use_gpu=deployment.use_gpu,
     )
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
     deployment.pid = pid
@@ -231,6 +235,8 @@ def _hydrate_deployment_runtime_snapshot(deployment: DeploymentRecord) -> Deploy
         return deployment
 
     deployment.profile_runtime = profile.runtime
-    deployment.device = profile.device
+    deployment.device = "cpu" if not deployment.use_gpu else profile.device
+    if not deployment.gpu_ids and profile.gpu_ids:
+        deployment.gpu_ids = list(profile.gpu_ids)
     deployment.execution = profile.execution
     return deployment

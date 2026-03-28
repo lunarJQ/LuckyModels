@@ -195,6 +195,16 @@ def provider_list(profile_device: str) -> list[str]:
             "onnxruntime is required for LuckyModels live inference adapters"
         ) from exc
 
+    if profile_device.lower().startswith("cuda"):
+        # When the GPU wheel is installed via NVIDIA site packages, preload the
+        # CUDA/cuDNN shared objects before checking available providers.
+        preload = getattr(ort, "preload_dlls", None)
+        if callable(preload):
+            try:
+                preload(directory="")
+            except Exception:
+                pass
+
     available = ort.get_available_providers()
     if profile_device.lower().startswith("cuda") and "CUDAExecutionProvider" in available:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -302,13 +312,60 @@ def iter_wordpiece_tokens(
 
 
 def basic_tokenize_with_offsets(text: str, do_lower_case: bool = False):
-    for match in re.finditer(r"\S+", text):
-        token = match.group(0)
+    current: list[str] = []
+    current_start: int | None = None
+
+    def flush() -> tuple[str, int, int] | None:
+        nonlocal current, current_start
+        if current_start is None or not current:
+            current = []
+            current_start = None
+            return None
+        token = "".join(current)
+        start = current_start
+        end = current_start + len(token)
+        current = []
+        current_start = None
         if do_lower_case:
             token = unicodedata.normalize("NFD", token)
             token = "".join(ch for ch in token if unicodedata.category(ch) != "Mn")
             token = token.lower()
-        yield token, match.start(), match.end()
+        return token, start, end
+
+    for index, char in enumerate(text):
+        if char.isspace():
+            item = flush()
+            if item is not None:
+                yield item
+            continue
+        if _is_chinese_char(ord(char)):
+            item = flush()
+            if item is not None:
+                yield item
+            yield char, index, index + 1
+            continue
+        if current_start is None:
+            current_start = index
+        current.append(char)
+
+    item = flush()
+    if item is not None:
+        yield item
+
+
+def _is_chinese_char(codepoint: int) -> bool:
+    return any(
+        [
+            0x4E00 <= codepoint <= 0x9FFF,
+            0x3400 <= codepoint <= 0x4DBF,
+            0x20000 <= codepoint <= 0x2A6DF,
+            0x2A700 <= codepoint <= 0x2B73F,
+            0x2B740 <= codepoint <= 0x2B81F,
+            0x2B820 <= codepoint <= 0x2CEAF,
+            0xF900 <= codepoint <= 0xFAFF,
+            0x2F800 <= codepoint <= 0x2FA1F,
+        ]
+    )
 
 
 def wordpiece_tokenize_with_offsets(token: str, base_start: int, vocab: dict[str, int]):

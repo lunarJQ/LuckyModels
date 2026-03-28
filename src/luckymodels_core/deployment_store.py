@@ -28,6 +28,7 @@ class DeploymentStore:
             profile_name=request.profile_name,
             runtime=request.runtime,
             node_name=request.node_name,
+            use_gpu=request.use_gpu,
             gpu_ids=request.gpu_ids,
             notes=request.notes,
         )

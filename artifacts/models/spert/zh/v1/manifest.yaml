@@ -29,7 +29,9 @@ inference:
   max_length: 256
   batch_size: 1
   relation_threshold: 0.4
+  entity_threshold: 0.85
   max_span_size: 16
+  max_entity_candidates: 8
   do_lower_case: false
 
 profiles:

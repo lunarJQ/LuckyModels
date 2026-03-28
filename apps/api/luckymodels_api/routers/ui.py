@@ -13,6 +13,7 @@ FRONTEND_PATHS = [
     "/experiments",
     "/archive",
     "/models",
+    "/capability-matrix",
     "/artifacts",
     "/deployments",
     "/benchmarks",

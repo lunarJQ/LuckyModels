@@ -19,6 +19,9 @@ class PredictRequest(BaseModel):
 
 MANIFEST_PATH = os.getenv("LUCKYMODELS_MANIFEST_PATH")
 PROFILE_PATH = os.getenv("LUCKYMODELS_PROFILE_PATH")
+GPU_IDS_ENV = os.getenv("LUCKYMODELS_GPU_IDS", "")
+CUDA_VISIBLE_DEVICES = os.getenv("CUDA_VISIBLE_DEVICES", "")
+FORCE_CPU = os.getenv("LUCKYMODELS_FORCE_CPU", "").strip() == "1"
 
 app = FastAPI(
     title="LuckyModels Runtime",
@@ -33,6 +36,15 @@ if MANIFEST_PATH and PROFILE_PATH:
     try:
         loaded_manifest = load_manifest(MANIFEST_PATH)
         loaded_profile = load_profile(PROFILE_PATH)
+        if FORCE_CPU:
+            loaded_profile.device = "cpu"
+            loaded_profile.gpu_ids = []
+        if GPU_IDS_ENV.strip():
+            loaded_profile.gpu_ids = [
+                int(value.strip())
+                for value in GPU_IDS_ENV.split(",")
+                if value.strip()
+            ]
         adapter_cls = build_adapter(loaded_manifest.manifest.runtime_adapter)
         adapter = adapter_cls(loaded_manifest, loaded_profile)
         adapter.load()
@@ -49,14 +61,30 @@ else:
 def healthz() -> dict[str, Any]:
     if startup_error:
         return {"status": "error", "detail": startup_error}
-    return adapter.health()
+    payload = adapter.health()
+    payload["assigned_gpu_ids"] = [
+        int(value.strip())
+        for value in GPU_IDS_ENV.split(",")
+        if value.strip()
+    ]
+    payload["cuda_visible_devices"] = CUDA_VISIBLE_DEVICES
+    payload["use_gpu"] = not FORCE_CPU
+    return payload
 
 
 @app.get("/metadata")
 def metadata() -> dict[str, Any]:
     if startup_error:
         raise HTTPException(status_code=500, detail=startup_error)
-    return adapter.metadata()
+    payload = adapter.metadata()
+    payload["assigned_gpu_ids"] = [
+        int(value.strip())
+        for value in GPU_IDS_ENV.split(",")
+        if value.strip()
+    ]
+    payload["cuda_visible_devices"] = CUDA_VISIBLE_DEVICES
+    payload["use_gpu"] = not FORCE_CPU
+    return payload
 
 
 @app.post("/predict")

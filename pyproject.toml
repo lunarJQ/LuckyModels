@@ -20,6 +20,10 @@ runtime = [
   "onnxruntime>=1.18.0",
   "transformers>=5.3.0",
 ]
+runtime-gpu = [
+  "onnxruntime-gpu[cuda,cudnn]>=1.21.0",
+  "transformers>=5.3.0",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
