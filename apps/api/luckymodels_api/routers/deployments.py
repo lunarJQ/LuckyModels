@@ -16,7 +16,7 @@ from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import DeploymentCreateRequest, DeploymentRecord
 from luckymodels_core.settings import get_settings
 
-from ..dependencies import get_deployment_store, get_registry
+from ..dependencies import get_deployment_store, get_prediction_store, get_registry
 
 router = APIRouter(tags=["deployments"])
 
@@ -147,7 +147,21 @@ def predict_with_deployment(
     )
     try:
         with urlopen(runtime_request, timeout=90) as response:  # noqa: S310
-            return json.loads(response.read().decode("utf-8"))
+            payload = json.loads(response.read().decode("utf-8"))
+        if isinstance(payload, dict):
+            archive = get_prediction_store().create(
+                deployment_id=deployment.deployment_id,
+                model_id=deployment.model_id,
+                profile_name=deployment.profile_name,
+                service_url=deployment.service_url,
+                scene=request.scene,
+                request_text=request.text,
+                request_texts=list(request.texts or []),
+                options=dict(request.options or {}),
+                response_payload=payload,
+            )
+            payload["archive_id"] = archive.archive_id
+        return payload
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

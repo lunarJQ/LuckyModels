@@ -8,11 +8,12 @@ export async function fetchJSON(url, options) {
 }
 
 export async function loadDashboardData() {
-  const [summary, models, deployments, benchmarks, report, capabilityMatrix, gpuStatus] = await Promise.all([
+  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     fetchJSON("/api/v1/models"),
     fetchJSON("/api/v1/deployments"),
     fetchJSON("/api/v1/benchmarks"),
+    fetchJSON("/api/v1/prediction-archives"),
     fetchJSON("/api/v1/demo/casrel/report"),
     fetchJSON("/api/v1/models/capability-matrix"),
     fetchJSON("/api/v1/system/gpus"),
@@ -52,6 +53,7 @@ export async function loadDashboardData() {
     models,
     deployments: deploymentEntries,
     benchmarks,
+    predictArchives: predictionArchives,
     report,
     capabilityMatrix,
     gpuStatus,
@@ -103,12 +105,22 @@ export async function deleteBenchmark(benchmarkId) {
   });
 }
 
+export async function deletePredictionArchive(archiveId) {
+  return fetchJSON(`/api/v1/prediction-archives/${encodeURIComponent(archiveId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getDeploymentHealth(deploymentId) {
   return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/health`);
 }
 
 export async function getDeploymentLogs(deploymentId) {
   return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/logs`);
+}
+
+export async function getModelProfiles(modelId) {
+  return fetchJSON(`/api/v1/models/${encodeURIComponent(modelId)}/profiles`);
 }
 
 export async function predictWithDeployment(deploymentId, payload) {

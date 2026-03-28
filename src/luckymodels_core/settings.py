@@ -13,6 +13,7 @@ class Settings:
     reports_root: Path
     deployments_file: Path
     benchmarks_file: Path
+    prediction_archives_file: Path
     casrel_demo_report_file: Path
     webnlg_eval_cases_file: Path
     dataset_eval_cases_dir: Path
@@ -31,6 +32,7 @@ def get_settings() -> Settings:
         reports_root=reports_root,
         deployments_file=state_root / "deployments.json",
         benchmarks_file=state_root / "benchmarks.json",
+        prediction_archives_file=state_root / "prediction_archives.json",
         casrel_demo_report_file=reports_root / "casrel_demo_report.json",
         webnlg_eval_cases_file=reports_root / "webnlg_eval_cases.json",
         dataset_eval_cases_dir=reports_root / "datasets",

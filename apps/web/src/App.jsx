@@ -6,8 +6,10 @@ import {
   createDeployment,
   deleteBenchmark,
   deleteDeployment,
+  deletePredictionArchive,
   getDeploymentHealth,
   getDeploymentLogs,
+  getModelProfiles,
   loadDashboardData,
   predictWithDeployment,
   restartDeployment,
@@ -25,6 +27,7 @@ const initialData = {
   capabilityMatrix: [],
   deployments: [],
   benchmarks: [],
+  predictArchives: [],
   report: null,
   gpuStatus: null,
 };
@@ -248,6 +251,18 @@ function downloadCsvFile(filename, rows) {
     ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
   ];
   const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
+function downloadJsonFile(filename, value) {
+  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json;charset=utf-8;" });
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -516,6 +531,18 @@ export default function App() {
     );
   }
 
+  async function handleDeletePredictionArchive(archiveId) {
+    if (!window.confirm(`确认删除预测归档 ${archiveId} 吗？`)) {
+      return;
+    }
+    await runAction(
+      `delete-prediction-${archiveId}`,
+      () => deletePredictionArchive(archiveId),
+      `预测归档已删除：${archiveId}`,
+    );
+    setPredictResult((current) => (current?.archive_id === archiveId ? null : current));
+  }
+
   async function handlePredict() {
     const options = predictForm.optionsJson.trim() ? safeJsonParse(predictForm.optionsJson) : {};
     const result = await runAction(
@@ -531,6 +558,31 @@ export default function App() {
     setPredictResult(result);
   }
 
+  async function handleExportModelManifest(modelId) {
+    const detail = data.modelDetails[modelId];
+    if (!detail) {
+      setNotice({ type: "error", text: `未找到模型详情：${modelId}` });
+      return;
+    }
+    downloadJsonFile(`${modelId}-manifest.json`, detail.manifest);
+    setNotice({ type: "ok", text: `已导出模型 manifest：${modelId}` });
+  }
+
+  async function handleExportModelProfiles(modelId) {
+    try {
+      const profiles = await getModelProfiles(modelId);
+      downloadJsonFile(`${modelId}-profiles.json`, {
+        model_id: modelId,
+        exported_at: new Date().toISOString(),
+        profiles,
+      });
+      setNotice({ type: "ok", text: `已导出配置模板：${modelId}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    }
+  }
+
   const derived = useMemo(() => {
     const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0 };
     const models = data.models || [];
@@ -538,12 +590,14 @@ export default function App() {
     const capabilityMatrix = data.capabilityMatrix || [];
     const deployments = data.deployments || [];
     const benchmarks = data.benchmarks || [];
+    const predictArchives = data.predictArchives || [];
     const report = data.report || {};
     const gpuStatus = data.gpuStatus || { available: false, gpu_count: 0, devices: [] };
     const runningDeployments = deployments.filter((item) => item.status === "running");
     const predictableModels = models.filter((item) => item.predict_ready);
     const latestDeployment = deployments.length ? [...deployments].reverse()[0] : null;
     const latestBenchmark = benchmarks.length ? [...benchmarks].reverse()[0] : null;
+    const latestPredictArchive = predictArchives.length ? sortByCreatedDesc(predictArchives)[0] : null;
     const deploymentProfiles = getProfilesForModel(deploymentForm.modelId, modelDetails);
     return {
       summary,
@@ -553,11 +607,13 @@ export default function App() {
       capabilityMatrix,
       deployments,
       benchmarks,
+      predictArchives,
       gpuStatus,
       runningDeployments,
       predictableModels,
       latestDeployment,
       latestBenchmark,
+      latestPredictArchive,
       deploymentProfiles,
     };
   }, [data, deploymentForm.modelId]);
@@ -577,8 +633,24 @@ export default function App() {
       onCreateBenchmark={handleCreateBenchmark}
       onCreateDeployment={handleCreateDeployment}
       onDeleteBenchmark={handleDeleteBenchmark}
+      onDeletePredictionArchive={handleDeletePredictionArchive}
       onDeploymentAction={handleDeploymentAction}
       onDeploymentFormChange={setDeploymentForm}
+      onExportDeploymentRows={(rows, format) => {
+        if (format === "json") {
+          downloadJsonFile("luckymodels-deployments.json", rows);
+          return;
+        }
+        downloadCsvFile("luckymodels-deployments.csv", rows);
+      }}
+      onExportModelManifest={handleExportModelManifest}
+      onExportModelProfiles={handleExportModelProfiles}
+      onExportPredictResult={(value) =>
+        downloadJsonFile(
+          `${value?.model_id || "predict"}-${value?.archive_id || "result"}.json`,
+          value,
+        )
+      }
       onInspectDeployment={handleInspectDeployment}
       onPredict={handlePredict}
       onPredictFormChange={setPredictForm}
@@ -609,8 +681,13 @@ function Shell(props) {
     onCreateBenchmark,
     onCreateDeployment,
     onDeleteBenchmark,
+    onDeletePredictionArchive,
     onDeploymentAction,
     onDeploymentFormChange,
+    onExportDeploymentRows,
+    onExportModelManifest,
+    onExportModelProfiles,
+    onExportPredictResult,
     onInspectDeployment,
     onPredict,
     onPredictFormChange,
@@ -690,6 +767,8 @@ function Shell(props) {
                   actionBusy={actionBusy}
                   demoRunning={demoRunning}
                   derived={derived}
+                  onDeletePredictionArchive={onDeletePredictionArchive}
+                  onExportPredictResult={onExportPredictResult}
                   onPredict={onPredict}
                   onPredictFormChange={onPredictFormChange}
                   onRefresh={onRefresh}
@@ -702,7 +781,16 @@ function Shell(props) {
               }
               path="/experiments"
             />
-            <Route element={<ArchivePage derived={derived} />} path="/archive" />
+            <Route
+              element={
+                <ArchivePage
+                  derived={derived}
+                  onDeletePredictionArchive={onDeletePredictionArchive}
+                  onExportPredictionArchive={(archive) => onExportPredictResult(archive)}
+                />
+              }
+              path="/archive"
+            />
             <Route
               element={<CapabilityMatrixPage derived={derived} />}
               path="/capability-matrix"
@@ -720,7 +808,16 @@ function Shell(props) {
               }
               path="/models"
             />
-            <Route element={<ArtifactsPage data={data} />} path="/artifacts" />
+            <Route
+              element={
+                <ArtifactsPage
+                  data={data}
+                  onExportModelManifest={onExportModelManifest}
+                  onExportModelProfiles={onExportModelProfiles}
+                />
+              }
+              path="/artifacts"
+            />
             <Route
               element={
                 <DeploymentsPage
@@ -730,6 +827,7 @@ function Shell(props) {
                   onCreateDeployment={onCreateDeployment}
                   onDeploymentAction={onDeploymentAction}
                   onDeploymentFormChange={onDeploymentFormChange}
+                  onExportDeploymentRows={onExportDeploymentRows}
                   onInspectDeployment={onInspectDeployment}
                   selectedHealth={selectedHealth}
                   selectedLogs={selectedLogs}
@@ -816,6 +914,8 @@ function ExperimentsPage({
   actionBusy,
   demoRunning,
   derived,
+  onDeletePredictionArchive,
+  onExportPredictResult,
   onPredict,
   onPredictFormChange,
   onRefresh,
@@ -844,7 +944,7 @@ function ExperimentsPage({
         {derived.runningDeployments.length ? (
           <div className="form-grid">
             <label className="stack-field">
-              <span>选择 Deployment</span>
+              <span>选择部署实例</span>
               <select
                 onChange={(event) => onPredictFormChange((current) => ({ ...current, deploymentId: event.target.value }))}
                 value={predictForm.deploymentId}
@@ -898,7 +998,19 @@ function ExperimentsPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="预测结果" title="预测结果" />
+          <SectionHeader
+            kicker="预测结果"
+            title="预测结果"
+            right={
+              predictResult ? (
+                <div className="actions">
+                  <button onClick={() => onExportPredictResult(predictResult)} type="button">
+                    导出本次 JSON
+                  </button>
+                </div>
+              ) : null
+            }
+          />
           {predictResult ? (
             <>
               <div className="metrics">
@@ -906,6 +1018,7 @@ function ExperimentsPage({
                 <MetricCard title="延迟" value={predictResult.latency_ms} note="毫秒" />
                 <MetricCard title="三元组" value={predictResult.triple_count} note={formatLanguageLabel(predictResult.language)} />
                 <MetricCard title="版本" value={predictResult.version} note="运行时输出" />
+                <MetricCard title="归档编号" value={predictResult.archive_id || "-"} note="预测结果已自动归档" />
               </div>
               <div className="relation-list">
                 {(predictResult.triples || []).map((item, index) => (
@@ -931,21 +1044,136 @@ function ExperimentsPage({
           <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : selectedLogs?.content || "先在部署页查看健康或日志。"} </div>
         </article>
       </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="预测归档"
+          title="单次预测归档"
+          note="每次在线推理成功后，平台会自动写入归档，方便后续导出 JSON、截图和回填论文案例。"
+        />
+        {derived.predictArchives.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>归档编号</th>
+                  <th>模型</th>
+                  <th>配置模板</th>
+                  <th>输入摘要</th>
+                  <th>结果摘要</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortByCreatedDesc(derived.predictArchives)
+                  .slice(0, 8)
+                  .map((item) => (
+                    <tr key={item.archive_id}>
+                      <td>
+                        <strong>{item.archive_id}</strong>
+                        <div className="table-note">{item.created_at}</div>
+                      </td>
+                      <td>{item.model_id}</td>
+                      <td>{item.profile_name}</td>
+                      <td>
+                        <div className="table-note">{item.scene || "-"}</div>
+                        <div className="table-note">{item.request_text || item.request_texts?.[0] || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="table-note">延迟：{escapeValue(item.latency_ms)}</div>
+                        <div className="table-note">三元组：{escapeValue(item.triple_count)}</div>
+                        <div className="table-note">样本数：{escapeValue(item.item_count)}</div>
+                      </td>
+                      <td>
+                        <div className="actions row-actions">
+                          <button onClick={() => onExportPredictResult(item.response_payload || item)} type="button">导出结果</button>
+                          <button
+                            disabled={actionBusy[`delete-prediction-${item.archive_id}`]}
+                            onClick={() => void onDeletePredictionArchive(item.archive_id)}
+                            type="button"
+                          >
+                            删除归档
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState icon="A" title="暂无预测归档" note="完成一次在线推理后，结果会自动归档到这里。" />
+        )}
+      </section>
     </>
   );
 }
 
-function ArchivePage({ derived }) {
+function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArchive }) {
   return (
-    <section className="page-shell card section-shell">
-      <SectionHeader kicker="结果归档" title="结果归档" note="聚焦最近一次部署、基准测试和 CasRel 演示报告。" />
-      <div className="metrics">
-        <MetricCard title="最新部署" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "-"} />
-        <MetricCard title="最新基准" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "-"} />
-        <MetricCard title="CasRel 报告" value={formatStatusLabel(derived.report.status || "empty")} note={derived.report.dataset?.name || "-"} />
-        <MetricCard title="评测样本" value={derived.report.dataset?.prepared_eval_count || "-"} note={derived.report.dataset?.prepared_eval_file || "-"} />
-      </div>
-    </section>
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="结果归档" title="结果归档" note="聚焦最近一次部署、基准测试、预测归档和 CasRel 演示报告。" />
+        <div className="metrics">
+          <MetricCard title="最新部署" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "-"} />
+          <MetricCard title="最新基准" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "-"} />
+          <MetricCard title="最新预测归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
+          <MetricCard title="预测归档总数" value={derived.predictArchives.length} note="在线推理结果自动留痕" />
+          <MetricCard title="CasRel 报告" value={formatStatusLabel(derived.report.status || "empty")} note={derived.report.dataset?.name || "-"} />
+          <MetricCard title="评测样本" value={derived.report.dataset?.prepared_eval_count || "-"} note={derived.report.dataset?.prepared_eval_file || "-"} />
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="归档列表" title="预测结果归档列表" note="这里保留最近的单次预测结果，适合导出案例结果或补论文截图。" />
+        {derived.predictArchives.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>归档编号</th>
+                  <th>模型</th>
+                  <th>场景</th>
+                  <th>输入</th>
+                  <th>结果</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortByCreatedDesc(derived.predictArchives)
+                  .slice(0, 10)
+                  .map((item) => (
+                    <tr key={item.archive_id}>
+                      <td>
+                        <strong>{item.archive_id}</strong>
+                        <div className="table-note">{item.created_at}</div>
+                      </td>
+                      <td>
+                        <div>{item.model_id}</div>
+                        <div className="table-note">{item.profile_name}</div>
+                      </td>
+                      <td>{item.scene || "-"}</td>
+                      <td>{item.request_text || item.request_texts?.[0] || "-"}</td>
+                      <td>
+                        <div className="table-note">延迟：{escapeValue(item.latency_ms)}</div>
+                        <div className="table-note">三元组：{escapeValue(item.triple_count)}</div>
+                      </td>
+                      <td>
+                        <div className="actions row-actions">
+                          <button onClick={() => onExportPredictionArchive(item)} type="button">导出 JSON</button>
+                          <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState icon="A" title="暂无预测归档" note="先执行一次在线推理，这里就会出现归档结果。" />
+        )}
+      </section>
+    </>
   );
 }
 
@@ -1328,7 +1556,7 @@ function CapabilityMatrixPage({ derived }) {
   );
 }
 
-function ArtifactsPage({ data }) {
+function ArtifactsPage({ data, onExportModelManifest, onExportModelProfiles }) {
   return (
     <section className="page-shell card section-shell">
       <SectionHeader kicker="制品清单" title="制品包清单" note="展示 manifest 与解析后的制品路径，便于检查平台识别结果。" />
@@ -1356,6 +1584,10 @@ function ArtifactsPage({ data }) {
                 </span>
               ))}
             </div>
+            <div className="actions inline-actions">
+              <button onClick={() => void onExportModelManifest(detail.summary?.model_id)} type="button">导出 manifest</button>
+              <button onClick={() => void onExportModelProfiles(detail.summary?.model_id)} type="button">导出配置模板</button>
+            </div>
           </article>
         ))}
       </div>
@@ -1370,6 +1602,7 @@ function DeploymentsPage({
   onCreateDeployment,
   onDeploymentAction,
   onDeploymentFormChange,
+  onExportDeploymentRows,
   onInspectDeployment,
   selectedHealth,
   selectedLogs,
@@ -1397,6 +1630,29 @@ function DeploymentsPage({
 
     return next;
   }, [deferredSearch, derived.deployments, modelFilter, statusFilter]);
+
+  function exportableRows() {
+    return filteredDeployments.map((item) => ({
+      deployment_id: item.deployment_id,
+      model_id: item.model_id,
+      profile_name: item.profile_name,
+      status: item.status,
+      device: item.device || "",
+      runtime: item.profile_runtime || item.runtime || "",
+      use_gpu: item.use_gpu ? "yes" : "no",
+      gpu_ids: formatGpuIds(getDeploymentAssignedGpuIds(item)),
+      instance_count: getDeploymentExecution(item).instance_count ?? 1,
+      batch_size: getDeploymentExecution(item).batch_size ?? 1,
+      intra_op_threads: getDeploymentExecution(item).intra_op_threads ?? 0,
+      inter_op_threads: getDeploymentExecution(item).inter_op_threads ?? 0,
+      providers: formatProviderSummary(item),
+      service_url: item.service_url || "",
+      pid: item.pid || "",
+      notes: item.notes || "",
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+    }));
+  }
 
   return (
     <>
@@ -1490,7 +1746,18 @@ function DeploymentsPage({
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="部署列表" title="部署列表" />
+        <SectionHeader
+          kicker="部署列表"
+          title="部署列表"
+          right={
+            filteredDeployments.length ? (
+              <div className="actions">
+                <button onClick={() => onExportDeploymentRows(exportableRows(), "csv")} type="button">导出 CSV</button>
+                <button onClick={() => onExportDeploymentRows(exportableRows(), "json")} type="button">导出 JSON</button>
+              </div>
+            ) : null
+          }
+        />
         <div className="filter-panel">
           <div className="filter-grid">
             <label className="stack-field">
@@ -1823,6 +2090,13 @@ function BenchmarksPage({
     );
   }
 
+  function handleExportFilteredBenchmarksJson() {
+    if (!filteredBenchmarks.length) {
+      return;
+    }
+    downloadJsonFile("luckymodels-benchmarks.json", filteredBenchmarks);
+  }
+
   function handleExportCompareRows() {
     if (!compareRows.length) {
       return;
@@ -1984,6 +2258,9 @@ function BenchmarksPage({
             <div className="actions">
               <button disabled={!filteredBenchmarks.length} onClick={handleExportFilteredBenchmarks} type="button">
                 导出当前 CSV
+              </button>
+              <button disabled={!filteredBenchmarks.length} onClick={handleExportFilteredBenchmarksJson} type="button">
+                导出当前 JSON
               </button>
               <button
                 onClick={() => {

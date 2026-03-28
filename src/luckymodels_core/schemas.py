@@ -165,6 +165,7 @@ class SystemSummary(BaseModel):
     model_count: int
     deployment_count: int
     benchmark_count: int = 0
+    prediction_archive_count: int = 0
     artifact_root: str
     logs_root: str | None = None
 
@@ -200,4 +201,21 @@ class BenchmarkRecord(BaseModel):
     status: str = "planned"
     sample_response: dict[str, Any] | None = None
     errors: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=utc_now)
+
+
+class PredictionArchiveRecord(BaseModel):
+    archive_id: str
+    deployment_id: str
+    model_id: str
+    profile_name: str
+    service_url: str | None = None
+    scene: str | None = None
+    request_text: str | None = None
+    request_texts: list[str] = Field(default_factory=list)
+    options: dict[str, Any] = Field(default_factory=dict)
+    latency_ms: float | None = None
+    triple_count: int | None = None
+    item_count: int | None = None
+    response_payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)

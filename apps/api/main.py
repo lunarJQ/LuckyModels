@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from luckymodels_api.routers import benchmarks, demo, deployments, health, models, system, ui
+from luckymodels_api.routers import benchmarks, demo, deployments, health, models, predictions, system, ui
 
 app = FastAPI(
     title="LuckyModels Control Plane",
@@ -21,4 +21,5 @@ app.include_router(system.router, prefix="/api/v1")
 app.include_router(models.router, prefix="/api/v1")
 app.include_router(deployments.router, prefix="/api/v1")
 app.include_router(benchmarks.router, prefix="/api/v1")
+app.include_router(predictions.router, prefix="/api/v1")
 app.include_router(demo.router, prefix="/api/v1")
