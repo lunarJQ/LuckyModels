@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { EmptyState, MetricCard, SectionHeader, StatusPill } from "./components";
 import { navGroups } from "./nav";
-import { escapeValue, safeJsonParse } from "./utils";
+import { escapeValue, formatBooleanLabel, formatStatusLabel, safeJsonParse } from "./utils";
 
 const initialData = {
   summary: null,
@@ -40,39 +40,39 @@ const pageMeta = {
   },
   "/experiments": {
     title: "在线推理",
-    note: "选择运行中的 deployment 做真实推理，查看三元组、健康状态和运行日志。",
+    note: "选择运行中的部署实例做真实推理，查看三元组、健康状态和运行日志。",
   },
   "/archive": {
     title: "结果归档",
-    note: "集中查看最近的 deployment 与 benchmark，便于截图和整理论文表格。",
+    note: "集中查看最近的部署实例与基准记录，便于截图和整理论文表格。",
   },
   "/models": {
     title: "模型库",
-    note: "查看模型资产并从平台直接发起新的 deployment。",
+    note: "查看模型资产并从平台直接发起新的部署实例。",
   },
   "/capability-matrix": {
     title: "能力矩阵",
-    note: "固化展示模型接入状态、推理能力、benchmark 支持情况与当前限制，直接服务论文表格整理。",
+    note: "固化展示模型接入状态、推理能力、基准支持情况与当前限制，直接服务论文表格整理。",
   },
   "/artifacts": {
     title: "制品包",
-    note: "查看 manifest、ONNX 制品、tokenizer 和 profile 解析结果。",
+    note: "查看 manifest、ONNX 制品、tokenizer 和配置模板解析结果。",
   },
   "/deployments": {
     title: "部署记录",
-    note: "新建、停止、重启、删除 deployment，并查看健康与日志。",
+    note: "新建、停止、重启、删除部署实例，并查看健康与日志。",
   },
   "/benchmarks": {
     title: "基准剖析",
-    note: "为运行中的 deployment 创建基准测试，并管理历史 benchmark。",
+    note: "为运行中的部署实例创建基准测试，并管理历史基准记录。",
   },
   "/resources": {
     title: "运行资源",
-    note: "汇总 GPU 设备状态、deployment 绑定关系、provider 信息与运行中推理进程。",
+    note: "汇总 GPU 设备状态、部署绑定关系、执行后端信息与运行中推理进程。",
   },
   "/logs": {
     title: "日志中心",
-    note: "聚焦 LuckyModels 当前选中 deployment 的运行日志。",
+    note: "聚焦 LuckyModels 当前选中部署实例的运行日志。",
   },
 };
 
@@ -147,12 +147,12 @@ function formatExecutionSummary(deployment) {
   const batchSize = execution.batch_size ?? 1;
   const intraThreads = execution.intra_op_threads ?? 0;
   const interThreads = execution.inter_op_threads ?? 0;
-  return `workers=${workers} · batch=${batchSize} · intra=${intraThreads} · inter=${interThreads}`;
+  return `实例=${workers} · 批量=${batchSize} · 算子内线程=${intraThreads} · 算子间线程=${interThreads}`;
 }
 
 function formatProviderSummary(deployment) {
   const providers = getDeploymentProviders(deployment);
-  return providers.length ? providers.join(", ") : "pending";
+  return providers.length ? providers.join(", ") : "待检测";
 }
 
 function getDeploymentAssignedGpuIds(deployment) {
@@ -165,9 +165,20 @@ function getDeploymentAssignedGpuIds(deployment) {
 
 function formatGpuIds(ids) {
   if (!Array.isArray(ids) || !ids.length) {
-    return "auto";
+    return "自动分配";
   }
   return ids.join(", ");
+}
+
+function formatLanguageLabel(language) {
+  const normalized = String(language || "").toLowerCase();
+  if (["en", "eng", "english"].includes(normalized)) {
+    return "英文";
+  }
+  if (["zh", "zh-cn", "cn", "chinese"].includes(normalized)) {
+    return "中文";
+  }
+  return language || "-";
 }
 
 function parseGpuIdsText(value) {
@@ -429,7 +440,7 @@ export default function App() {
       gpu_ids: gpuIds,
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
-    await runAction("create-deployment", () => createDeployment(payload), `Deployment 已创建：${payload.model_id}`);
+    await runAction("create-deployment", () => createDeployment(payload), `部署已创建：${payload.model_id}`);
   }
 
   async function handleDeploymentAction(actionName, deploymentId) {
@@ -490,7 +501,7 @@ export default function App() {
           iterations: Number(benchmarkForm.iterations),
           warmup_runs: Number(benchmarkForm.warmupRuns),
         }),
-      "Benchmark 已创建。",
+      "基准测试已创建。",
     );
   }
 
@@ -761,37 +772,37 @@ function OverviewPage({ derived }) {
         <div className="summary-card">
           <div className="title">可推理模型</div>
           <div className="big">{derived.predictableModels.length}</div>
-          <div className="small">predict_ready = true</div>
+          <div className="small">已完成在线推理适配</div>
         </div>
         <div className="summary-card">
           <div className="title">运行中部署</div>
           <div className="big">{derived.runningDeployments.length}</div>
-          <div className="small">当前活跃 runtime</div>
+          <div className="small">当前活跃推理实例</div>
         </div>
         <div className="summary-card">
           <div className="title">基准总数</div>
           <div className="big">{derived.summary.benchmark_count}</div>
-          <div className="small">历史 benchmark 记录</div>
+          <div className="small">历史基准测试记录</div>
         </div>
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="Recent Activity" title="最近状态" />
+          <SectionHeader kicker="近期动态" title="最近状态" />
           <div className="metrics">
-            <MetricCard title="最新 Deployment" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "暂无"} />
-            <MetricCard title="Deployment 状态" value={derived.latestDeployment?.status || "-"} note={derived.latestDeployment?.service_url || "-"} />
-            <MetricCard title="最新 Benchmark" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "暂无"} />
-            <MetricCard title="CasRel Report" value={derived.report.status || "empty"} note="/api/v1/demo/casrel/report" />
+            <MetricCard title="最新部署" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "暂无"} />
+            <MetricCard title="部署状态" value={formatStatusLabel(derived.latestDeployment?.status || "-")} note={derived.latestDeployment?.service_url || "-"} />
+            <MetricCard title="最新基准" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "暂无"} />
+            <MetricCard title="CasRel 报告" value={formatStatusLabel(derived.report.status || "empty")} note="/api/v1/demo/casrel/report" />
           </div>
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="Model Status" title="模型运行口径" />
+          <SectionHeader kicker="模型状态" title="模型运行口径" />
           <div className="tag-list">
             {derived.models.map((model) => (
               <span className="tag" key={model.model_id}>
-                {model.model_id} · {model.runtime_status}
+                {model.model_id} · {formatStatusLabel(model.runtime_status)}
               </span>
             ))}
           </div>
@@ -818,9 +829,9 @@ function ExperimentsPage({
     <>
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Live Predict"
+          kicker="在线预测"
           title="在线推理"
-          note="从平台里选择运行中的 deployment，直接走控制面代理接口完成预测。"
+          note="从平台里选择运行中的部署实例，直接通过控制面代理接口完成预测。"
           right={
             <div className="actions">
               <button onClick={() => void onRefresh()} type="button">刷新数据</button>
@@ -862,7 +873,7 @@ function ExperimentsPage({
               />
             </label>
             <label className="stack-field stack-field-wide">
-              <span>Options JSON</span>
+              <span>推理参数 JSON</span>
               <textarea
                 onChange={(event) => onPredictFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
                 rows="4"
@@ -881,20 +892,20 @@ function ExperimentsPage({
             </div>
           </div>
         ) : (
-          <EmptyState icon="▶" title="暂无运行中的 Deployment" note="先去“部署记录”或“模型库”里创建并启动一个 deployment。" />
+          <EmptyState icon="▶" title="暂无运行中的部署实例" note="先去“部署记录”或“模型库”里创建并启动一个部署实例。" />
         )}
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="Predict Result" title="预测结果" />
+          <SectionHeader kicker="预测结果" title="预测结果" />
           {predictResult ? (
             <>
               <div className="metrics">
                 <MetricCard title="模型" value={predictResult.model_id} note={predictResult.model_name} />
-                <MetricCard title="Latency" value={predictResult.latency_ms} note="ms" />
-                <MetricCard title="Triples" value={predictResult.triple_count} note={predictResult.language} />
-                <MetricCard title="Version" value={predictResult.version} note="runtime output" />
+                <MetricCard title="延迟" value={predictResult.latency_ms} note="毫秒" />
+                <MetricCard title="三元组" value={predictResult.triple_count} note={formatLanguageLabel(predictResult.language)} />
+                <MetricCard title="版本" value={predictResult.version} note="运行时输出" />
               </div>
               <div className="relation-list">
                 {(predictResult.triples || []).map((item, index) => (
@@ -905,18 +916,18 @@ function ExperimentsPage({
                     {" -> "}
                     {item.object}
                     <br />
-                    confidence: {item.confidence}
+                    置信度：{item.confidence}
                   </div>
                 ))}
               </div>
             </>
           ) : (
-            <EmptyState icon="T" title="还没有预测结果" note="从上方选择一个运行中的 deployment 并提交文本。" />
+            <EmptyState icon="T" title="还没有预测结果" note="从上方选择一个运行中的部署实例并提交文本。" />
           )}
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="Runtime Detail" title="运行快照" />
+          <SectionHeader kicker="运行明细" title="运行快照" />
           <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : selectedLogs?.content || "先在部署页查看健康或日志。"} </div>
         </article>
       </section>
@@ -927,12 +938,12 @@ function ExperimentsPage({
 function ArchivePage({ derived }) {
   return (
     <section className="page-shell card section-shell">
-      <SectionHeader kicker="Archive" title="结果归档" note="聚焦最近一次 deployment、benchmark 和 CasRel 演示报告。" />
+      <SectionHeader kicker="结果归档" title="结果归档" note="聚焦最近一次部署、基准测试和 CasRel 演示报告。" />
       <div className="metrics">
-        <MetricCard title="Latest Deployment" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "-"} />
-        <MetricCard title="Latest Benchmark" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "-"} />
-        <MetricCard title="CasRel Report" value={derived.report.status || "empty"} note={derived.report.dataset?.name || "-"} />
-        <MetricCard title="Eval Cases" value={derived.report.dataset?.prepared_eval_count || "-"} note={derived.report.dataset?.prepared_eval_file || "-"} />
+        <MetricCard title="最新部署" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "-"} />
+        <MetricCard title="最新基准" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "-"} />
+        <MetricCard title="CasRel 报告" value={formatStatusLabel(derived.report.status || "empty")} note={derived.report.dataset?.name || "-"} />
+        <MetricCard title="评测样本" value={derived.report.dataset?.prepared_eval_count || "-"} note={derived.report.dataset?.prepared_eval_file || "-"} />
       </div>
     </section>
   );
@@ -975,7 +986,7 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
   return (
     <>
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="Create Deployment" title="从模型库创建 Deployment" note="选择模型、profile 和备注，直接通过控制面创建 deployment。" />
+        <SectionHeader kicker="新建部署" title="从模型库创建部署实例" note="选择模型、配置模板和备注，直接通过控制面创建部署实例。" />
         <div className="form-grid">
           <label className="stack-field">
             <span>模型</span>
@@ -991,7 +1002,7 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
             </select>
           </label>
           <label className="stack-field">
-            <span>Profile</span>
+            <span>配置模板</span>
             <select
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, profileName: event.target.value }))}
               value={deploymentForm.profileName}
@@ -1041,7 +1052,7 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, launchRuntime: event.target.checked }))}
               type="checkbox"
             />
-            启动 runtime
+            部署后立即启动
           </label>
           <div className="actions">
             <button
@@ -1050,21 +1061,21 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
               onClick={() => void onCreateDeployment()}
               type="button"
             >
-              新建 Deployment
+              新建部署
             </button>
           </div>
         </div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="Model Library" title="模型资产" note="模型卡片支持快速查看 runtime 状态，并为可推理模型直接创建 deployment。" />
+        <SectionHeader kicker="模型库" title="模型资产" note="模型卡片支持快速查看运行状态，并为可推理模型直接创建部署实例。" />
         <div className="filter-panel">
           <div className="filter-grid">
             <label className="stack-field">
               <span>搜索模型</span>
               <input
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="模型名 / model_id / dataset / adapter"
+                placeholder="模型名 / 模型编号 / 数据集 / 适配器"
                 type="text"
                 value={search}
               />
@@ -1114,16 +1125,16 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
                   <br />
                   数据集：{model.dataset_name || "-"}
                   <br />
-                  backbone：{model.backbone}
+                  主干模型：{model.backbone}
                   <br />
-                  adapter：{model.runtime_adapter}
+                  适配器：{model.runtime_adapter}
                   <br />
-                  profile：{Object.keys(detail.resolved_profiles || {}).join(", ") || "-"}
+                  配置模板：{Object.keys(detail.resolved_profiles || {}).join(", ") || "-"}
                 </div>
                 <div className="tag-list">
-                  <span className="tag">{model.runtime_status}</span>
+                  <span className="tag">{formatStatusLabel(model.runtime_status)}</span>
                   <span className="tag">{manifest.framework || "-"}</span>
-                  <span className="tag">{manifest.stage_count || "-" } stages</span>
+                  <span className="tag">{manifest.stage_count || "-" } 个阶段</span>
                 </div>
                 <div className="actions inline-actions">
                   <button
@@ -1134,7 +1145,7 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
                         model_id: model.model_id,
                         profile_name: resolveProfileName(model.model_id, data.modelDetails, "default"),
                         launch_runtime: true,
-                        notes: "quick-create-from-models",
+                        notes: "从模型页快速创建",
                       })
                     }
                     type="button"
@@ -1217,9 +1228,9 @@ function CapabilityMatrixPage({ derived }) {
     <>
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Evidence Matrix"
+          kicker="能力矩阵"
           title="模型能力矩阵"
-          note="统一汇总模型库当前的接入状态、在线推理能力、benchmark 支持和已知限制，适合作为论文中的模型构成表与平台接入结果表。"
+          note="统一汇总模型库当前的接入状态、在线推理能力、基准测试支持和已知限制，适合作为论文中的模型构成表与平台接入结果表。"
           right={
             <div className="actions">
               <button disabled={!filteredRows.length} onClick={handleExportCapabilityMatrix} type="button">
@@ -1231,15 +1242,15 @@ function CapabilityMatrixPage({ derived }) {
 
         <div className="metrics">
           <MetricCard title="模型总数" value={derived.capabilityMatrix.length} note="当前矩阵覆盖模型数" />
-          <MetricCard title="Inference Ready" value={derived.capabilityMatrix.filter((item) => item.inference_ready).length} note="runtime_status = inference_ready" />
-          <MetricCard title="已含 Benchmark 证据" value={derived.capabilityMatrix.filter((item) => item.benchmark_count > 0).length} note="至少一条 benchmark 记录" />
+          <MetricCard title="可推理模型" value={derived.capabilityMatrix.filter((item) => item.inference_ready).length} note="运行状态为“可推理”" />
+          <MetricCard title="已有基准证据" value={derived.capabilityMatrix.filter((item) => item.benchmark_count > 0).length} note="至少一条基准测试记录" />
           <MetricCard title="支持批量推理" value={derived.capabilityMatrix.filter((item) => item.supports_batch_predict).length} note="平台支持 texts 批量入口" />
         </div>
       </section>
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Filter"
+          kicker="筛选条件"
           title="矩阵筛选"
           note={`当前显示 ${filteredRows.length} / ${derived.capabilityMatrix.length} 个模型条目。`}
         />
@@ -1248,7 +1259,7 @@ function CapabilityMatrixPage({ derived }) {
             <span>搜索模型</span>
             <input
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="model_id / model_name / dataset / limitation"
+              placeholder="模型编号 / 模型名 / 数据集 / 已知限制"
               value={search}
             />
           </label>
@@ -1256,7 +1267,7 @@ function CapabilityMatrixPage({ derived }) {
             <span>运行状态</span>
             <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
               <option value="all">全部</option>
-              <option value="ready">仅 inference_ready</option>
+              <option value="ready">仅可推理模型</option>
               <option value="limited">仅受限模型</option>
             </select>
           </label>
@@ -1266,7 +1277,7 @@ function CapabilityMatrixPage({ derived }) {
       {filteredRows.length ? (
         <section className="page-shell card section-shell">
           <SectionHeader
-            kicker="Matrix Table"
+            kicker="能力总表"
             title="固定能力总表"
             note="这里的列已经对齐论文里最常用的能力描述口径，可直接截图或导出后整理。"
           />
@@ -1276,9 +1287,9 @@ function CapabilityMatrixPage({ derived }) {
                 <tr>
                   <th>模型</th>
                   <th>数据集</th>
-                  <th>Inference Ready</th>
+                  <th>可推理</th>
                   <th>在线推理</th>
-                  <th>Benchmark</th>
+                  <th>基准测试</th>
                   <th>批量推理</th>
                   <th>证据</th>
                   <th>当前已知限制</th>
@@ -1297,8 +1308,8 @@ function CapabilityMatrixPage({ derived }) {
                     <td>{item.supports_benchmark ? "是" : "否"}</td>
                     <td>{item.supports_batch_predict ? "是" : "否"}</td>
                     <td>
-                      <div>deployment: {item.deployment_count}</div>
-                      <div>benchmark: {item.benchmark_count}</div>
+                      <div>部署：{item.deployment_count}</div>
+                      <div>基准：{item.benchmark_count}</div>
                       <div className="mono">{item.latest_benchmark_id || item.latest_deployment_id || "-"}</div>
                     </td>
                     <td className="limitation-cell">{item.known_limitations || "暂无显式限制。"}</td>
@@ -1320,7 +1331,7 @@ function CapabilityMatrixPage({ derived }) {
 function ArtifactsPage({ data }) {
   return (
     <section className="page-shell card section-shell">
-      <SectionHeader kicker="Artifacts" title="制品包清单" note="展示 manifest 与解析后的制品路径，便于检查平台识别结果。" />
+      <SectionHeader kicker="制品清单" title="制品包清单" note="展示 manifest 与解析后的制品路径，便于检查平台识别结果。" />
       <div className="list-grid">
         {Object.values(data.modelDetails).map((detail) => (
           <article className="list-card" key={detail.summary?.model_id}>
@@ -1391,12 +1402,12 @@ function DeploymentsPage({
     <>
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Deployment Control"
+          kicker="部署控制"
           title="部署控制"
-          note="可以在这里创建、停止、重启和删除 deployment。threads / instance_count / batch_size 已接入 runtime。"
+          note="可以在这里创建、停止、重启和删除部署实例。线程数、实例数和批量大小都已经真实接入运行时。"
         />
         <div className="banner banner-muted">
-          如果某个 deployment 是在 2026-03-28 这次 profile 更新前创建且一直没有重启，它仍可能运行旧参数。重启一次后，新的线程数、worker 数和 batch 配置才会真正生效。
+          如果某个部署实例是在 2026-03-28 这次配置模板更新前创建且一直没有重启，它仍可能运行旧参数。重启一次后，新的线程数、实例数和批量配置才会真正生效。
         </div>
         <div className="form-grid">
           <label className="stack-field">
@@ -1413,7 +1424,7 @@ function DeploymentsPage({
             </select>
           </label>
           <label className="stack-field">
-            <span>Profile</span>
+            <span>配置模板</span>
             <select
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, profileName: event.target.value }))}
               value={deploymentForm.profileName}
@@ -1463,7 +1474,7 @@ function DeploymentsPage({
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, launchRuntime: event.target.checked }))}
               type="checkbox"
             />
-            启动 runtime
+            部署后立即启动
           </label>
           <div className="actions">
             <button
@@ -1472,21 +1483,21 @@ function DeploymentsPage({
               onClick={() => void onCreateDeployment()}
               type="button"
             >
-              创建 Deployment
+              创建部署
             </button>
           </div>
         </div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="Deployment List" title="部署列表" />
+        <SectionHeader kicker="部署列表" title="部署列表" />
         <div className="filter-panel">
           <div className="filter-grid">
             <label className="stack-field">
-              <span>搜索 deployment</span>
+              <span>搜索部署</span>
               <input
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="deployment_id / model_id / notes / service_url"
+                placeholder="部署编号 / 模型编号 / 备注 / 服务地址"
                 type="text"
                 value={search}
               />
@@ -1536,12 +1547,12 @@ function DeploymentsPage({
             <table>
               <thead>
                 <tr>
-                  <th>Deployment</th>
+                  <th>部署编号</th>
                   <th>模型</th>
-                  <th>Profile</th>
+                  <th>配置模板</th>
                   <th>执行参数</th>
                   <th>状态</th>
-                  <th>Service URL</th>
+                  <th>服务地址</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -1558,10 +1569,10 @@ function DeploymentsPage({
                     </td>
                     <td>
                       <div className="table-note">{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}</div>
-                      <div className="table-note">use_gpu: {item.use_gpu ? "yes" : "no"}</div>
-                      <div className="table-note">gpu: {formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
+                      <div className="table-note">GPU 加速：{formatBooleanLabel(item.use_gpu)}</div>
+                      <div className="table-note">GPU 卡号：{formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
                       <div className="table-note">{formatExecutionSummary(item)}</div>
-                      <div className="table-note">provider: {formatProviderSummary(item)}</div>
+                      <div className="table-note">执行后端：{formatProviderSummary(item)}</div>
                     </td>
                     <td><StatusPill status={item.status} /></td>
                     <td>
@@ -1584,7 +1595,7 @@ function DeploymentsPage({
           ) : (
             <EmptyState
               icon="D"
-              note={derived.deployments.length ? "当前筛选条件下没有匹配 deployment。" : "平台里还没有创建 deployment。"}
+              note={derived.deployments.length ? "当前筛选条件下没有匹配部署记录。" : "平台里还没有创建部署实例。"}
               title="暂无部署记录"
             />
           )}
@@ -1593,12 +1604,12 @@ function DeploymentsPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="Selected Health" title="健康状态" />
-          <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : "点击 deployment 的“健康”按钮后在此显示。"} </div>
+          <SectionHeader kicker="已选健康" title="健康状态" />
+          <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : "点击部署实例的“健康”按钮后在此显示。"} </div>
         </article>
         <article className="card detail-card">
-          <SectionHeader kicker="Selected Logs" title="运行日志" />
-          <div className="logs">{selectedLogs?.content || "点击 deployment 的“日志”按钮后在此显示。"}</div>
+          <SectionHeader kicker="已选日志" title="运行日志" />
+          <div className="logs">{selectedLogs?.content || "点击部署实例的“日志”按钮后在此显示。"}</div>
         </article>
       </section>
     </>
@@ -1873,11 +1884,11 @@ function BenchmarksPage({
   return (
     <>
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="Create Benchmark" title="新建基准测试" note="为运行中的 deployment 发起 benchmark，并将结果写回平台。" />
+        <SectionHeader kicker="新建基准" title="新建基准测试" note="为运行中的部署实例发起基准测试，并将结果写回平台。" />
         {derived.runningDeployments.length ? (
           <div className="form-grid">
             <label className="stack-field">
-              <span>Deployment</span>
+              <span>部署实例</span>
               <select
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, deploymentId: event.target.value }))}
                 value={benchmarkForm.deploymentId}
@@ -1890,7 +1901,7 @@ function BenchmarksPage({
               </select>
             </label>
             <label className="stack-field">
-              <span>Label</span>
+              <span>标签</span>
               <input
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, label: event.target.value }))}
                 type="text"
@@ -1898,7 +1909,7 @@ function BenchmarksPage({
               />
             </label>
             <label className="stack-field">
-              <span>Iterations</span>
+              <span>重复次数</span>
               <input
                 min="1"
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, iterations: event.target.value }))}
@@ -1907,7 +1918,7 @@ function BenchmarksPage({
               />
             </label>
             <label className="stack-field">
-              <span>Warmup</span>
+              <span>预热轮数</span>
               <input
                 min="0"
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, warmupRuns: event.target.value }))}
@@ -1925,24 +1936,24 @@ function BenchmarksPage({
             </label>
             <div className="actions">
               <button className="btn-primary" disabled={actionBusy["create-benchmark"]} onClick={() => void onCreateBenchmark()} type="button">
-                新建 Benchmark
+                新建基准
               </button>
             </div>
           </div>
         ) : (
-          <EmptyState icon="B" title="暂无运行中的 Deployment" note="先创建并启动 deployment，才能在这里发起 benchmark。" />
+          <EmptyState icon="B" title="暂无运行中的部署实例" note="先创建并启动部署实例，才能在这里发起基准测试。" />
         )}
       </section>
 
       <section className="page-shell card table-shell">
-        <SectionHeader kicker="Benchmark Records" title="基准记录" />
+        <SectionHeader kicker="基准记录" title="基准记录" />
         <div className="filter-panel filter-panel-table">
           <div className="filter-grid">
             <label className="stack-field">
-              <span>搜索 benchmark</span>
+              <span>搜索基准</span>
               <input
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="benchmark_id / label / model_id / deployment_id"
+                placeholder="基准编号 / 标签 / 模型编号 / 部署编号"
                 type="text"
                 value={search}
               />
@@ -1992,7 +2003,7 @@ function BenchmarksPage({
             <table>
               <thead>
                 <tr>
-                  <th>Benchmark</th>
+                  <th>基准编号</th>
                   <th>模型</th>
                   <th>状态</th>
                   <th>吞吐量</th>
@@ -2029,7 +2040,7 @@ function BenchmarksPage({
           ) : (
             <EmptyState
               icon="☰"
-              note={derived.benchmarks.length ? "当前筛选条件下没有匹配 benchmark。" : "创建 benchmark 后会在这里出现。"}
+              note={derived.benchmarks.length ? "当前筛选条件下没有匹配基准记录。" : "创建基准测试后会在这里出现。"}
               title="暂无基准记录"
             />
           )}
@@ -2038,9 +2049,9 @@ function BenchmarksPage({
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Paper Snapshot"
+          kicker="论文截图专区"
           title="论文截图视图"
-          note="选择单个模型后，一键生成更适合论文截图的 profile 对比条形图和结论卡片。导出文件仍会下载到你本地浏览器默认下载目录。"
+          note="选择单个模型后，一键生成更适合论文截图的配置模板对比条形图和结论卡片。导出文件仍会下载到你本地浏览器默认下载目录。"
           right={
             <div className="actions">
               <button className="btn-primary" disabled={!compareModelOptions.length} onClick={handleGeneratePaperView} type="button">
@@ -2074,15 +2085,15 @@ function BenchmarksPage({
           <>
             <div className="paper-summary-grid">
               <article className="paper-hero-card">
-                <div className="paper-hero-kicker">Paper Ready</div>
+                <div className="paper-hero-kicker">可用于论文</div>
                 <h3>{paperModelId}</h3>
                 <p>
-                  当前页面已经按 profile 聚合了该模型的已完成 benchmark，可直接用于论文截图、性能趋势说明和实验对比表整理。
+                  当前页面已经按配置模板聚合了该模型的已完成基准记录，可直接用于论文截图、性能趋势说明和实验对比表整理。
                 </p>
                 <div className="tag-list">
-                  <span className="tag">profiles: {selectedPaperModelRows.length}</span>
-                  <span className="tag">runs: {selectedPaperModelRows.reduce((sum, item) => sum + item.run_count, 0)}</span>
-                  <span className="tag">provider: {selectedPaperModelRows[0]?.providers || "pending"}</span>
+                  <span className="tag">模板数：{selectedPaperModelRows.length}</span>
+                  <span className="tag">运行次数：{selectedPaperModelRows.reduce((sum, item) => sum + item.run_count, 0)}</span>
+                  <span className="tag">执行后端：{selectedPaperModelRows[0]?.providers || "待检测"}</span>
                 </div>
               </article>
               <MetricCard
@@ -2105,13 +2116,13 @@ function BenchmarksPage({
             <div className="paper-chart-grid">
               <article className="paper-chart-card">
                 <div className="paper-chart-title">平均延迟对比</div>
-                <div className="paper-chart-note">单位 ms，越低越好</div>
+                <div className="paper-chart-note">单位毫秒，越低越好</div>
                 <div className="paper-bar-list">
                   {selectedPaperModelRows.map((item) => (
                     <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-latency`}>
                       <div className="paper-bar-label">
                         <strong>{item.profile_name}</strong>
-                        <span>batch {formatFixed(item.avg_batch_size, 2)} / workers {item.instance_count ?? "-"}</span>
+                        <span>批量 {formatFixed(item.avg_batch_size, 2)} / 实例 {item.instance_count ?? "-"}</span>
                       </div>
                       <div className="paper-bar-track">
                         <div
@@ -2127,13 +2138,13 @@ function BenchmarksPage({
 
               <article className="paper-chart-card">
                 <div className="paper-chart-title">吞吐量对比</div>
-                <div className="paper-chart-note">单位 qps，越高越好</div>
+                <div className="paper-chart-note">单位 QPS，越高越好</div>
                 <div className="paper-bar-list">
                   {selectedPaperModelRows.map((item) => (
                     <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-throughput`}>
                       <div className="paper-bar-label">
                         <strong>{item.profile_name}</strong>
-                        <span>intra {item.intra_op_threads ?? "-"} / inter {item.inter_op_threads ?? "-"}</span>
+                        <span>算子内 {item.intra_op_threads ?? "-"} / 算子间 {item.inter_op_threads ?? "-"}</span>
                       </div>
                       <div className="paper-bar-track">
                         <div
@@ -2149,13 +2160,13 @@ function BenchmarksPage({
 
               <article className="paper-chart-card">
                 <div className="paper-chart-title">成功率对比</div>
-                <div className="paper-chart-note">按 total_requests 统计</div>
+                <div className="paper-chart-note">按总请求数统计</div>
                 <div className="paper-bar-list">
                   {selectedPaperModelRows.map((item) => (
                     <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-success`}>
                       <div className="paper-bar-label">
                         <strong>{item.profile_name}</strong>
-                        <span>max_len {item.max_length ?? "-"} / device {item.device || "-"}</span>
+                        <span>最大长度 {item.max_length ?? "-"} / 设备 {item.device || "-"}</span>
                       </div>
                       <div className="paper-bar-track">
                         <div
@@ -2174,16 +2185,16 @@ function BenchmarksPage({
           <EmptyState
             icon="S"
             title="先生成一个单模型论文视图"
-            note="选择某个模型后点击“生成论文视图”，这里就会出现更适合截图的 profile 图表。"
+            note="选择某个模型后点击“生成论文视图”，这里就会出现更适合截图的配置模板图表。"
           />
         )}
       </section>
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Profile Compare"
-          title="Profile 对比视图"
-          note="按模型聚合已完成 benchmark，直接比较不同 profile 的平均延迟、P95、吞吐和成功率。CSV 导出会由浏览器下载到你本地电脑。"
+          kicker="模板对比"
+          title="配置模板对比视图"
+          note="按模型聚合已完成基准测试，直接比较不同配置模板的平均延迟、P95、吞吐量和成功率。CSV 导出会由浏览器下载到你本地电脑。"
           right={
             <div className="actions">
               <button disabled={!compareRows.length} onClick={handleExportCompareRows} type="button">
@@ -2208,7 +2219,7 @@ function BenchmarksPage({
           </div>
           <div className="filter-foot">
             <div className="filter-meta">
-              当前聚合 {compareRows.length} 个 model/profile 组合，基于 {completedBenchmarks.length} 条已完成 benchmark。
+              当前聚合 {compareRows.length} 个模型/模板组合，基于 {completedBenchmarks.length} 条已完成基准记录。
             </div>
           </div>
         </div>
@@ -2234,23 +2245,23 @@ function BenchmarksPage({
               <MetricCard
                 title="已完成记录"
                 value={completedBenchmarks.length}
-                note="仅 completed benchmark 纳入聚合"
+                note="仅“已完成”基准记录纳入聚合"
               />
             </div>
             <div className="table-wrap compare-table-wrap">
               <table>
                 <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th>Profile</th>
-                    <th>样本数</th>
-                    <th>平均延迟</th>
-                    <th>P95</th>
-                    <th>吞吐量</th>
-                    <th>成功率</th>
-                    <th>平均 Batch</th>
-                    <th>最新记录</th>
-                  </tr>
+                <tr>
+                  <th>模型</th>
+                  <th>配置模板</th>
+                  <th>样本数</th>
+                  <th>平均延迟</th>
+                  <th>P95</th>
+                  <th>吞吐量</th>
+                  <th>成功率</th>
+                  <th>平均批量</th>
+                  <th>最新记录</th>
+                </tr>
                 </thead>
                 <tbody>
                   {compareRows.map((item) => (
@@ -2276,15 +2287,15 @@ function BenchmarksPage({
         ) : (
           <EmptyState
             icon="P"
-            title="暂无可对比的 benchmark"
-            note="先运行至少一条 completed benchmark，Profile 对比视图才会出现聚合结果。"
+            title="暂无可对比的基准记录"
+            note="先运行至少一条已完成的基准记录，配置模板对比视图才会出现聚合结果。"
           />
         )}
       </section>
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Paper Table"
+          kicker="论文表格"
           title="论文表格视图"
           note="这一块按模型聚合生成更规整的实验表，适合直接截图或抄到论文正文。"
           right={
@@ -2301,17 +2312,17 @@ function BenchmarksPage({
               <thead>
                 <tr>
                   <th>模型</th>
-                  <th>Profile</th>
-                  <th>Batch</th>
-                  <th>Workers</th>
-                  <th>Intra</th>
-                  <th>Inter</th>
-                  <th>MaxLen</th>
-                  <th>Avg Latency</th>
+                  <th>配置模板</th>
+                  <th>批量</th>
+                  <th>实例数</th>
+                  <th>算子内线程</th>
+                  <th>算子间线程</th>
+                  <th>最大长度</th>
+                  <th>平均延迟</th>
                   <th>P95</th>
-                  <th>Throughput</th>
-                  <th>Success</th>
-                  <th>Runs</th>
+                  <th>吞吐量</th>
+                  <th>成功率</th>
+                  <th>运行次数</th>
                 </tr>
               </thead>
               <tbody>
@@ -2344,7 +2355,7 @@ function BenchmarksPage({
           <EmptyState
             icon="T"
             title="暂无论文表格数据"
-            note="先运行 completed benchmark，或者在上方生成某个模型的论文视图。"
+            note="先运行已完成的基准记录，或者在上方生成某个模型的论文视图。"
           />
         )}
       </section>
@@ -2397,9 +2408,9 @@ function ResourcesPage({ derived }) {
             </div>
           </article>
           <article className="resource-card">
-            <h4>Provider</h4>
+            <h4>执行后端</h4>
             <div className="resource-meta">
-              {Array.from(providerSet).join(" / ") || "pending"}
+              {Array.from(providerSet).join(" / ") || "待检测"}
             </div>
           </article>
         </div>
@@ -2407,9 +2418,9 @@ function ResourcesPage({ derived }) {
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="GPU Status"
+          kicker="GPU 状态"
           title="GPU 状态总览"
-          note="直接读取服务器 nvidia-smi，展示每张卡的显存占用、活跃进程，以及 LuckyModels deployment 的绑定关系。"
+          note="直接读取服务器 nvidia-smi，展示每张卡的显存占用、活跃进程，以及 LuckyModels 部署实例的绑定关系。"
         />
         {gpuStatus.available ? (
           <div className="table-wrap">
@@ -2483,9 +2494,9 @@ function ResourcesPage({ derived }) {
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="Runtime Snapshot"
+          kicker="运行快照"
           title="运行实例快照"
-          note="这里展示运行中 deployment 的真实 GPU 绑定、provider、threads、batch 和健康状态。"
+          note="这里展示运行中部署实例的真实 GPU 绑定、执行后端、线程配置、批量参数和健康状态。"
         />
         {runtimeSnapshots.length ? (
           <div className="list-grid runtime-grid">
@@ -2499,29 +2510,29 @@ function ResourcesPage({ derived }) {
                   <StatusPill status={item.status} />
                 </div>
                 <div className="runtime-meta">
-                  profile：<strong>{item.profile_name}</strong>
+                  配置模板：<strong>{item.profile_name}</strong>
                   <br />
-                  device / runtime：{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}
+                  设备 / 运行时：{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}
                   <br />
-                  use_gpu：{item.use_gpu ? "yes" : "no"}
+                  是否使用 GPU：{formatBooleanLabel(item.use_gpu)}
                   <br />
-                  assigned gpu：{formatGpuIds(getDeploymentAssignedGpuIds(item))}
+                  分配 GPU：{formatGpuIds(getDeploymentAssignedGpuIds(item))}
                   <br />
-                  visible gpu：{payload.cuda_visible_devices || "all"}
+                  可见 GPU：{payload.cuda_visible_devices || "全部"}
                   <br />
-                  workers：{execution.instance_count ?? 1}
+                  实例数：{execution.instance_count ?? 1}
                   <br />
-                  batch_size：{execution.batch_size ?? 1}
+                  批量大小：{execution.batch_size ?? 1}
                   <br />
-                  intra / inter threads：{execution.intra_op_threads ?? 0} / {execution.inter_op_threads ?? 0}
+                  算子内 / 算子间线程：{execution.intra_op_threads ?? 0} / {execution.inter_op_threads ?? 0}
                   <br />
-                  providers：{providers.join(", ") || "pending"}
+                  执行后端：{providers.join(", ") || "待检测"}
                   <br />
-                  pid_alive：{String(item.health?.pid_alive ?? false)}
+                  进程存活：{formatBooleanLabel(item.health?.pid_alive ?? false)}
                   <br />
-                  sessions_loaded：{String(payload.sessions_loaded ?? false)}
+                  会话已加载：{formatBooleanLabel(payload.sessions_loaded ?? false)}
                   <br />
-                  service_url：<span className="mono">{item.service_url || "-"}</span>
+                  服务地址：<span className="mono">{item.service_url || "-"}</span>
                 </div>
               </article>
             ))}
@@ -2530,7 +2541,7 @@ function ResourcesPage({ derived }) {
           <EmptyState
             icon="R"
             title="暂无运行快照"
-            note="先启动一个 deployment，平台才会自动采集 healthz 并展示真实执行参数。"
+            note="先启动一个部署实例，平台才会自动采集 healthz 并展示真实执行参数。"
           />
         )}
       </section>
@@ -2541,8 +2552,8 @@ function ResourcesPage({ derived }) {
 function LogsPage({ derived, selectedLogs }) {
   return (
     <section className="page-shell card section-shell">
-      <SectionHeader kicker="Logs" title="日志中心" note="默认展示当前选中的 deployment 日志，没有选择时回退到最近 CasRel report 日志。" />
-      <div className="logs">{selectedLogs?.content || derived.report.logs?.content || "先到部署页加载某个 deployment 的日志。"}</div>
+      <SectionHeader kicker="日志中心" title="日志中心" note="默认展示当前选中的部署实例日志，没有选择时回退到最近 CasRel 报告日志。" />
+      <div className="logs">{selectedLogs?.content || derived.report.logs?.content || "先到部署页加载某个部署实例的日志。"}</div>
     </section>
   );
 }

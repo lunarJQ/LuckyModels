@@ -1,4 +1,4 @@
-import { escapeValue, statusClass } from "./utils";
+import { escapeValue, formatStatusLabel, statusClass } from "./utils";
 
 export function MetricCard({ title, value, note }) {
   return (
@@ -11,7 +11,7 @@ export function MetricCard({ title, value, note }) {
 }
 
 export function StatusPill({ status }) {
-  return <span className={`status ${statusClass(status)}`}>{escapeValue(status)}</span>;
+  return <span className={`status ${statusClass(status)}`}>{escapeValue(formatStatusLabel(status))}</span>;
 }
 
 export function EmptyState({ icon, title, note, wide = false }) {
