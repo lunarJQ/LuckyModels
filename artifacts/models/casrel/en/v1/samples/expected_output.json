@@ -1,0 +1,12 @@
+{
+  "note": "This file documents the intended output structure for UI and API integration.",
+  "triples": [
+    {
+      "subject": "Bananaman",
+      "predicate": "creator",
+      "object": "Bright",
+      "confidence": 0.5,
+      "evidence": "Tim Brooke-Taylor was the star of Bananaman , an STV series first aired on 10/03/1983 and created by Steve Bright ."
+    }
+  ]
+}

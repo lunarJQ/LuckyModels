@@ -1,0 +1,45 @@
+model_id: prgc-en-webnlg-v1
+model_name: PRGC
+model_family: prgc
+task_type: relation_extraction
+language: en
+framework: onnxruntime
+runtime_adapter: metadata_only_adapter
+version: v1
+dataset_name: webnlg
+dataset_split: dev
+stage_count: 2
+predict_ready: false
+backbone: bert-base-cased
+
+artifacts:
+  stage1_model: artifacts/prgc_stage1_encoder.onnx
+  stage2_model: artifacts/prgc_stage2_tagger.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/vocab.txt
+
+labels:
+  relation_map: labels/rel2id.json
+  schema_path: labels/config.json
+  entity_map: labels/params.json
+
+inference:
+  max_length: 100
+  batch_size: 1
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Pad tokenized inputs to length 100.
+  - Run stage 1 relation filtering before invoking stage 2.
+  - Decode final triples from relation, correspondence, and sequence-tag outputs in Python.
+
+runtime_notes:
+  - PRGC is exported as two ONNX stages with external relation filtering and final decoding.

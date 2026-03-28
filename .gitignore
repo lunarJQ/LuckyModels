@@ -13,3 +13,11 @@ data/logs/
 pages/
 apps/web/node_modules/
 apps/api/luckymodels_api/ui/dist/
+datasets/sciERC_raw/
+onnx/copymtl_webnlg_model/
+onnx/graphrel_nyt_model/
+onnx/onerel_webnlg_model/
+onnx/prgc_webnlg_model/
+onnx/pure_scierc_model/
+onnx/spert_scierc_model/
+onnx/tplinker_webnlg_model/

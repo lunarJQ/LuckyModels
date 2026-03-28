@@ -30,7 +30,20 @@ def main() -> int:
         print("No models were found under artifacts/models.")
         return 1
 
-    model_id = models[0]["model_id"]
+    preferred_model_id = "casrel-en-webnlg-v1"
+    model_id = next(
+        (
+            item["model_id"]
+            for item in models
+            if item["model_id"] == preferred_model_id and item.get("predict_ready")
+        ),
+        None,
+    )
+    if model_id is None:
+        model_id = next(
+            (item["model_id"] for item in models if item.get("predict_ready")),
+            models[0]["model_id"],
+        )
     print(f"\nUsing model: {model_id}")
 
     create_response = client.post(

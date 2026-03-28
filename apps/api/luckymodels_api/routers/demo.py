@@ -49,7 +49,7 @@ def run_casrel_demo() -> dict[str, object]:
     try:
         deployment = create_deployment(
             DeploymentCreateRequest(
-                model_id="casrel-zh-v1",
+                model_id="casrel-en-webnlg-v1",
                 profile_name="default",
                 launch_runtime=True,
                 notes="casrel_demo_run",

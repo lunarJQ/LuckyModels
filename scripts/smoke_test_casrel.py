@@ -8,10 +8,10 @@ from luckymodels_core.manifest import load_manifest, load_profile
 
 def main() -> None:
     manifest = load_manifest(
-        "/home/liujingqian/LuckyModels/artifacts/models/casrel/zh/v1/manifest.yaml"
+        "/home/liujingqian/LuckyModels/artifacts/models/casrel/en/v1/manifest.yaml"
     )
     profile = load_profile(
-        "/home/liujingqian/LuckyModels/artifacts/models/casrel/zh/v1/profiles/default.yaml"
+        "/home/liujingqian/LuckyModels/artifacts/models/casrel/en/v1/profiles/default.yaml"
     )
     adapter = CasRelAdapter(manifest, profile)
     adapter.load()
@@ -25,8 +25,8 @@ def main() -> None:
     print()
 
     samples = [
-        "ABC设备主轴发生振动异常，需要检查主轴轴承。",
-        "The 1st runway length in feet is 14000.",
+        "Tim Brooke-Taylor was the star of Bananaman , an STV series first aired on 10/03/1983 and created by Steve Bright .",
+        "Baymax is a character in Big Hero 6 that stars Damon Wayans Jr . The character was created by the American , Duncan Rouleau .",
     ]
     for text in samples:
         result = adapter.predict(

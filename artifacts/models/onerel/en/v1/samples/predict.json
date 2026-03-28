@@ -1,0 +1,7 @@
+{
+  "text": "Tim Brooke-Taylor was the star of Bananaman , an STV series first aired on 10/03/1983 and created by Steve Bright .",
+  "scene": "webnlg_relation_extraction",
+  "options": {
+    "max_length": 100
+  }
+}

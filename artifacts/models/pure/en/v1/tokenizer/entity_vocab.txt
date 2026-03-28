@@ -1,0 +1,1 @@
+/home/liujingqian/LuckyModels/onnx/pure_scierc_model/entity_assets/vocab.txt

@@ -1,0 +1,7 @@
+{
+  "text": "Baymax is a character in Big Hero 6 that stars Damon Wayans Jr . The character was created by the American , Duncan Rouleau .",
+  "scene": "webnlg_relation_extraction",
+  "options": {
+    "max_length": 80
+  }
+}

@@ -1,0 +1,44 @@
+model_id: tplinker-en-webnlg-v1
+model_name: TPLinker
+model_family: tplinker
+task_type: relation_extraction
+language: en
+framework: onnxruntime
+runtime_adapter: metadata_only_adapter
+version: v1
+dataset_name: webnlg
+dataset_split: dev
+stage_count: 1
+predict_ready: false
+backbone: bert-base-cased
+
+artifacts:
+  model: artifacts/tplinker_bert.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/vocab.txt
+  tokenizer_path: tokenizer/tokenizer.json
+
+labels:
+  relation_map: labels/rel2id.json
+  schema_path: labels/config.json
+
+inference:
+  max_length: 100
+  batch_size: 1
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Truncate and pad tokenized inputs to the exported fixed length of 100.
+  - Preserve shaking-tag decoding logic in the Python inference service.
+  - Reconstruct triples from entity and relation shaking logits after ONNX execution.
+
+runtime_notes:
+  - TPLinker is exported as a single ONNX graph, but final triple decoding is still external.

@@ -1,0 +1,43 @@
+model_id: graphrel-en-webnlg-v1
+model_name: GraphRel
+model_family: graphrel
+task_type: relation_extraction
+language: en
+framework: onnxruntime
+runtime_adapter: metadata_only_adapter
+version: v1
+dataset_name: webnlg
+dataset_split: dev
+stage_count: 1
+predict_ready: false
+backbone: graphrel-2p-spacy
+
+artifacts:
+  model: artifacts/graphrel.onnx
+
+tokenizer:
+  type: spacy_en_core_web_lg
+
+labels:
+  relation_map: labels/id2rel.json
+  entity_map: labels/ne_labels.json
+  schema_path: labels/pos_tags.json
+
+inference:
+  max_length: 120
+  batch_size: 1
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Run spaCy preprocessing with en_core_web_lg before ONNX execution.
+  - Build POS ids and forward/backward dependency adjacency matrices in Python.
+  - Decode entity and relation outputs into triples after ONNX execution.
+
+runtime_notes:
+  - The raw export folder is named graphrel_nyt_model, but LuckyModels currently maps this package to WebNLG evaluation according to the project requirement.

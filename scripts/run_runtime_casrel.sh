@@ -28,8 +28,8 @@ if [[ "$RUNTIME_PORT" != "$REQUESTED_RUNTIME_PORT" ]]; then
   echo "Requested runtime port ${REQUESTED_RUNTIME_PORT} is busy, switched to ${RUNTIME_PORT}"
 fi
 
-export LUCKYMODELS_MANIFEST_PATH="$ROOT_DIR/artifacts/models/casrel/zh/v1/manifest.yaml"
-export LUCKYMODELS_PROFILE_PATH="$ROOT_DIR/artifacts/models/casrel/zh/v1/profiles/default.yaml"
+export LUCKYMODELS_MANIFEST_PATH="$ROOT_DIR/artifacts/models/casrel/en/v1/manifest.yaml"
+export LUCKYMODELS_PROFILE_PATH="$ROOT_DIR/artifacts/models/casrel/en/v1/profiles/default.yaml"
 
 cd "$ROOT_DIR"
 echo "Starting LuckyModels runtime on ${RUNTIME_HOST}:${RUNTIME_PORT}"

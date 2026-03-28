@@ -1,0 +1,46 @@
+model_id: pure-en-scierc-v1
+model_name: PURE
+model_family: pure
+task_type: relation_extraction
+language: en
+framework: onnxruntime
+runtime_adapter: metadata_only_adapter
+version: v1
+dataset_name: scierc
+dataset_split: raw
+stage_count: 2
+predict_ready: false
+backbone: bert-base-cased
+
+artifacts:
+  entity_model: artifacts/pure_entity.onnx
+  relation_model: artifacts/pure_relation.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/entity_vocab.txt
+  tokenizer_path: tokenizer/entity_tokenizer_config.json
+
+labels:
+  entity_map: labels/ner_label_list.json
+  relation_map: labels/relation_label_list.json
+  schema_path: labels/entity_config.json
+
+inference:
+  max_length: 256
+  batch_size: 1
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Enumerate candidate spans before entity-stage execution.
+  - Construct relation samples with marker token insertion between the two ONNX stages.
+  - Decode final entity and relation triples outside the exported ONNX files.
+
+runtime_notes:
+  - PURE is packaged as two ONNX stages and still needs custom orchestration in the inference service.

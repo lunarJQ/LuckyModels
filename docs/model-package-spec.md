@@ -63,15 +63,19 @@ Provides a minimal request example for:
 ## 4. Recommended Manifest Example
 
 ```yaml
-model_id: casrel-zh-v1
+model_id: casrel-en-webnlg-v1
 model_name: CasRel
 model_family: casrel
 task_type: relation_extraction
-language: zh
+language: en
 framework: onnxruntime
 runtime_adapter: casrel_adapter
 version: v1
-backbone: bert-base-chinese
+dataset_name: webnlg
+dataset_split: dev
+stage_count: 2
+predict_ready: true
+backbone: bert-base-cased
 
 artifacts:
   subject_model: artifacts/casrel_subject.onnx
@@ -88,14 +92,15 @@ inference:
   max_length: 256
   batch_size: 1
   thresholds:
-    subject: 0.5
-    object: 0.5
+    subject: 0.0001
+    object: 0.0001
 
 profiles:
   default: profiles/default.yaml
   latency: profiles/latency.yaml
   balanced: profiles/balanced.yaml
   memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
 ```
 
 ## 5. Adapter Responsibility
@@ -122,6 +127,7 @@ The platform validates:
 - required manifest fields
 - profile existence
 - referenced files exist on disk
+- package status metadata such as `predict_ready` and adapter availability
 
 ## 7. Why This Matters
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .adapters.factory import has_adapter
 from .manifest import load_manifest, validate_loaded_manifest
 from .schemas import LoadedManifest, ModelDetail, ModelSummary
 
@@ -33,12 +34,26 @@ class ArtifactRegistry:
     @staticmethod
     def _to_summary(item: LoadedManifest) -> ModelSummary:
         manifest = item.manifest
+        adapter_available = has_adapter(manifest.runtime_adapter)
+        runtime_status = (
+            "inference_ready"
+            if manifest.predict_ready and adapter_available
+            else "package_ready"
+        )
         return ModelSummary(
             model_id=manifest.model_id,
             model_name=manifest.model_name,
             model_family=manifest.model_family,
+            task_type=manifest.task_type,
             language=manifest.language,
             version=manifest.version,
+            framework=manifest.framework,
+            backbone=manifest.backbone,
+            dataset_name=manifest.dataset_name,
+            stage_count=manifest.stage_count,
+            predict_ready=manifest.predict_ready,
+            adapter_available=adapter_available,
+            runtime_status=runtime_status,
             runtime_adapter=manifest.runtime_adapter,
             package_root=item.package_root,
         )

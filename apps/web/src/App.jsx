@@ -516,9 +516,17 @@ function ModelsPage({ data, derived }) {
                   <br />
                   家族：{model.model_family}
                   <br />
+                  任务：{model.task_type}
+                  <br />
                   语言：{model.language}
                   <br />
                   版本：{model.version}
+                  <br />
+                  数据集：{model.dataset_name || "-"}
+                  <br />
+                  运行状态：{model.runtime_status}
+                  <br />
+                  阶段数：{model.stage_count}
                   <br />
                   Runtime Adapter：{model.runtime_adapter}
                   <br />
@@ -527,6 +535,7 @@ function ModelsPage({ data, derived }) {
                 <div className="tag-list">
                   <span className="tag">{manifest.framework || "-"}</span>
                   <span className="tag">{manifest.backbone || "-"}</span>
+                  <span className="tag">{model.predict_ready ? "predict-ready" : "package-only"}</span>
                   <span className="tag">{model.package_root || "-"}</span>
                 </div>
               </article>
@@ -564,6 +573,10 @@ function ArtifactsPage({ data }) {
                 <div className="list-card-body">
                   package_root：<span className="mono">{detail.summary?.package_root || "-"}</span>
                   <br />
+                  dataset：{manifest.dataset_name || "-"}
+                  <br />
+                  stage_count：{manifest.stage_count ?? "-"}
+                  <br />
                   tokenizer：{manifest.tokenizer?.type || "-"}
                   <br />
                   labels：{manifest.labels?.relation_map || "-"}
@@ -573,6 +586,7 @@ function ArtifactsPage({ data }) {
                   batch_size：{manifest.inference?.batch_size ?? "-"}
                 </div>
                 <div className="tag-list">
+                  <span className="tag">{manifest.predict_ready ? "predict-ready" : "package-only"}</span>
                   {Object.entries(detail.resolved_artifacts || {}).map(([name, path]) => (
                     <span className="tag" key={`${detail.summary?.model_id}-${name}`}>
                       {name}: {path}
@@ -581,6 +595,11 @@ function ArtifactsPage({ data }) {
                   {Object.keys(detail.resolved_profiles || {}).map((name) => (
                     <span className="tag" key={`${detail.summary?.model_id}-${name}-profile`}>
                       profile: {name}
+                    </span>
+                  ))}
+                  {(manifest.deployment_requirements || []).map((name, index) => (
+                    <span className="tag" key={`${detail.summary?.model_id}-req-${index + 1}`}>
+                      need: {name}
                     </span>
                   ))}
                 </div>

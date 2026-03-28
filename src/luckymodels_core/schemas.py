@@ -42,12 +42,18 @@ class ManifestModel(BaseModel):
     framework: str
     runtime_adapter: str
     version: str
+    dataset_name: str | None = None
+    dataset_split: str | None = None
+    stage_count: int = 1
+    predict_ready: bool = True
     backbone: str
     artifacts: dict[str, str]
     tokenizer: TokenizerConfig
     labels: LabelsConfig
     inference: InferenceConfig
     profiles: dict[str, str]
+    deployment_requirements: list[str] = Field(default_factory=list)
+    runtime_notes: list[str] = Field(default_factory=list)
 
 
 class LoadedManifest(BaseModel):
@@ -74,8 +80,16 @@ class ModelSummary(BaseModel):
     model_id: str
     model_name: str
     model_family: str
+    task_type: str
     language: str
     version: str
+    framework: str
+    backbone: str
+    dataset_name: str | None = None
+    stage_count: int = 1
+    predict_ready: bool = True
+    adapter_available: bool = True
+    runtime_status: str = "inference_ready"
     runtime_adapter: str
     package_root: str
 

@@ -31,6 +31,16 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    if request.launch_runtime and not model.summary.predict_ready:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model {request.model_id} is package-ready only. "
+                "It can be listed and inspected in LuckyModels, but live predict "
+                "runtime is not enabled for this model yet."
+            ),
+        )
+
     if request.profile_name not in model.resolved_profiles:
         raise HTTPException(
             status_code=400,

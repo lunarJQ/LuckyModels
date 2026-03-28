@@ -1,0 +1,44 @@
+model_id: onerel-en-webnlg-v1
+model_name: OneRel
+model_family: onerel
+task_type: relation_extraction
+language: en
+framework: onnxruntime
+runtime_adapter: metadata_only_adapter
+version: v1
+dataset_name: webnlg
+dataset_split: dev
+stage_count: 1
+predict_ready: false
+backbone: bert-base-cased-hbtokenizer
+
+artifacts:
+  model: artifacts/onerel.onnx
+
+tokenizer:
+  type: hb_tokenizer
+  vocab_path: tokenizer/vocab.txt
+  tokenizer_path: tokenizer/hb_tokenizer.py
+
+labels:
+  relation_map: labels/rel2id.json
+  schema_path: labels/tag2id.json
+
+inference:
+  max_length: 100
+  batch_size: 1
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Keep the HBTokenizer preprocessing rule, including [unused1] handling after whitespace-delimited words.
+  - Decode final triples from tag logits and tag predictions in Python.
+  - Preserve the model-specific square tag matrix interpretation.
+
+runtime_notes:
+  - OneRel is packaged and validated, but LuckyModels has not implemented the live decoder yet.

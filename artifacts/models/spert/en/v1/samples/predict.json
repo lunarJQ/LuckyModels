@@ -1,0 +1,7 @@
+{
+  "text": "This paper introduces a system for categorizing unknown words using a multi-component architecture.",
+  "scene": "scierc_relation_extraction",
+  "options": {
+    "max_length": 256
+  }
+}

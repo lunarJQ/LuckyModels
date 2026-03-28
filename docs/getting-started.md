@@ -10,7 +10,8 @@ This repository now includes:
 - a benchmark record store and benchmark runner
 - a FastAPI-based control plane
 - a runtime service with local launch and health-check support
-- a first CasRel sample package
+- eight standardized English ONNX model packages
+- one live CasRel WebNLG runtime sample and seven package-ready model entries
 
 ## 2. Recommended Reading Order
 
@@ -108,7 +109,7 @@ Example request:
 curl -X POST http://127.0.0.1:38080/api/v1/deployments \
   -H 'Content-Type: application/json' \
   -d '{
-    "model_id": "casrel-zh-v1",
+    "model_id": "casrel-en-webnlg-v1",
     "profile_name": "default",
     "launch_runtime": true
   }'
@@ -150,11 +151,11 @@ The exported file is written to `data/state/reports/webnlg_eval_cases.json`.
 
 Recommended next steps:
 
-1. Verify the CasRel package metadata and profile fields
+1. Verify the eight registered package manifests and profile fields
 2. Improve the CasRel decode quality and thresholds
-3. Add richer benchmark dimensions such as concurrency and batch size
-4. Add container launch orchestration from the control plane when needed
-5. Extend the same package pattern to SpERT, TPLinker, PRGC, and others
+3. Implement live adapters for SpERT, TPLinker, PRGC, and the remaining model families
+4. Add richer benchmark dimensions such as concurrency and batch size
+5. Add container launch orchestration from the control plane when needed
 
 ## 7. How To Read The Code
 
