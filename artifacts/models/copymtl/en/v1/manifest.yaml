@@ -4,12 +4,12 @@ model_family: copymtl
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: copymtl_adapter
 version: v1
 dataset_name: webnlg
 dataset_split: dev
 stage_count: 1
-predict_ready: false
+predict_ready: true
 backbone: lstm-copy-decoder
 
 artifacts:
@@ -41,4 +41,4 @@ deployment_requirements:
   - Map relation and entity action sequences back to triples in Python.
 
 runtime_notes:
-  - CopyMTL relies on task-specific action decoding and is not yet live-predict-ready in LuckyModels.
+  - LuckyModels now includes a stable Python action decoder adapted from the original CopyMTL runtime service.

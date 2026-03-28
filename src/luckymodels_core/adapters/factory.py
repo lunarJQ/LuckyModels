@@ -2,6 +2,8 @@ from __future__ import annotations
 
 ADAPTER_IMPORTS = {
     "casrel_adapter": ("luckymodels_core.adapters.casrel", "CasRelAdapter"),
+    "copymtl_adapter": ("luckymodels_core.adapters.copymtl", "CopyMTLAdapter"),
+    "graphrel_adapter": ("luckymodels_core.adapters.graphrel", "GraphRelAdapter"),
     "onerel_adapter": ("luckymodels_core.adapters.onerel", "OneRelAdapter"),
     "pure_adapter": ("luckymodels_core.adapters.pure", "PUREAdapter"),
     "prgc_adapter": ("luckymodels_core.adapters.prgc", "PRGCAdapter"),

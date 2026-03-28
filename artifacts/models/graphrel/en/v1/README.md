@@ -6,10 +6,10 @@ Current status:
 
 - package validation: ready
 - control-plane registration: ready
-- live predict path: not implemented yet
+- live predict path: ready
 
 Important notes:
 
 - the exported ONNX covers only the neural network core
-- deployment must still run spaCy preprocessing, vector extraction, POS encoding, and dependency-graph construction
+- LuckyModels runtime now runs spaCy preprocessing, vector extraction, POS encoding, and dependency-graph construction
 - the original export directory is `graphrel_nyt_model`, and the platform now keeps the same NYT dataset label

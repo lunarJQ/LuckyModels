@@ -4,12 +4,12 @@ model_family: graphrel
 task_type: relation_extraction
 language: en
 framework: onnxruntime
-runtime_adapter: metadata_only_adapter
+runtime_adapter: graphrel_adapter
 version: v1
 dataset_name: nyt
 dataset_split: test
 stage_count: 1
-predict_ready: false
+predict_ready: true
 backbone: graphrel-2p-spacy
 
 artifacts:
@@ -17,6 +17,7 @@ artifacts:
 
 tokenizer:
   type: spacy_en_core_web_lg
+  tokenizer_path: ../../../../../onnx/graphrel_nyt_model/en_core_web_lg
 
 labels:
   relation_map: labels/id2rel.json
@@ -41,3 +42,4 @@ deployment_requirements:
 
 runtime_notes:
   - The raw export folder and current evaluation source both target the NYT relation extraction dataset.
+  - LuckyModels now uses the packaged local spaCy pipeline reference during GraphRel preprocessing.
