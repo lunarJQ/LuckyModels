@@ -12,6 +12,8 @@ from .schemas import (
     AccessRole,
     AccessUser,
     AccessUserCreateRequest,
+    AccessUserPasswordResetResponse,
+    AccessUserPasswordResetRequest,
     AccessUserToggleRequest,
     AccessUserUpdateRequest,
     AuthLoginRequest,
@@ -298,6 +300,40 @@ class AccessStore:
             raise ValueError(f"User is inactive: {request.user_id}")
         self._write_state(target.user_id, state["users"], state["roles"])
         return target
+
+    def reset_user_password(
+        self,
+        user_id: str,
+        request: AccessUserPasswordResetRequest,
+    ) -> AccessUserPasswordResetResponse:
+        password = request.password.strip()
+        if len(password) < 4:
+            raise ValueError("新密码至少需要 4 个字符")
+
+        state = self._load_state()
+        updated_user: AccessUser | None = None
+        next_users: list[AccessUser] = []
+        for item in state["users"]:
+            if item.user_id != user_id:
+                next_users.append(item)
+                continue
+
+            updated_user = item.model_copy(
+                update={
+                    "password_hash": _hash_password(password),
+                    "updated_at": utc_now(),
+                }
+            )
+            next_users.append(updated_user)
+
+        if updated_user is None:
+            raise KeyError(f"User not found: {user_id}")
+
+        self._write_state(state["current_user_id"], next_users, state["roles"])
+        return AccessUserPasswordResetResponse(
+            user_id=updated_user.user_id,
+            username=updated_user.username,
+        )
 
     def get_session(self) -> AuthSessionResponse:
         current_user = self.get_current_user()

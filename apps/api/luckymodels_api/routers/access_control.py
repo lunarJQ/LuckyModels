@@ -9,6 +9,8 @@ from luckymodels_core.schemas import (
     AccessPermission,
     AccessUser,
     AccessUserCreateRequest,
+    AccessUserPasswordResetRequest,
+    AccessUserPasswordResetResponse,
     AccessUserToggleRequest,
     AccessUserUpdateRequest,
 )
@@ -78,6 +80,20 @@ def switch_current_access_user(request: AccessCurrentUserSwitchRequest) -> Acces
     _ensure_manage_access()
     try:
         return get_access_store().switch_current_user(request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/access-control/users/{user_id}/reset-password", response_model=AccessUserPasswordResetResponse)
+def reset_access_user_password(
+    user_id: str,
+    request: AccessUserPasswordResetRequest,
+) -> AccessUserPasswordResetResponse:
+    _ensure_manage_access()
+    try:
+        return get_access_store().reset_user_password(user_id, request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

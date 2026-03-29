@@ -194,3 +194,11 @@ export async function switchCurrentAccessUser(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export async function resetAccessUserPassword(userId, payload) {
+  return fetchJSON(`/api/v1/access-control/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}

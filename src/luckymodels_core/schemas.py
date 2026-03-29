@@ -351,6 +351,16 @@ class AccessCurrentUserSwitchRequest(BaseModel):
     user_id: str
 
 
+class AccessUserPasswordResetRequest(BaseModel):
+    password: str
+
+
+class AccessUserPasswordResetResponse(BaseModel):
+    user_id: str
+    username: str
+    reset_at: str = Field(default_factory=utc_now)
+
+
 class AccessOverview(BaseModel):
     current_user: AccessUser | None = None
     current_permissions: list[str] = Field(default_factory=list)

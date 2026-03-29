@@ -17,6 +17,7 @@ import {
   loadDashboardData,
   logoutSession,
   predictWithDeployment,
+  resetAccessUserPassword,
   restartDeployment,
   runTaskRoutingStrategy,
   runCasrelDemo,
@@ -375,8 +376,8 @@ function buildInitialAccessUserForm(roles) {
 
 function buildInitialLoginForm() {
   return {
-    username: "admin",
-    password: "admin",
+    username: "",
+    password: "",
   };
 }
 
@@ -406,6 +407,41 @@ function formatPermissionLabel(permissionId) {
     "users.manage": "管理用户",
   };
   return mapping[permissionId] || permissionId || "-";
+}
+
+const pagePermissionMap = Object.fromEntries(
+  navGroups.flatMap((group) =>
+    group.items.map((item) => [item.path, item.requiredPermissions || []]),
+  ),
+);
+
+function hasRequiredPermissions(currentPermissions, requiredPermissions = []) {
+  if (!requiredPermissions.length) {
+    return true;
+  }
+  const permissionSet = new Set(currentPermissions || []);
+  return requiredPermissions.every((permissionId) => permissionSet.has(permissionId));
+}
+
+function getRequiredPermissionsForPath(pathname) {
+  if (pathname === "/dashboard") {
+    return pagePermissionMap["/"] || [];
+  }
+  return pagePermissionMap[pathname] || [];
+}
+
+function getVisibleNavGroups(currentPermissions) {
+  return navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => hasRequiredPermissions(currentPermissions, item.requiredPermissions || [])),
+    }))
+    .filter((group) => group.items.length);
+}
+
+function getFallbackPath(currentPermissions) {
+  const visibleGroups = getVisibleNavGroups(currentPermissions);
+  return visibleGroups[0]?.items[0]?.path || "/";
 }
 
 export default function App() {
@@ -829,6 +865,14 @@ export default function App() {
     );
   }
 
+  async function handleResetAccessUserPassword(userId, password) {
+    await runAction(
+      `reset-access-user-password-${userId}`,
+      () => resetAccessUserPassword(userId, { password }),
+      `密码已重置：${userId}`,
+    );
+  }
+
   async function handleExportModelManifest(modelId) {
     const detail = data.modelDetails[modelId];
     if (!detail) {
@@ -948,6 +992,7 @@ export default function App() {
       onPredict={handlePredict}
       onPredictFormChange={setPredictForm}
       onRefresh={refreshAll}
+      onResetAccessUserPassword={handleResetAccessUserPassword}
       onRunDemo={handleRunDemo}
       onRunTaskRouting={handleRunTaskRouting}
       onTaskRoutingFormChange={setTaskRoutingForm}
@@ -964,55 +1009,136 @@ export default function App() {
 
 function LoginPage({ actionBusy, authChecking, loadError, loginForm, notice, onLogin, onLoginFormChange }) {
   return (
-    <div className="app-shell">
-      <main className="main">
-        <section className="content">
-          <section className="page-shell card section-shell" style={{ maxWidth: 560, margin: "48px auto" }}>
-            <SectionHeader
-              kicker="身份认证"
-              title="登录 LuckyModels 平台"
-              note="当前已启用基础账号认证。默认管理员账号为 admin / admin，普通用户账号为 user / user。"
-            />
-            {notice.text ? (
-              <div className={`banner ${notice.type === "error" ? "banner-error" : "banner-ok"}`}>{notice.text}</div>
-            ) : null}
-            {loadError ? <div className="banner banner-error">{loadError}</div> : null}
-            <div className="form-grid">
-              <label className="stack-field">
-                <span>用户名</span>
-                <input
-                  onChange={(event) => onLoginFormChange((current) => ({ ...current, username: event.target.value }))}
-                  type="text"
-                  value={loginForm.username}
-                />
-              </label>
-              <label className="stack-field">
-                <span>密码</span>
-                <input
-                  onChange={(event) => onLoginFormChange((current) => ({ ...current, password: event.target.value }))}
-                  type="password"
-                  value={loginForm.password}
-                />
-              </label>
-              <div className="actions">
-                <button
-                  className="btn-primary"
-                  disabled={authChecking || actionBusy.login || !loginForm.username.trim() || !loginForm.password.trim()}
-                  onClick={onLogin}
-                  type="button"
-                >
-                  {authChecking ? "检查会话中" : actionBusy.login ? "登录中" : "登录"}
-                </button>
-              </div>
+    <main className="login-shell">
+      <section className="login-stage">
+        <article className="login-hero-panel">
+          <div className="hero-kicker">LuckyModels Platform</div>
+          <h1>模型部署、在线推理与实验归档的一体化控制台</h1>
+          <p className="hero-desc">
+            这不是一个演示性质的静态页面，而是面向知识抽取模型资产、运行实例、基准实验和权限治理的真实平台入口。
+          </p>
+          <div className="login-badge-grid">
+            <div className="login-metric">
+              <strong>部署控制</strong>
+              <span>统一管理模型上线、重启、停止与资源分配。</span>
             </div>
-            <div className="tag-list">
-              <span className="tag">管理员：admin / admin</span>
-              <span className="tag">普通用户：user / user</span>
+            <div className="login-metric">
+              <strong>实验闭环</strong>
+              <span>在线推理、基准结果、归档导出在同一平台完成。</span>
             </div>
-          </section>
+            <div className="login-metric">
+              <strong>权限治理</strong>
+              <span>管理员与普通用户分层访问，菜单和页面按权限收口。</span>
+            </div>
+          </div>
+          <div className="login-callout">
+            <div className="login-callout-title">演示账号</div>
+            <div className="account-preset-grid">
+              <button
+                className="account-preset"
+                onClick={() => onLoginFormChange({ username: "admin", password: "admin" })}
+                type="button"
+              >
+                <strong>管理员体验</strong>
+                <span>admin / admin</span>
+              </button>
+              <button
+                className="account-preset"
+                onClick={() => onLoginFormChange({ username: "user", password: "user" })}
+                type="button"
+              >
+                <strong>普通用户体验</strong>
+                <span>user / user</span>
+              </button>
+            </div>
+          </div>
+        </article>
+
+        <section className="login-panel">
+          <div className="brand-line">
+            <div className="brand-mark">LM</div>
+            <div>
+              <strong>LuckyModels</strong>
+              <span>Platform Access Gateway</span>
+            </div>
+          </div>
+          <div className="login-panel-head">
+            <h2>平台登录</h2>
+            <p>请输入账号密码进入控制台。页面菜单和管理员能力会按当前身份自动收口。</p>
+          </div>
+          {notice.text ? (
+            <div className={`banner ${notice.type === "error" ? "banner-error" : "banner-ok"}`}>{notice.text}</div>
+          ) : null}
+          {loadError ? <div className="banner banner-error">{loadError}</div> : null}
+          <form
+            className="login-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onLogin();
+            }}
+          >
+            <label className="stack-field">
+              <span>用户名</span>
+              <input
+                autoComplete="username"
+                onChange={(event) => onLoginFormChange((current) => ({ ...current, username: event.target.value }))}
+                placeholder="请输入用户名"
+                type="text"
+                value={loginForm.username}
+              />
+            </label>
+            <label className="stack-field">
+              <span>密码</span>
+              <input
+                autoComplete="current-password"
+                onChange={(event) => onLoginFormChange((current) => ({ ...current, password: event.target.value }))}
+                placeholder="请输入密码"
+                type="password"
+                value={loginForm.password}
+              />
+            </label>
+            <div className="login-actions">
+              <button
+                className="btn-primary"
+                disabled={authChecking || actionBusy.login || !loginForm.username.trim() || !loginForm.password.trim()}
+                type="submit"
+              >
+                {authChecking ? "检查会话中" : actionBusy.login ? "登录中" : "进入平台"}
+              </button>
+            </div>
+          </form>
+          <div className="platform-bullet-list">
+            <span className="tag">访问控制已启用</span>
+            <span className="tag">管理员支持重置密码</span>
+            <span className="tag">普通用户禁止进入管理员面板</span>
+          </div>
         </section>
-      </main>
-    </div>
+      </section>
+    </main>
+  );
+}
+
+function GuardedPage({ allowed, children, fallbackPath, title, note }) {
+  if (allowed) {
+    return children;
+  }
+  return <AccessDeniedPage fallbackPath={fallbackPath} note={note} title={title} />;
+}
+
+function AccessDeniedPage({ fallbackPath, note, title }) {
+  return (
+    <section className="page-shell card section-shell">
+      <div className="access-denied-shell">
+        <div className="access-denied-icon">403</div>
+        <h2>{title || "当前页面不可访问"}</h2>
+        <p>{note || "当前账号没有访问该页面的权限，请联系管理员或切换为具备权限的账号。"}</p>
+        <div className="actions">
+          <NavLink className="btn-linklike btn-primary" to={fallbackPath || "/"}>
+            返回可访问页面
+          </NavLink>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1051,6 +1177,7 @@ function Shell(props) {
     onPredict,
     onPredictFormChange,
     onRefresh,
+    onResetAccessUserPassword,
     onRunDemo,
     onRunTaskRouting,
     onTaskRoutingFormChange,
@@ -1062,6 +1189,30 @@ function Shell(props) {
     taskRoutingForm,
     taskRoutingResult,
   } = props;
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const visibleNavGroups = getVisibleNavGroups(currentPermissions);
+  const fallbackPath = getFallbackPath(currentPermissions);
+  const currentUser = derived.currentAccessUser || authSession?.current_user || null;
+  const currentRoleNames = (currentUser?.role_ids || []).map((item) => formatRoleLabel(item)).join(" / ") || "未分配角色";
+
+  function renderGuardedRoute(path, element, options = {}) {
+    return (
+      <Route
+        element={
+          <GuardedPage
+            allowed={hasRequiredPermissions(currentPermissions, getRequiredPermissionsForPath(path))}
+            fallbackPath={fallbackPath}
+            note={options.note}
+            title={options.title}
+          >
+            {element}
+          </GuardedPage>
+        }
+        key={path}
+        path={path}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -1075,11 +1226,27 @@ function Shell(props) {
             </div>
           </div>
           <div className="brand-note">
-            当前前端已切换为真实控制台模式，支持 deployment 创建、停止、删除、benchmark 创建以及在线推理。
+            平台当前已具备部署、推理、实验归档和访问控制能力，并支持按权限展示页面级菜单。
           </div>
         </div>
 
-        {navGroups.map((group) => (
+        <div className="session-card">
+          <div className="session-kicker">当前会话</div>
+          <div className="session-user">{currentUser?.display_name || currentUser?.username || "未登录"}</div>
+          <div className="session-role">{currentRoleNames}</div>
+          <div className="session-grid">
+            <div>
+              <strong>{currentPermissions.length}</strong>
+              <span>权限项</span>
+            </div>
+            <div>
+              <strong>{derived.summary.user_count || 0}</strong>
+              <span>平台用户</span>
+            </div>
+          </div>
+        </div>
+
+        {visibleNavGroups.map((group) => (
           <div className="nav-group" key={group.title}>
             <div className="nav-title">{group.title}</div>
             {group.items.map((item) => (
@@ -1089,7 +1256,11 @@ function Shell(props) {
                 key={item.id}
                 to={item.path}
               >
-                {item.label}
+                <span className="nav-item-icon">{item.icon || "•"}</span>
+                <span className="nav-item-copy">
+                  <strong>{item.label}</strong>
+                  <small>{item.description || "页面入口"}</small>
+                </span>
               </NavLink>
             ))}
           </div>
@@ -1107,13 +1278,15 @@ function Shell(props) {
 
       <main className="main">
         <header className="topbar">
-          <div>
+          <div className="topbar-copy">
+            <div className="topbar-kicker">LuckyModels Control Center</div>
             <h1>{currentMeta.title}</h1>
             <div className="topbar-note">{currentMeta.note}</div>
           </div>
-          <div className="topbar-meta">
-            <span>{authSession?.current_user?.display_name || authSession?.current_user?.username || "未登录"}</span>
-            <span>{loadStatus}</span>
+          <div className="topbar-actions">
+            <span className="hero-pill">当前身份：{currentUser?.username || "未登录"}</span>
+            <span className="hero-pill">角色：{currentRoleNames}</span>
+            <span className="hero-pill">状态：{loadStatus}</span>
             <button disabled={actionBusy.logout} onClick={() => void onLogout()} type="button">
               {actionBusy.logout ? "退出中" : "退出"}
             </button>
@@ -1128,144 +1301,130 @@ function Shell(props) {
           {loadError ? <div className="banner banner-error">{loadError}</div> : null}
 
           <Routes>
-            <Route element={<OverviewPage derived={derived} />} path="/" />
-            <Route element={<OverviewPage derived={derived} />} path="/dashboard" />
-            <Route
-              element={
-                <ExperimentsPage
-                  actionBusy={actionBusy}
-                  demoRunning={demoRunning}
-                  derived={derived}
-                  onDeletePredictionArchive={onDeletePredictionArchive}
-                  onExportPredictResult={onExportPredictResult}
-                  onPredict={onPredict}
-                  onPredictFormChange={onPredictFormChange}
-                  onRefresh={onRefresh}
-                  onRunDemo={onRunDemo}
-                  predictForm={predictForm}
-                  predictResult={predictResult}
-                  selectedHealth={selectedHealth}
-                  selectedLogs={selectedLogs}
-                />
-              }
-              path="/experiments"
-            />
-            <Route
-              element={
-                <TaskRoutingPage
-                  actionBusy={actionBusy}
-                  derived={derived}
-                  onRunTaskRouting={onRunTaskRouting}
-                  onTaskRoutingFormChange={onTaskRoutingFormChange}
-                  taskRoutingForm={taskRoutingForm}
-                  taskRoutingResult={taskRoutingResult}
-                />
-              }
-              path="/task-routing"
-            />
-            <Route
-              element={
-                <DeploymentPolicyPage
-                  actionBusy={actionBusy}
-                  deploymentPolicy={deploymentPolicy}
-                  onCreateDeployment={onCreateDeployment}
-                  onLoadDeploymentPolicy={onLoadDeploymentPolicy}
-                />
-              }
-              path="/deployment-policy"
-            />
-            <Route
-              element={
-                <AccessControlPage
-                  actionBusy={actionBusy}
-                  derived={derived}
-                  onSwitchCurrentAccessUser={onSwitchCurrentAccessUser}
-                />
-              }
-              path="/access-control"
-            />
-            <Route
-              element={
-                <AdminConsolePage
-                  actionBusy={actionBusy}
-                  derived={derived}
-                  onCreateAccessUser={onCreateAccessUser}
-                  onToggleAccessUser={onToggleAccessUser}
-                  onUpdateAccessUser={onUpdateAccessUser}
-                />
-              }
-              path="/admin-console"
-            />
-            <Route
-              element={
-                <ArchivePage
-                  derived={derived}
-                  onDeletePredictionArchive={onDeletePredictionArchive}
-                  onExportPredictionArchive={(archive) => onExportPredictResult(archive)}
-                />
-              }
-              path="/archive"
-            />
-            <Route
-              element={<CapabilityMatrixPage derived={derived} />}
-              path="/capability-matrix"
-            />
-            <Route
-              element={
-                <ModelsPage
-                  actionBusy={actionBusy}
-                  data={data}
-                  deploymentForm={deploymentForm}
-                  derived={derived}
-                  onCreateDeployment={onCreateDeployment}
-                  onDeploymentFormChange={onDeploymentFormChange}
-                />
-              }
-              path="/models"
-            />
-            <Route
-              element={
-                <ArtifactsPage
-                  data={data}
-                  onExportModelManifest={onExportModelManifest}
-                  onExportModelProfiles={onExportModelProfiles}
-                />
-              }
-              path="/artifacts"
-            />
-            <Route
-              element={
-                <DeploymentsPage
-                  actionBusy={actionBusy}
-                  deploymentForm={deploymentForm}
-                  derived={derived}
-                  onCreateDeployment={onCreateDeployment}
-                  onDeploymentAction={onDeploymentAction}
-                  onDeploymentFormChange={onDeploymentFormChange}
-                  onExportDeploymentRows={onExportDeploymentRows}
-                  onInspectDeployment={onInspectDeployment}
-                  selectedHealth={selectedHealth}
-                  selectedLogs={selectedLogs}
-                />
-              }
-              path="/deployments"
-            />
-            <Route
-              element={
-                <BenchmarksPage
-                  actionBusy={actionBusy}
-                  benchmarkForm={benchmarkForm}
-                  derived={derived}
-                  onBenchmarkFormChange={onBenchmarkFormChange}
-                  onCreateBenchmark={onCreateBenchmark}
-                  onDeleteBenchmark={onDeleteBenchmark}
-                />
-              }
-              path="/benchmarks"
-            />
-            <Route element={<ResourcesPage derived={derived} />} path="/resources" />
-            <Route element={<LogsPage derived={derived} selectedLogs={selectedLogs} />} path="/logs" />
-            <Route element={<Navigate replace to="/" />} path="*" />
+            {renderGuardedRoute("/", <OverviewPage derived={derived} />)}
+            {renderGuardedRoute("/dashboard", <OverviewPage derived={derived} />)}
+            {renderGuardedRoute(
+              "/experiments",
+              <ExperimentsPage
+                actionBusy={actionBusy}
+                demoRunning={demoRunning}
+                derived={derived}
+                onDeletePredictionArchive={onDeletePredictionArchive}
+                onExportPredictResult={onExportPredictResult}
+                onPredict={onPredict}
+                onPredictFormChange={onPredictFormChange}
+                onRefresh={onRefresh}
+                onRunDemo={onRunDemo}
+                predictForm={predictForm}
+                predictResult={predictResult}
+                selectedHealth={selectedHealth}
+                selectedLogs={selectedLogs}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/task-routing",
+              <TaskRoutingPage
+                actionBusy={actionBusy}
+                derived={derived}
+                onRunTaskRouting={onRunTaskRouting}
+                onTaskRoutingFormChange={onTaskRoutingFormChange}
+                taskRoutingForm={taskRoutingForm}
+                taskRoutingResult={taskRoutingResult}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/deployment-policy",
+              <DeploymentPolicyPage
+                actionBusy={actionBusy}
+                deploymentPolicy={deploymentPolicy}
+                onCreateDeployment={onCreateDeployment}
+                onLoadDeploymentPolicy={onLoadDeploymentPolicy}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/access-control",
+              <AccessControlPage
+                actionBusy={actionBusy}
+                derived={derived}
+                onSwitchCurrentAccessUser={onSwitchCurrentAccessUser}
+              />,
+              {
+                title: "当前账号不可访问用户权限页",
+                note: "该页面仅对具备用户权限查看能力的账号开放。",
+              },
+            )}
+            {renderGuardedRoute(
+              "/admin-console",
+              <AdminConsolePage
+                actionBusy={actionBusy}
+                derived={derived}
+                onCreateAccessUser={onCreateAccessUser}
+                onResetAccessUserPassword={onResetAccessUserPassword}
+                onToggleAccessUser={onToggleAccessUser}
+                onUpdateAccessUser={onUpdateAccessUser}
+              />,
+              {
+                title: "普通用户禁止进入管理员面板",
+                note: "当前页面仅对具备 users.manage 权限的管理员开放。",
+              },
+            )}
+            {renderGuardedRoute(
+              "/archive",
+              <ArchivePage
+                derived={derived}
+                onDeletePredictionArchive={onDeletePredictionArchive}
+                onExportPredictionArchive={(archive) => onExportPredictResult(archive)}
+              />,
+            )}
+            {renderGuardedRoute("/capability-matrix", <CapabilityMatrixPage derived={derived} />)}
+            {renderGuardedRoute(
+              "/models",
+              <ModelsPage
+                actionBusy={actionBusy}
+                data={data}
+                deploymentForm={deploymentForm}
+                derived={derived}
+                onCreateDeployment={onCreateDeployment}
+                onDeploymentFormChange={onDeploymentFormChange}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/artifacts",
+              <ArtifactsPage
+                data={data}
+                onExportModelManifest={onExportModelManifest}
+                onExportModelProfiles={onExportModelProfiles}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/deployments",
+              <DeploymentsPage
+                actionBusy={actionBusy}
+                deploymentForm={deploymentForm}
+                derived={derived}
+                onCreateDeployment={onCreateDeployment}
+                onDeploymentAction={onDeploymentAction}
+                onDeploymentFormChange={onDeploymentFormChange}
+                onExportDeploymentRows={onExportDeploymentRows}
+                onInspectDeployment={onInspectDeployment}
+                selectedHealth={selectedHealth}
+                selectedLogs={selectedLogs}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/benchmarks",
+              <BenchmarksPage
+                actionBusy={actionBusy}
+                benchmarkForm={benchmarkForm}
+                derived={derived}
+                onBenchmarkFormChange={onBenchmarkFormChange}
+                onCreateBenchmark={onCreateBenchmark}
+                onDeleteBenchmark={onDeleteBenchmark}
+              />,
+            )}
+            {renderGuardedRoute("/resources", <ResourcesPage derived={derived} />)}
+            {renderGuardedRoute("/logs", <LogsPage derived={derived} selectedLogs={selectedLogs} />)}
+            <Route element={<Navigate replace to={fallbackPath} />} path="*" />
           </Routes>
         </section>
       </main>
@@ -1672,13 +1831,21 @@ function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
   );
 }
 
-function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAccessUser, onUpdateAccessUser }) {
+function AdminConsolePage({
+  actionBusy,
+  derived,
+  onCreateAccessUser,
+  onResetAccessUserPassword,
+  onToggleAccessUser,
+  onUpdateAccessUser,
+}) {
   const roles = derived.accessRoles || [];
   const users = derived.accessUsers || [];
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageUsers = currentPermissions.includes("users.manage");
   const [userForm, setUserForm] = useState(buildInitialAccessUserForm(roles));
   const [draftRoles, setDraftRoles] = useState({});
+  const [passwordDrafts, setPasswordDrafts] = useState({});
 
   useEffect(() => {
     setUserForm((current) => {
@@ -1695,9 +1862,24 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
     );
   }, [users]);
 
+  useEffect(() => {
+    setPasswordDrafts((current) =>
+      Object.fromEntries(users.map((item) => [item.user_id, current[item.user_id] || ""])),
+    );
+  }, [users]);
+
   async function handleCreate() {
     await onCreateAccessUser(userForm);
     setUserForm(buildInitialAccessUserForm(roles));
+  }
+
+  async function handleResetPassword(userId) {
+    const password = (passwordDrafts[userId] || "").trim();
+    if (!password) {
+      return;
+    }
+    await onResetAccessUserPassword(userId, password);
+    setPasswordDrafts((current) => ({ ...current, [userId]: "" }));
   }
 
   return (
@@ -1706,7 +1888,7 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
         <SectionHeader
           kicker="管理员入口"
           title="管理员控制台"
-          note="这里聚焦用户创建、角色调整和账号启停，是管理员专用的治理视图。"
+          note="这里聚焦账号创建、角色调整、启停控制和密码重置，是管理员专用的治理视图。"
         />
         <div className="metrics">
           <MetricCard title="当前可管理" value={canManageUsers ? "是" : "否"} note="是否具有 users.manage 权限" />
@@ -1793,7 +1975,7 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="账号治理" title="角色调整与账号启停" note="管理员可直接调整单个用户的角色，并启用或停用账号。" />
+        <SectionHeader kicker="账号治理" title="角色调整、账号启停与密码重置" note="管理员可直接调整单个用户的角色，启用或停用账号，并为用户重置登录密码。" />
         <div className="table-wrap">
           <table>
             <thead>
@@ -1802,6 +1984,7 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
                 <th>当前角色</th>
                 <th>调整角色</th>
                 <th>状态</th>
+                <th>重置密码</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -1834,6 +2017,21 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
                     <div className="table-note">{item.is_admin ? "管理员" : "普通用户"}</div>
                   </td>
                   <td>
+                    <div className="table-inline-editor">
+                      <input
+                        className="table-input"
+                        disabled={!canManageUsers}
+                        onChange={(event) =>
+                          setPasswordDrafts((current) => ({ ...current, [item.user_id]: event.target.value }))
+                        }
+                        placeholder="输入新密码"
+                        type="password"
+                        value={passwordDrafts[item.user_id] || ""}
+                      />
+                      <div className="table-note">密码长度至少 4 位</div>
+                    </div>
+                  </td>
+                  <td>
                     <div className="actions row-actions">
                       <button
                         disabled={!canManageUsers || actionBusy[`update-access-user-${item.user_id}`]}
@@ -1848,6 +2046,18 @@ function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAcc
                         type="button"
                       >
                         保存角色
+                      </button>
+                      <button
+                        className="btn-primary"
+                        disabled={
+                          !canManageUsers ||
+                          actionBusy[`reset-access-user-password-${item.user_id}`] ||
+                          !(passwordDrafts[item.user_id] || "").trim()
+                        }
+                        onClick={() => void handleResetPassword(item.user_id)}
+                        type="button"
+                      >
+                        {actionBusy[`reset-access-user-password-${item.user_id}`] ? "重置中" : "重置密码"}
                       </button>
                       <button
                         disabled={!canManageUsers || actionBusy[`toggle-access-user-${item.user_id}`]}
