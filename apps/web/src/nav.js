@@ -4,6 +4,8 @@ export const navGroups = [
     items: [
       { id: "overview", path: "/", label: "资产概览" },
       { id: "experiment", path: "/experiments", label: "推理试验" },
+      { id: "task-routing", path: "/task-routing", label: "任务调度" },
+      { id: "deployment-policy", path: "/deployment-policy", label: "部署策略" },
       { id: "archive", path: "/archive", label: "结果归档" },
     ],
   },

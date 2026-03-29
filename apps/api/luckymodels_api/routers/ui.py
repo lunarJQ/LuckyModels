@@ -13,6 +13,8 @@ FRONTEND_PATHS = [
     "/experiments",
     "/archive",
     "/models",
+    "/task-routing",
+    "/deployment-policy",
     "/capability-matrix",
     "/artifacts",
     "/deployments",

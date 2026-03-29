@@ -130,3 +130,15 @@ export async function predictWithDeployment(deploymentId, payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export async function runTaskRoutingStrategy(payload) {
+  return fetchJSON("/api/v1/strategies/task-routing/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDeploymentPolicy() {
+  return fetchJSON("/api/v1/strategies/deployment-policy");
+}

@@ -7,12 +7,14 @@ import {
   deleteBenchmark,
   deleteDeployment,
   deletePredictionArchive,
+  getDeploymentPolicy,
   getDeploymentHealth,
   getDeploymentLogs,
   getModelProfiles,
   loadDashboardData,
   predictWithDeployment,
   restartDeployment,
+  runTaskRoutingStrategy,
   runCasrelDemo,
   stopDeployment,
 } from "./api";
@@ -44,6 +46,14 @@ const pageMeta = {
   "/experiments": {
     title: "在线推理",
     note: "选择运行中的部署实例做真实推理，查看三元组、健康状态和运行日志。",
+  },
+  "/task-routing": {
+    title: "任务调度",
+    note: "根据高准确、高覆盖、低时延三类目标，在单模型与多模型抽取之间自适应切换。",
+  },
+  "/deployment-policy": {
+    title: "部署策略",
+    note: "根据模型使用热度、历史时延和 GPU 空闲情况，生成差异化部署建议。",
   },
   "/archive": {
     title: "结果归档",
@@ -321,6 +331,20 @@ function buildInitialPredictForm(deployments, models) {
   };
 }
 
+function buildInitialTaskRoutingForm(report) {
+  const sampleText =
+    report?.samples?.primary_case?.sentText ||
+    report?.samples?.secondary_case?.sentText ||
+    "";
+  return {
+    text: sampleText,
+    objective: "accuracy",
+    language: "auto",
+    maxModels: 3,
+    optionsJson: "{}",
+  };
+}
+
 export default function App() {
   const [data, setData] = useState(initialData);
   const [loadStatus, setLoadStatus] = useState("正在加载");
@@ -332,6 +356,9 @@ export default function App() {
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
   const [predictResult, setPredictResult] = useState(null);
+  const [taskRoutingForm, setTaskRoutingForm] = useState(buildInitialTaskRoutingForm(null));
+  const [taskRoutingResult, setTaskRoutingResult] = useState(null);
+  const [deploymentPolicy, setDeploymentPolicy] = useState(null);
   const [selectedHealth, setSelectedHealth] = useState(null);
   const [selectedLogs, setSelectedLogs] = useState(null);
 
@@ -389,6 +416,13 @@ export default function App() {
     });
 
     setBenchmarkForm((current) => {
+      if (current.text) {
+        return current;
+      }
+      return { ...current, text: sampleText };
+    });
+
+    setTaskRoutingForm((current) => {
       if (current.text) {
         return current;
       }
@@ -584,6 +618,43 @@ export default function App() {
     setPredictResult(result);
   }
 
+  async function handleRunTaskRouting() {
+    setActionBusy((current) => ({ ...current, "task-routing": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const options = taskRoutingForm.optionsJson.trim() ? safeJsonParse(taskRoutingForm.optionsJson) : {};
+      const result = await runTaskRoutingStrategy({
+        text: taskRoutingForm.text,
+        objective: taskRoutingForm.objective,
+        language: taskRoutingForm.language === "auto" ? undefined : taskRoutingForm.language,
+        max_models: Number(taskRoutingForm.maxModels),
+        options,
+      });
+      setTaskRoutingResult(result);
+      setNotice({ type: "ok", text: "任务调度策略已执行。" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "task-routing": false }));
+    }
+  }
+
+  async function handleLoadDeploymentPolicy() {
+    setActionBusy((current) => ({ ...current, "deployment-policy": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const result = await getDeploymentPolicy();
+      setDeploymentPolicy(result);
+      setNotice({ type: "ok", text: "部署策略建议已刷新。" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "deployment-policy": false }));
+    }
+  }
+
   async function handleExportModelManifest(modelId) {
     const detail = data.modelDetails[modelId];
     if (!detail) {
@@ -677,15 +748,21 @@ export default function App() {
           value,
         )
       }
+      onLoadDeploymentPolicy={handleLoadDeploymentPolicy}
       onInspectDeployment={handleInspectDeployment}
       onPredict={handlePredict}
       onPredictFormChange={setPredictForm}
       onRefresh={refreshAll}
       onRunDemo={handleRunDemo}
+      onRunTaskRouting={handleRunTaskRouting}
+      onTaskRoutingFormChange={setTaskRoutingForm}
       predictForm={predictForm}
       predictResult={predictResult}
+      deploymentPolicy={deploymentPolicy}
       selectedHealth={selectedHealth}
       selectedLogs={selectedLogs}
+      taskRoutingForm={taskRoutingForm}
+      taskRoutingResult={taskRoutingResult}
     />
   );
 }
@@ -714,15 +791,21 @@ function Shell(props) {
     onExportModelManifest,
     onExportModelProfiles,
     onExportPredictResult,
+    onLoadDeploymentPolicy,
     onInspectDeployment,
     onPredict,
     onPredictFormChange,
     onRefresh,
     onRunDemo,
+    onRunTaskRouting,
+    onTaskRoutingFormChange,
     predictForm,
     predictResult,
+    deploymentPolicy,
     selectedHealth,
     selectedLogs,
+    taskRoutingForm,
+    taskRoutingResult,
   } = props;
 
   return (
@@ -806,6 +889,30 @@ function Shell(props) {
                 />
               }
               path="/experiments"
+            />
+            <Route
+              element={
+                <TaskRoutingPage
+                  actionBusy={actionBusy}
+                  derived={derived}
+                  onRunTaskRouting={onRunTaskRouting}
+                  onTaskRoutingFormChange={onTaskRoutingFormChange}
+                  taskRoutingForm={taskRoutingForm}
+                  taskRoutingResult={taskRoutingResult}
+                />
+              }
+              path="/task-routing"
+            />
+            <Route
+              element={
+                <DeploymentPolicyPage
+                  actionBusy={actionBusy}
+                  deploymentPolicy={deploymentPolicy}
+                  onCreateDeployment={onCreateDeployment}
+                  onLoadDeploymentPolicy={onLoadDeploymentPolicy}
+                />
+              }
+              path="/deployment-policy"
             />
             <Route
               element={
@@ -1129,6 +1236,278 @@ function ExperimentsPage({
           </div>
         ) : (
           <EmptyState icon="A" title="暂无预测归档" note="完成一次在线推理后，结果会自动归档到这里。" />
+        )}
+      </section>
+    </>
+  );
+}
+
+function TaskRoutingPage({
+  actionBusy,
+  derived,
+  onRunTaskRouting,
+  onTaskRoutingFormChange,
+  taskRoutingForm,
+  taskRoutingResult,
+}) {
+  return (
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="创新点一"
+          title="任务级模型调度策略"
+          note="根据用户目标在单模型与多模型之间切换：高准确采用投票融合，高覆盖采用并集融合，低时延优先选取 P95 更低的部署。"
+          right={
+            <div className="actions">
+              <button
+                className="btn-primary"
+                disabled={actionBusy["task-routing"]}
+                onClick={() => void onRunTaskRouting()}
+                type="button"
+              >
+                {actionBusy["task-routing"] ? "执行中" : "运行任务调度"}
+              </button>
+            </div>
+          }
+        />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>目标偏好</span>
+            <select
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
+              value={taskRoutingForm.objective}
+            >
+              <option value="accuracy">高准确</option>
+              <option value="coverage">高覆盖</option>
+              <option value="latency">低时延</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>语言</span>
+            <select
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, language: event.target.value }))}
+              value={taskRoutingForm.language}
+            >
+              <option value="auto">自动判断</option>
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>最大模型数</span>
+            <input
+              min="1"
+              max="5"
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, maxModels: event.target.value }))}
+              type="number"
+              value={taskRoutingForm.maxModels}
+            />
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>输入文本</span>
+            <textarea
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, text: event.target.value }))}
+              rows="5"
+              value={taskRoutingForm.text}
+            />
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>附加参数 JSON</span>
+            <textarea
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
+              rows="3"
+              value={taskRoutingForm.optionsJson}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="运行说明" title="当前可用候选" note="策略只会在当前运行中的部署实例里进行选择和融合。" />
+        <div className="metrics">
+          <MetricCard title="运行中实例" value={derived.runningDeployments.length} note="可参与任务调度的 deployment" />
+          <MetricCard title="中文实例" value={derived.runningDeployments.filter((item) => derived.models.find((model) => model.model_id === item.model_id)?.language === "zh").length} note="语言为中文的运行实例" />
+          <MetricCard title="英文实例" value={derived.runningDeployments.filter((item) => derived.models.find((model) => model.model_id === item.model_id)?.language === "en").length} note="语言为英文的运行实例" />
+          <MetricCard title="已完成基准" value={derived.benchmarks.filter((item) => item.status === "completed").length} note="策略会优先参考这些记录的 P95 和成功率" />
+        </div>
+      </section>
+
+      <section className="detail-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="策略输出" title="调度结果" />
+          {taskRoutingResult ? (
+            <>
+              <div className="metrics">
+                <MetricCard title="目标" value={taskRoutingResult.objective} note={taskRoutingResult.strategy_mode} />
+                <MetricCard title="语言" value={taskRoutingResult.inferred_language} note={`请求语言：${taskRoutingResult.requested_language || "自动"}`} />
+                <MetricCard title="任务难度" value={taskRoutingResult.difficulty} note={`候选 ${taskRoutingResult.candidate_count} 个，选中 ${taskRoutingResult.selected_count} 个`} />
+                <MetricCard title="融合模式" value={taskRoutingResult.fused_result?.fusion_mode || "-"} note="任务级调度输出" />
+              </div>
+              <div className="banner banner-muted">{taskRoutingResult.explanation}</div>
+              <div className="relation-list">
+                {(taskRoutingResult.fused_result?.triples || []).map((item, index) => (
+                  <div className="relation-item" key={`${item.subject}-${item.predicate}-${item.object}-${index + 1}`}>
+                    {item.subject}
+                    {" -> "}
+                    {item.predicate}
+                    {" -> "}
+                    {item.object}
+                    <br />
+                    票数：{item.vote_count || 1}
+                    {" · "}
+                    置信度：{item.confidence ?? "-"}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <EmptyState icon="S" title="还没有策略结果" note="填写文本后运行一次任务调度，这里会显示最终融合后的三元组。" />
+          )}
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="候选明细" title="候选部署与执行明细" />
+          {taskRoutingResult ? (
+            <div className="logs">
+              {JSON.stringify(
+                {
+                  selected_deployments: taskRoutingResult.selected_deployments,
+                  execution_results: taskRoutingResult.execution_results.map((item) => ({
+                    deployment_id: item.deployment_id,
+                    model_id: item.model_id,
+                    profile_name: item.profile_name,
+                    latency_ms: item.latency_ms,
+                    triple_count: item.triple_count,
+                    warnings: item.warnings,
+                  })),
+                },
+                null,
+                2,
+              )}
+            </div>
+          ) : (
+            <div className="logs">运行后这里会给出候选排序、实际选中的 deployment，以及各模型的执行结果摘要。</div>
+          )}
+        </article>
+      </section>
+    </>
+  );
+}
+
+function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment, onLoadDeploymentPolicy }) {
+  return (
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="创新点二"
+          title="需求感知部署策略"
+          note="结合历史调用次数、已完成基准记录和 GPU 空闲资源，给不同模型提供差异化部署建议。"
+          right={
+            <div className="actions">
+              <button
+                className="btn-primary"
+                disabled={actionBusy["deployment-policy"]}
+                onClick={() => void onLoadDeploymentPolicy()}
+                type="button"
+              >
+                {actionBusy["deployment-policy"] ? "分析中" : "刷新部署建议"}
+              </button>
+            </div>
+          }
+        />
+        <div className="banner banner-muted">
+          这不是通用资源分配，而是面向知识抽取模型库的策略层建议：高频或时延敏感模型优先推荐更空闲的 GPU，低频模型优先推荐共享资源或 CPU。
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="GPU 快照" title="当前资源视图" />
+        {deploymentPolicy?.gpu_snapshot?.available ? (
+          <div className="metrics">
+            <MetricCard title="GPU 数量" value={deploymentPolicy.gpu_snapshot.gpu_count} note="当前服务器可见设备数" />
+            <MetricCard title="活跃进程" value={deploymentPolicy.gpu_snapshot.process_count || 0} note="nvidia-smi 检测到的活跃进程" />
+            <MetricCard
+              title="最空闲 GPU"
+              value={
+                deploymentPolicy.gpu_snapshot.devices?.length
+                  ? `GPU ${[...deploymentPolicy.gpu_snapshot.devices]
+                      .sort((left, right) => ((right.memory_total_mb || 0) - (right.memory_used_mb || 0)) - ((left.memory_total_mb || 0) - (left.memory_used_mb || 0)))[0]?.index}`
+                  : "-"
+              }
+              note="按显存余量估算"
+            />
+            <MetricCard title="建议数" value={deploymentPolicy.recommendations?.length || 0} note="当前已生成的模型部署建议" />
+          </div>
+        ) : (
+          <EmptyState icon="G" title="还没有部署建议快照" note="点击上方“刷新部署建议”后，这里会展示实时 GPU 资源视图。" />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="策略建议" title="模型部署建议表" note="可直接据此为高频模型和低频模型创建不同资源等级的 deployment。" />
+        {deploymentPolicy?.recommendations?.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>需求等级</th>
+                  <th>使用热度</th>
+                  <th>历史时延</th>
+                  <th>推荐部署</th>
+                  <th>说明</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deploymentPolicy.recommendations.map((item) => (
+                  <tr key={item.model_id}>
+                    <td>
+                      <strong>{item.model_name}</strong>
+                      <div className="mono">{item.model_id}</div>
+                    </td>
+                    <td>
+                      <span className="tag">{item.demand_level}</span>
+                      <div className="table-note">分值：{formatFixed(item.demand_score)}</div>
+                    </td>
+                    <td>
+                      <div>请求数：{item.recent_request_count}</div>
+                      <div className="table-note">运行实例：{item.running_deployment_count}</div>
+                      <div className="table-note">基准记录：{item.benchmark_count}</div>
+                    </td>
+                    <td>{item.avg_p95_latency_ms !== null ? `${formatFixed(item.avg_p95_latency_ms)} ms` : "-"}</td>
+                    <td>
+                      <div>{item.recommended_profile_name}</div>
+                      <div className="table-note">{item.recommended_use_gpu ? item.recommended_device_label : "CPU"}</div>
+                    </td>
+                    <td className="limitation-cell">{item.rationale}</td>
+                    <td>
+                      <div className="actions row-actions">
+                        <button
+                          className="btn-primary"
+                          onClick={() =>
+                            void onCreateDeployment({
+                              model_id: item.model_id,
+                              profile_name: item.recommended_profile_name,
+                              launch_runtime: true,
+                              use_gpu: item.recommended_use_gpu,
+                              gpu_ids: item.recommended_gpu_ids,
+                              notes: `deployment_policy_${item.demand_level}`,
+                            })
+                          }
+                          type="button"
+                        >
+                          按建议部署
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState icon="P" title="还没有生成部署建议" note="点击“刷新部署建议”后，这里会出现每个模型的资源分配建议。" />
         )}
       </section>
     </>

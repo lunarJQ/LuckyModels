@@ -219,3 +219,76 @@ class PredictionArchiveRecord(BaseModel):
     item_count: int | None = None
     response_payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now)
+
+
+class TaskRoutingRequest(BaseModel):
+    text: str
+    objective: str = "accuracy"
+    language: str | None = None
+    scene: str | None = None
+    max_models: int = 3
+    candidate_model_ids: list[str] = Field(default_factory=list)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskRoutingCandidate(BaseModel):
+    deployment_id: str
+    model_id: str
+    profile_name: str
+    language: str
+    service_url: str | None = None
+    selection_score: float | None = None
+    selection_reason: str = ""
+    estimated_p95_latency_ms: float | None = None
+    benchmark_success_rate: float | None = None
+    recent_request_count: int = 0
+    predicted_triple_count: int | None = None
+
+
+class TaskRoutingExecution(BaseModel):
+    deployment_id: str
+    model_id: str
+    profile_name: str
+    selected_for_fusion: bool = True
+    latency_ms: float | None = None
+    triple_count: int = 0
+    triples: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TaskRoutingResponse(BaseModel):
+    objective: str
+    requested_language: str | None = None
+    inferred_language: str
+    difficulty: str
+    strategy_mode: str
+    explanation: str
+    candidate_count: int = 0
+    selected_count: int = 0
+    selected_deployments: list[TaskRoutingCandidate] = Field(default_factory=list)
+    execution_results: list[TaskRoutingExecution] = Field(default_factory=list)
+    fused_result: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentPolicyRecommendation(BaseModel):
+    model_id: str
+    model_name: str
+    language: str
+    demand_level: str
+    demand_score: float
+    recent_request_count: int = 0
+    benchmark_count: int = 0
+    avg_p95_latency_ms: float | None = None
+    running_deployment_count: int = 0
+    recommended_profile_name: str
+    recommended_use_gpu: bool = True
+    recommended_gpu_ids: list[int] = Field(default_factory=list)
+    recommended_device_label: str = ""
+    rationale: str
+
+
+class DeploymentPolicyResponse(BaseModel):
+    generated_at: str = Field(default_factory=utc_now)
+    gpu_available: bool = False
+    recommendations: list[DeploymentPolicyRecommendation] = Field(default_factory=list)
+    gpu_snapshot: dict[str, Any] = Field(default_factory=dict)
