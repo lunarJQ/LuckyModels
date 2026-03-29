@@ -1,0 +1,47 @@
+model_id: casrel-zh-duie-v1
+model_name: CasRel
+model_family: casrel
+task_type: relation_extraction
+language: zh
+framework: onnxruntime
+runtime_adapter: casrel_adapter
+version: v1
+dataset_name: duie
+dataset_split: dev
+stage_count: 2
+predict_ready: true
+backbone: bert-base-chinese
+
+artifacts:
+  subject_model: artifacts/casrel_subject.onnx
+  object_model: artifacts/casrel_object.onnx
+
+tokenizer:
+  type: bert_wordpiece
+  vocab_path: tokenizer/vocab.txt
+
+labels:
+  relation_map: labels/rel2id.json
+
+inference:
+  max_length: 256
+  batch_size: 1
+  thresholds:
+    subject: 0.1
+    object: 0.3
+
+profiles:
+  default: profiles/default.yaml
+  latency: profiles/latency.yaml
+  balanced: profiles/balanced.yaml
+  memory: profiles/memory.yaml
+  regression: profiles/regression.yaml
+
+deployment_requirements:
+  - Preserve tokenizer preprocessing before subject/object ONNX execution.
+  - Keep Python decode logic for subject spans, object spans, and relation reconstruction.
+  - Use DuIE Chinese evaluation samples for smoke tests and benchmark demos.
+
+runtime_notes:
+  - This Chinese CasRel package targets the DuIE2.0 relation extraction dataset.
+  - The package reuses the standardized LuckyModels CasRel runtime with a Chinese BERT wordpiece vocabulary.

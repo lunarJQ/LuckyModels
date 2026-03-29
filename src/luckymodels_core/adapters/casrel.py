@@ -457,6 +457,9 @@ class CasRelAdapter(BaseAdapter):
             else:
                 merged.append(token)
         text = " ".join(merged)
+        text = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", text)
+        text = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[，。！？；：、《》（）【】])", "", text)
+        text = re.sub(r"(?<=[，。！？；：、《》（）【】])\s+(?=[\u3400-\u9fff])", "", text)
         text = re.sub(r"\s+([.,!?;:])", r"\1", text)
         return text.strip()
 

@@ -1,0 +1,9 @@
+{
+  "text": "摩尔多瓦共和国简称摩尔多瓦，是位于东南欧的内陆国，与罗马尼亚和乌克兰接壤，首都基希讷乌。",
+  "scene": "duie_relation_extraction",
+  "options": {
+    "subject_threshold": 0.1,
+    "object_threshold": 0.3,
+    "debug": true
+  }
+}

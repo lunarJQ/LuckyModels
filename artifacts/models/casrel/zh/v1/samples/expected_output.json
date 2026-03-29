@@ -1,0 +1,12 @@
+{
+  "note": "This file documents the intended output structure for UI and API integration.",
+  "triples": [
+    {
+      "subject": "摩尔多瓦",
+      "predicate": "首都",
+      "object": "基希讷乌",
+      "confidence": 0.5,
+      "evidence": "摩尔多瓦共和国简称摩尔多瓦，是位于东南欧的内陆国，与罗马尼亚和乌克兰接壤，首都基希讷乌。"
+    }
+  ]
+}
