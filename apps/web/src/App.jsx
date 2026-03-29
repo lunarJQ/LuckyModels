@@ -2,21 +2,28 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import {
+  createAccessUser,
   createBenchmark,
   createDeployment,
   deleteBenchmark,
   deleteDeployment,
   deletePredictionArchive,
+  fetchAuthSession,
   getDeploymentPolicy,
   getDeploymentHealth,
   getDeploymentLogs,
   getModelProfiles,
+  loginWithPassword,
   loadDashboardData,
+  logoutSession,
   predictWithDeployment,
   restartDeployment,
   runTaskRoutingStrategy,
   runCasrelDemo,
+  switchCurrentAccessUser,
   stopDeployment,
+  toggleAccessUser,
+  updateAccessUser,
 } from "./api";
 import { EmptyState, MetricCard, SectionHeader, StatusPill } from "./components";
 import { navGroups } from "./nav";
@@ -32,6 +39,7 @@ const initialData = {
   predictArchives: [],
   report: null,
   gpuStatus: null,
+  accessOverview: null,
 };
 
 const pageMeta = {
@@ -46,6 +54,14 @@ const pageMeta = {
   "/experiments": {
     title: "在线推理",
     note: "选择运行中的部署实例做真实推理，查看三元组、健康状态和运行日志。",
+  },
+  "/access-control": {
+    title: "用户权限",
+    note: "统一查看当前用户、角色、权限范围以及系统内的用户构成。",
+  },
+  "/admin-console": {
+    title: "管理员面板",
+    note: "创建用户、调整角色、停用账号，并管理平台管理员相关配置。",
   },
   "/task-routing": {
     title: "任务调度",
@@ -345,8 +361,58 @@ function buildInitialTaskRoutingForm(report) {
   };
 }
 
+function buildInitialAccessUserForm(roles) {
+  const preferredRole = roles.find((item) => item.role_id === "user") || roles.find((item) => item.role_id === "researcher") || roles[0];
+  return {
+    username: "",
+    displayName: "",
+    email: "",
+    password: "",
+    roleId: preferredRole?.role_id || "",
+    notes: "",
+  };
+}
+
+function buildInitialLoginForm() {
+  return {
+    username: "admin",
+    password: "admin",
+  };
+}
+
+function formatRoleLabel(roleId) {
+  const mapping = {
+    admin: "平台管理员",
+    operator: "运维操作员",
+    researcher: "算法研究员",
+    user: "普通用户",
+    viewer: "只读访客",
+  };
+  return mapping[roleId] || roleId || "-";
+}
+
+function formatPermissionLabel(permissionId) {
+  const mapping = {
+    "models.view": "查看模型",
+    "deployments.view": "查看部署",
+    "deployments.manage": "管理部署",
+    "benchmarks.view": "查看基准",
+    "benchmarks.manage": "运行基准",
+    "predictions.view": "查看预测归档",
+    "strategies.manage": "运行策略",
+    "resources.view": "查看资源",
+    "archive.export": "导出归档",
+    "users.view": "查看权限",
+    "users.manage": "管理用户",
+  };
+  return mapping[permissionId] || permissionId || "-";
+}
+
 export default function App() {
   const [data, setData] = useState(initialData);
+  const [authSession, setAuthSession] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [loginForm, setLoginForm] = useState(buildInitialLoginForm());
   const [loadStatus, setLoadStatus] = useState("正在加载");
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState({ type: "ok", text: "" });
@@ -363,7 +429,7 @@ export default function App() {
   const [selectedLogs, setSelectedLogs] = useState(null);
 
   useEffect(() => {
-    void refreshAll();
+    void initializeSession();
   }, []);
 
   useEffect(() => {
@@ -443,8 +509,31 @@ export default function App() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("401")) {
+        setAuthSession({ authenticated: false, current_user: null, current_permissions: [] });
+      }
       setLoadError(message);
       setLoadStatus("加载失败");
+    }
+  }
+
+  async function initializeSession() {
+    setAuthChecking(true);
+    setLoadError("");
+    try {
+      const session = await fetchAuthSession();
+      setAuthSession(session);
+      if (session.authenticated) {
+        await refreshAll();
+      } else {
+        setLoadStatus("等待登录");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLoadError(message);
+      setLoadStatus("认证检查失败");
+    } finally {
+      setAuthChecking(false);
     }
   }
 
@@ -465,6 +554,45 @@ export default function App() {
       throw error;
     } finally {
       setActionBusy((current) => ({ ...current, [key]: false }));
+    }
+  }
+
+  async function handleLogin() {
+    setActionBusy((current) => ({ ...current, login: true }));
+    setNotice({ type: "ok", text: "" });
+    setLoadError("");
+    try {
+      const session = await loginWithPassword(loginForm);
+      setAuthSession(session);
+      setNotice({ type: "ok", text: `登录成功：${session.current_user?.display_name || session.current_user?.username || ""}` });
+      await refreshAll();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, login: false }));
+    }
+  }
+
+  async function handleLogout() {
+    setActionBusy((current) => ({ ...current, logout: true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const session = await logoutSession();
+      setAuthSession(session);
+      setData(initialData);
+      setPredictResult(null);
+      setTaskRoutingResult(null);
+      setDeploymentPolicy(null);
+      setSelectedHealth(null);
+      setSelectedLogs(null);
+      setLoadStatus("已退出");
+      setNotice({ type: "ok", text: "已退出当前账号。" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, logout: false }));
     }
   }
 
@@ -655,6 +783,52 @@ export default function App() {
     }
   }
 
+  async function handleCreateAccessUser(payload) {
+    await runAction(
+      "create-access-user",
+      () =>
+        createAccessUser({
+          username: payload.username,
+          display_name: payload.displayName,
+          email: payload.email,
+          password: payload.password || undefined,
+          role_ids: payload.roleId ? [payload.roleId] : [],
+          notes: payload.notes || undefined,
+        }),
+      `用户已创建：${payload.displayName || payload.username}`,
+    );
+  }
+
+  async function handleUpdateAccessUser(userId, payload) {
+    await runAction(
+      `update-access-user-${userId}`,
+      () =>
+        updateAccessUser(userId, {
+          display_name: payload.displayName,
+          email: payload.email,
+          role_ids: payload.roleIds,
+          notes: payload.notes,
+        }),
+      `用户权限已更新：${userId}`,
+    );
+  }
+
+  async function handleToggleAccessUser(userId, isActive) {
+    await runAction(
+      `toggle-access-user-${userId}`,
+      () => toggleAccessUser(userId, { is_active: isActive }),
+      `${isActive ? "已启用" : "已停用"}用户：${userId}`,
+    );
+  }
+
+  async function handleSwitchCurrentAccessUser(userId) {
+    await runAction(
+      "switch-access-user",
+      () => switchCurrentAccessUser({ user_id: userId }),
+      `当前身份已切换：${userId}`,
+    );
+  }
+
   async function handleExportModelManifest(modelId) {
     const detail = data.modelDetails[modelId];
     if (!detail) {
@@ -681,7 +855,7 @@ export default function App() {
   }
 
   const derived = useMemo(() => {
-    const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0 };
+    const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0, user_count: 0, admin_count: 0 };
     const models = data.models || [];
     const modelDetails = data.modelDetails || {};
     const capabilityMatrix = data.capabilityMatrix || [];
@@ -690,6 +864,7 @@ export default function App() {
     const predictArchives = data.predictArchives || [];
     const report = data.report || {};
     const gpuStatus = data.gpuStatus || { available: false, gpu_count: 0, devices: [] };
+    const accessOverview = data.accessOverview || { users: [], roles: [], permissions: [], current_permissions: [] };
     const runningDeployments = deployments.filter((item) => item.status === "running");
     const predictableModels = models.filter((item) => item.predict_ready);
     const latestDeployment = deployments.length ? [...deployments].reverse()[0] : null;
@@ -706,6 +881,12 @@ export default function App() {
       benchmarks,
       predictArchives,
       gpuStatus,
+      accessOverview,
+      accessUsers: accessOverview.users || [],
+      accessRoles: accessOverview.roles || [],
+      accessPermissions: accessOverview.permissions || [],
+      currentAccessUser: accessOverview.current_user || null,
+      currentAccessPermissions: accessOverview.current_permissions || [],
       runningDeployments,
       predictableModels,
       latestDeployment,
@@ -715,9 +896,18 @@ export default function App() {
     };
   }, [data, deploymentForm.modelId]);
 
+  if (authChecking) {
+    return <LoginPage actionBusy={actionBusy} authChecking={authChecking} loadError={loadError} loginForm={loginForm} notice={notice} onLogin={() => void handleLogin()} onLoginFormChange={setLoginForm} />;
+  }
+
+  if (!authSession?.authenticated) {
+    return <LoginPage actionBusy={actionBusy} authChecking={false} loadError={loadError} loginForm={loginForm} notice={notice} onLogin={() => void handleLogin()} onLoginFormChange={setLoginForm} />;
+  }
+
   return (
     <Shell
       actionBusy={actionBusy}
+      authSession={authSession}
       benchmarkForm={benchmarkForm}
       data={data}
       demoRunning={demoRunning}
@@ -748,7 +938,12 @@ export default function App() {
           value,
         )
       }
+      onCreateAccessUser={handleCreateAccessUser}
       onLoadDeploymentPolicy={handleLoadDeploymentPolicy}
+      onLogout={handleLogout}
+      onSwitchCurrentAccessUser={handleSwitchCurrentAccessUser}
+      onToggleAccessUser={handleToggleAccessUser}
+      onUpdateAccessUser={handleUpdateAccessUser}
       onInspectDeployment={handleInspectDeployment}
       onPredict={handlePredict}
       onPredictFormChange={setPredictForm}
@@ -767,11 +962,66 @@ export default function App() {
   );
 }
 
+function LoginPage({ actionBusy, authChecking, loadError, loginForm, notice, onLogin, onLoginFormChange }) {
+  return (
+    <div className="app-shell">
+      <main className="main">
+        <section className="content">
+          <section className="page-shell card section-shell" style={{ maxWidth: 560, margin: "48px auto" }}>
+            <SectionHeader
+              kicker="身份认证"
+              title="登录 LuckyModels 平台"
+              note="当前已启用基础账号认证。默认管理员账号为 admin / admin，普通用户账号为 user / user。"
+            />
+            {notice.text ? (
+              <div className={`banner ${notice.type === "error" ? "banner-error" : "banner-ok"}`}>{notice.text}</div>
+            ) : null}
+            {loadError ? <div className="banner banner-error">{loadError}</div> : null}
+            <div className="form-grid">
+              <label className="stack-field">
+                <span>用户名</span>
+                <input
+                  onChange={(event) => onLoginFormChange((current) => ({ ...current, username: event.target.value }))}
+                  type="text"
+                  value={loginForm.username}
+                />
+              </label>
+              <label className="stack-field">
+                <span>密码</span>
+                <input
+                  onChange={(event) => onLoginFormChange((current) => ({ ...current, password: event.target.value }))}
+                  type="password"
+                  value={loginForm.password}
+                />
+              </label>
+              <div className="actions">
+                <button
+                  className="btn-primary"
+                  disabled={authChecking || actionBusy.login || !loginForm.username.trim() || !loginForm.password.trim()}
+                  onClick={onLogin}
+                  type="button"
+                >
+                  {authChecking ? "检查会话中" : actionBusy.login ? "登录中" : "登录"}
+                </button>
+              </div>
+            </div>
+            <div className="tag-list">
+              <span className="tag">管理员：admin / admin</span>
+              <span className="tag">普通用户：user / user</span>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+  );
+}
+
 function Shell(props) {
   const location = useLocation();
   const currentMeta = pageMeta[location.pathname] || pageMeta["/"];
   const {
     actionBusy,
+    authSession,
     benchmarkForm,
     data,
     demoRunning,
@@ -791,7 +1041,12 @@ function Shell(props) {
     onExportModelManifest,
     onExportModelProfiles,
     onExportPredictResult,
+    onCreateAccessUser,
     onLoadDeploymentPolicy,
+    onLogout,
+    onSwitchCurrentAccessUser,
+    onToggleAccessUser,
+    onUpdateAccessUser,
     onInspectDeployment,
     onPredict,
     onPredictFormChange,
@@ -845,6 +1100,7 @@ function Shell(props) {
           <div className="footer-note">模型 {derived.summary.model_count}</div>
           <div className="footer-note">部署 {derived.summary.deployment_count}</div>
           <div className="footer-note">基准 {derived.summary.benchmark_count}</div>
+          <div className="footer-note">用户 {derived.summary.user_count || 0}</div>
           <div className="footer-note mono">127.0.0.1:38080</div>
         </div>
       </aside>
@@ -856,7 +1112,11 @@ function Shell(props) {
             <div className="topbar-note">{currentMeta.note}</div>
           </div>
           <div className="topbar-meta">
+            <span>{authSession?.current_user?.display_name || authSession?.current_user?.username || "未登录"}</span>
             <span>{loadStatus}</span>
+            <button disabled={actionBusy.logout} onClick={() => void onLogout()} type="button">
+              {actionBusy.logout ? "退出中" : "退出"}
+            </button>
             <div className="top-icon">LM</div>
           </div>
         </header>
@@ -913,6 +1173,28 @@ function Shell(props) {
                 />
               }
               path="/deployment-policy"
+            />
+            <Route
+              element={
+                <AccessControlPage
+                  actionBusy={actionBusy}
+                  derived={derived}
+                  onSwitchCurrentAccessUser={onSwitchCurrentAccessUser}
+                />
+              }
+              path="/access-control"
+            />
+            <Route
+              element={
+                <AdminConsolePage
+                  actionBusy={actionBusy}
+                  derived={derived}
+                  onCreateAccessUser={onCreateAccessUser}
+                  onToggleAccessUser={onToggleAccessUser}
+                  onUpdateAccessUser={onUpdateAccessUser}
+                />
+              }
+              path="/admin-console"
             />
             <Route
               element={
@@ -1014,6 +1296,11 @@ function OverviewPage({ derived }) {
           <div className="title">基准总数</div>
           <div className="big">{derived.summary.benchmark_count}</div>
           <div className="small">历史基准测试记录</div>
+        </div>
+        <div className="summary-card">
+          <div className="title">平台用户</div>
+          <div className="big">{derived.summary.user_count || 0}</div>
+          <div className="small">管理员 {derived.summary.admin_count || 0} 人</div>
         </div>
       </section>
 
@@ -1237,6 +1524,345 @@ function ExperimentsPage({
         ) : (
           <EmptyState icon="A" title="暂无预测归档" note="完成一次在线推理后，结果会自动归档到这里。" />
         )}
+      </section>
+    </>
+  );
+}
+
+function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
+  const currentUser = derived.currentAccessUser;
+  const users = derived.accessUsers || [];
+  const roles = derived.accessRoles || [];
+  const permissions = derived.accessPermissions || [];
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageUsers = currentPermissions.includes("users.manage");
+  const [selectedUserId, setSelectedUserId] = useState(currentUser?.user_id || "");
+
+  useEffect(() => {
+    setSelectedUserId(currentUser?.user_id || "");
+  }, [currentUser?.user_id]);
+
+  return (
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="访问控制"
+          title="用户权限总览"
+          note="这里集中展示当前登录身份、角色绑定和平台内置权限，用于论文或答辩中说明平台治理能力。"
+          right={
+            <div className="actions">
+              <button
+                className="btn-primary"
+                disabled={!canManageUsers || !selectedUserId || actionBusy["switch-access-user"]}
+                onClick={() => void onSwitchCurrentAccessUser(selectedUserId)}
+                type="button"
+              >
+                {actionBusy["switch-access-user"] ? "切换中" : "切换当前身份"}
+              </button>
+            </div>
+          }
+        />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>查看身份</span>
+            <select onChange={(event) => setSelectedUserId(event.target.value)} value={selectedUserId}>
+              {users.map((item) => (
+                <option key={item.user_id} value={item.user_id}>
+                  {item.display_name} · {item.username}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>当前角色</span>
+            <div className="stack-field-readonly">
+              {currentUser?.role_ids?.length ? currentUser.role_ids.map((item) => formatRoleLabel(item)).join(" / ") : "-"}
+            </div>
+          </label>
+          <label className="stack-field">
+            <span>当前邮箱</span>
+            <div className="stack-field-readonly">{currentUser?.email || "-"}</div>
+          </label>
+          <label className="stack-field">
+            <span>状态</span>
+            <div className="stack-field-readonly">
+              {currentUser ? `${currentUser.is_active ? "启用" : "停用"} / ${currentUser.is_admin ? "管理员" : "普通用户"}` : "-"}
+            </div>
+          </label>
+        </div>
+        <div className="tag-list">
+          {currentPermissions.length ? (
+            currentPermissions.map((item) => (
+              <span className="tag" key={item}>
+                {formatPermissionLabel(item)}
+              </span>
+            ))
+          ) : (
+            <span className="tag">当前身份没有有效权限</span>
+          )}
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="权限构成" title="角色与权限映射" note="每个角色都绑定了一组固定权限，用于描述平台中的读写边界。" />
+        <div className="list-grid">
+          {roles.map((role) => (
+            <article className="list-card" key={role.role_id}>
+              <h3>{role.role_name}</h3>
+              <div className="table-note">{role.description}</div>
+              <div className="tag-list">
+                {(role.permissions || []).map((permissionId) => (
+                  <span className="tag" key={`${role.role_id}-${permissionId}`}>
+                    {formatPermissionLabel(permissionId)}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="用户列表" title="用户与权限矩阵" note="管理员可在这里查看所有账号的角色归属和启停状态。" />
+        <div className="metrics">
+          <MetricCard title="用户总数" value={users.length} note="当前 access store 中的用户数" />
+          <MetricCard title="管理员数" value={users.filter((item) => item.is_admin && item.is_active).length} note="启用中的管理员" />
+          <MetricCard title="启用用户" value={users.filter((item) => item.is_active).length} note="当前可切换身份" />
+          <MetricCard title="权限项" value={permissions.length} note="平台当前内置权限项数量" />
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>角色</th>
+                <th>权限摘要</th>
+                <th>状态</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((item) => {
+                const effectiveRoleNames = (item.role_ids || []).map((roleId) => formatRoleLabel(roleId)).join(" / ");
+                const effectivePermissionCount = roles
+                  .filter((role) => (item.role_ids || []).includes(role.role_id))
+                  .reduce((sum, role) => sum + (role.permissions || []).length, 0);
+                return (
+                  <tr key={item.user_id}>
+                    <td>
+                      <strong>{item.display_name}</strong>
+                      <div className="mono">{item.username}</div>
+                      <div className="table-note">{item.email}</div>
+                    </td>
+                    <td>{effectiveRoleNames || "-"}</td>
+                    <td>{effectivePermissionCount} 项</td>
+                    <td>
+                      <StatusPill status={item.is_active ? "completed" : "stopped"} />
+                      <div className="table-note">{item.is_admin ? "管理员" : "普通用户"}</div>
+                    </td>
+                    <td className="limitation-cell">{item.notes || "-"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function AdminConsolePage({ actionBusy, derived, onCreateAccessUser, onToggleAccessUser, onUpdateAccessUser }) {
+  const roles = derived.accessRoles || [];
+  const users = derived.accessUsers || [];
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageUsers = currentPermissions.includes("users.manage");
+  const [userForm, setUserForm] = useState(buildInitialAccessUserForm(roles));
+  const [draftRoles, setDraftRoles] = useState({});
+
+  useEffect(() => {
+    setUserForm((current) => {
+      if (current.roleId && roles.some((item) => item.role_id === current.roleId)) {
+        return current;
+      }
+      return buildInitialAccessUserForm(roles);
+    });
+  }, [roles]);
+
+  useEffect(() => {
+    setDraftRoles(
+      Object.fromEntries(users.map((item) => [item.user_id, item.role_ids?.[0] || "viewer"])),
+    );
+  }, [users]);
+
+  async function handleCreate() {
+    await onCreateAccessUser(userForm);
+    setUserForm(buildInitialAccessUserForm(roles));
+  }
+
+  return (
+    <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="管理员入口"
+          title="管理员控制台"
+          note="这里聚焦用户创建、角色调整和账号启停，是管理员专用的治理视图。"
+        />
+        <div className="metrics">
+          <MetricCard title="当前可管理" value={canManageUsers ? "是" : "否"} note="是否具有 users.manage 权限" />
+          <MetricCard title="平台管理员" value={users.filter((item) => item.is_admin).length} note="包含停用用户" />
+          <MetricCard title="可切换身份" value={users.filter((item) => item.is_active).length} note="启用中的账号数" />
+          <MetricCard title="角色模板" value={roles.length} note="当前平台内置角色数" />
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="新建用户" title="创建用户账号" note="默认采用单角色分配，适合平台演示和课程答辩中的权限说明。" />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>用户名</span>
+            <input
+              onChange={(event) => setUserForm((current) => ({ ...current, username: event.target.value }))}
+              type="text"
+              value={userForm.username}
+            />
+          </label>
+          <label className="stack-field">
+            <span>显示名称</span>
+            <input
+              onChange={(event) => setUserForm((current) => ({ ...current, displayName: event.target.value }))}
+              type="text"
+              value={userForm.displayName}
+            />
+          </label>
+          <label className="stack-field">
+            <span>邮箱</span>
+            <input
+              onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))}
+              type="email"
+              value={userForm.email}
+            />
+          </label>
+          <label className="stack-field">
+            <span>初始密码</span>
+            <input
+              onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
+              type="password"
+              value={userForm.password}
+            />
+          </label>
+          <label className="stack-field">
+            <span>角色</span>
+            <select
+              onChange={(event) => setUserForm((current) => ({ ...current, roleId: event.target.value }))}
+              value={userForm.roleId}
+            >
+              {roles.map((item) => (
+                <option key={item.role_id} value={item.role_id}>
+                  {item.role_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>备注</span>
+            <textarea
+              onChange={(event) => setUserForm((current) => ({ ...current, notes: event.target.value }))}
+              rows="3"
+              value={userForm.notes}
+            />
+          </label>
+          <div className="actions">
+            <button
+              className="btn-primary"
+              disabled={
+                !canManageUsers ||
+                actionBusy["create-access-user"] ||
+                !userForm.username.trim() ||
+                !userForm.displayName.trim() ||
+                !userForm.email.trim() ||
+                !userForm.password.trim()
+              }
+              onClick={() => void handleCreate()}
+              type="button"
+            >
+              {actionBusy["create-access-user"] ? "创建中" : "创建用户"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="账号治理" title="角色调整与账号启停" note="管理员可直接调整单个用户的角色，并启用或停用账号。" />
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>当前角色</th>
+                <th>调整角色</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((item) => (
+                <tr key={item.user_id}>
+                  <td>
+                    <strong>{item.display_name}</strong>
+                    <div className="mono">{item.user_id}</div>
+                    <div className="table-note">{item.email}</div>
+                  </td>
+                  <td>{(item.role_ids || []).map((roleId) => formatRoleLabel(roleId)).join(" / ") || "-"}</td>
+                  <td>
+                    <select
+                      disabled={!canManageUsers}
+                      onChange={(event) =>
+                        setDraftRoles((current) => ({ ...current, [item.user_id]: event.target.value }))
+                      }
+                      value={draftRoles[item.user_id] || item.role_ids?.[0] || "viewer"}
+                    >
+                      {roles.map((role) => (
+                        <option key={role.role_id} value={role.role_id}>
+                          {role.role_name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <StatusPill status={item.is_active ? "completed" : "stopped"} />
+                    <div className="table-note">{item.is_admin ? "管理员" : "普通用户"}</div>
+                  </td>
+                  <td>
+                    <div className="actions row-actions">
+                      <button
+                        disabled={!canManageUsers || actionBusy[`update-access-user-${item.user_id}`]}
+                        onClick={() =>
+                          void onUpdateAccessUser(item.user_id, {
+                            displayName: item.display_name,
+                            email: item.email,
+                            roleIds: [draftRoles[item.user_id] || item.role_ids?.[0] || "viewer"],
+                            notes: item.notes,
+                          })
+                        }
+                        type="button"
+                      >
+                        保存角色
+                      </button>
+                      <button
+                        disabled={!canManageUsers || actionBusy[`toggle-access-user-${item.user_id}`]}
+                        onClick={() => void onToggleAccessUser(item.user_id, !item.is_active)}
+                        type="button"
+                      >
+                        {item.is_active ? "停用" : "启用"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
     </>
   );

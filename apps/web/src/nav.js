@@ -26,4 +26,11 @@ export const navGroups = [
       { id: "logs", path: "/logs", label: "日志中心" },
     ],
   },
+  {
+    title: "系统管理",
+    items: [
+      { id: "access-control", path: "/access-control", label: "用户权限" },
+      { id: "admin-console", path: "/admin-console", label: "管理员面板" },
+    ],
+  },
 ];

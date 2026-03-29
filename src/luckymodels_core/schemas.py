@@ -166,6 +166,8 @@ class SystemSummary(BaseModel):
     deployment_count: int
     benchmark_count: int = 0
     prediction_archive_count: int = 0
+    user_count: int = 0
+    admin_count: int = 0
     artifact_root: str
     logs_root: str | None = None
 
@@ -292,3 +294,77 @@ class DeploymentPolicyResponse(BaseModel):
     gpu_available: bool = False
     recommendations: list[DeploymentPolicyRecommendation] = Field(default_factory=list)
     gpu_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class AccessPermission(BaseModel):
+    permission_id: str
+    permission_name: str
+    category: str
+    description: str
+
+
+class AccessRole(BaseModel):
+    role_id: str
+    role_name: str
+    description: str
+    permissions: list[str] = Field(default_factory=list)
+    builtin: bool = True
+
+
+class AccessUser(BaseModel):
+    user_id: str
+    username: str
+    display_name: str
+    email: str
+    role_ids: list[str] = Field(default_factory=list)
+    is_active: bool = True
+    is_admin: bool = False
+    notes: str | None = None
+    password_hash: str | None = Field(default=None, exclude=True)
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class AccessUserCreateRequest(BaseModel):
+    username: str
+    display_name: str
+    email: str
+    password: str | None = None
+    role_ids: list[str] = Field(default_factory=list)
+    is_active: bool = True
+    notes: str | None = None
+
+
+class AccessUserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    role_ids: list[str] | None = None
+    is_active: bool | None = None
+    notes: str | None = None
+
+
+class AccessUserToggleRequest(BaseModel):
+    is_active: bool
+
+
+class AccessCurrentUserSwitchRequest(BaseModel):
+    user_id: str
+
+
+class AccessOverview(BaseModel):
+    current_user: AccessUser | None = None
+    current_permissions: list[str] = Field(default_factory=list)
+    users: list[AccessUser] = Field(default_factory=list)
+    roles: list[AccessRole] = Field(default_factory=list)
+    permissions: list[AccessPermission] = Field(default_factory=list)
+
+
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool = False
+    current_user: AccessUser | None = None
+    current_permissions: list[str] = Field(default_factory=list)

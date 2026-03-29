@@ -531,6 +531,16 @@ button:disabled {
   resize: vertical;
 }
 
+.stack-field-readonly {
+  min-height: 48px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: rgba(247, 244, 238, 0.9);
+  color: #314150;
+  box-shadow: var(--shadow);
+}
+
 .stack-field input:focus,
 .stack-field select:focus,
 .stack-field textarea:focus {

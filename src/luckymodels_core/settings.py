@@ -11,6 +11,7 @@ class Settings:
     state_root: Path
     logs_root: Path
     reports_root: Path
+    access_control_file: Path
     deployments_file: Path
     benchmarks_file: Path
     prediction_archives_file: Path
@@ -30,6 +31,7 @@ def get_settings() -> Settings:
         state_root=state_root,
         logs_root=logs_root,
         reports_root=reports_root,
+        access_control_file=state_root / "access_control.json",
         deployments_file=state_root / "deployments.json",
         benchmarks_file=state_root / "benchmarks.json",
         prediction_archives_file=state_root / "prediction_archives.json",

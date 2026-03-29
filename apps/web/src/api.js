@@ -7,8 +7,26 @@ export async function fetchJSON(url, options) {
   return response.json();
 }
 
+export async function fetchAuthSession() {
+  return fetchJSON("/api/v1/auth/session");
+}
+
+export async function loginWithPassword(payload) {
+  return fetchJSON("/api/v1/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function logoutSession() {
+  return fetchJSON("/api/v1/auth/logout", {
+    method: "POST",
+  });
+}
+
 export async function loadDashboardData() {
-  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus] = await Promise.all([
+  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     fetchJSON("/api/v1/models"),
     fetchJSON("/api/v1/deployments"),
@@ -17,6 +35,7 @@ export async function loadDashboardData() {
     fetchJSON("/api/v1/demo/casrel/report"),
     fetchJSON("/api/v1/models/capability-matrix"),
     fetchJSON("/api/v1/system/gpus"),
+    fetchJSON("/api/v1/access-control/overview"),
   ]);
 
   const deploymentEntries = await Promise.all(
@@ -57,6 +76,7 @@ export async function loadDashboardData() {
     report,
     capabilityMatrix,
     gpuStatus,
+    accessOverview,
     modelDetails: Object.fromEntries(modelDetailsEntries),
   };
 }
@@ -141,4 +161,36 @@ export async function runTaskRoutingStrategy(payload) {
 
 export async function getDeploymentPolicy() {
   return fetchJSON("/api/v1/strategies/deployment-policy");
+}
+
+export async function createAccessUser(payload) {
+  return fetchJSON("/api/v1/access-control/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAccessUser(userId, payload) {
+  return fetchJSON(`/api/v1/access-control/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function toggleAccessUser(userId, payload) {
+  return fetchJSON(`/api/v1/access-control/users/${encodeURIComponent(userId)}/toggle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function switchCurrentAccessUser(payload) {
+  return fetchJSON("/api/v1/access-control/current-user", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }

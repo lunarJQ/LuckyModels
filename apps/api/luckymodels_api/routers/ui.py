@@ -9,8 +9,11 @@ router = APIRouter(tags=["ui"])
 
 FRONTEND_PATHS = [
     "/",
+    "/login",
     "/dashboard",
     "/experiments",
+    "/access-control",
+    "/admin-console",
     "/archive",
     "/models",
     "/task-routing",

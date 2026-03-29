@@ -1,3 +1,4 @@
+from luckymodels_core.access_store import AccessStore
 from luckymodels_core.benchmark_store import BenchmarkStore
 from luckymodels_core.deployment_store import DeploymentStore
 from luckymodels_core.prediction_store import PredictionStore
@@ -8,6 +9,11 @@ from luckymodels_core.settings import get_settings
 def get_registry() -> ArtifactRegistry:
     settings = get_settings()
     return ArtifactRegistry(settings.artifacts_root)
+
+
+def get_access_store() -> AccessStore:
+    settings = get_settings()
+    return AccessStore(settings.access_control_file)
 
 
 def get_deployment_store() -> DeploymentStore:
