@@ -21,8 +21,11 @@ onnx/casrel_duie_model/
 onnx/casrel_webnlg_model/
 onnx/copymtl_webnlg_model/
 onnx/graphrel_nyt_model/
+onnx/onerel_duie_model/
 onnx/onerel_webnlg_model/
+onnx/prgc_duie_model/
 onnx/prgc_webnlg_model/
+onnx/pure_duie_model/
 onnx/pure_scierc_model/
 onnx/spert_scierc_model/
 onnx/spert_duie_model/
