@@ -462,7 +462,7 @@ function buildInitialDeploymentPolicyAutomationForm() {
 }
 
 function buildInitialAccessUserForm(roles) {
-  const preferredRole = roles.find((item) => item.role_id === "user") || roles.find((item) => item.role_id === "researcher") || roles[0];
+  const preferredRole = roles.find((item) => item.role_id === "user") || roles[0];
   return {
     username: "",
     displayName: "",
@@ -483,10 +483,7 @@ function buildInitialLoginForm() {
 function formatRoleLabel(roleId) {
   const mapping = {
     admin: "平台管理员",
-    operator: "运维操作员",
-    researcher: "算法研究员",
     user: "普通用户",
-    viewer: "只读访客",
   };
   return mapping[roleId] || roleId || "-";
 }
@@ -508,9 +505,9 @@ function formatPermissionLabel(permissionId) {
   return mapping[permissionId] || permissionId || "-";
 }
 
-const pagePermissionMap = Object.fromEntries(
+const pageConfigMap = Object.fromEntries(
   navGroups.flatMap((group) =>
-    group.items.map((item) => [item.path, item.requiredPermissions || []]),
+    group.items.map((item) => [item.path, item]),
   ),
 );
 
@@ -524,22 +521,40 @@ function hasRequiredPermissions(currentPermissions, requiredPermissions = []) {
 
 function getRequiredPermissionsForPath(pathname) {
   if (pathname === "/dashboard") {
-    return pagePermissionMap["/"] || [];
+    return pageConfigMap["/"]?.requiredPermissions || [];
   }
-  return pagePermissionMap[pathname] || [];
+  return pageConfigMap[pathname]?.requiredPermissions || [];
 }
 
-function getVisibleNavGroups(currentPermissions) {
+function isAdminOnlyPath(pathname) {
+  if (pathname === "/dashboard") {
+    return Boolean(pageConfigMap["/"]?.adminOnly);
+  }
+  return Boolean(pageConfigMap[pathname]?.adminOnly);
+}
+
+function canAccessPath(pathname, currentPermissions, currentUser) {
+  const hasPermissions = hasRequiredPermissions(currentPermissions, getRequiredPermissionsForPath(pathname));
+  if (!hasPermissions) {
+    return false;
+  }
+  if (isAdminOnlyPath(pathname) && !currentUser?.is_admin) {
+    return false;
+  }
+  return true;
+}
+
+function getVisibleNavGroups(currentPermissions, currentUser) {
   return navGroups
     .map((group) => ({
       ...group,
-      items: group.items.filter((item) => hasRequiredPermissions(currentPermissions, item.requiredPermissions || [])),
+      items: group.items.filter((item) => canAccessPath(item.path, currentPermissions, currentUser)),
     }))
     .filter((group) => group.items.length);
 }
 
-function getFallbackPath(currentPermissions) {
-  const visibleGroups = getVisibleNavGroups(currentPermissions);
+function getFallbackPath(currentPermissions, currentUser) {
+  const visibleGroups = getVisibleNavGroups(currentPermissions, currentUser);
   return visibleGroups[0]?.items[0]?.path || "/";
 }
 
@@ -719,13 +734,13 @@ export default function App() {
     void hydratePredictSample(predictForm.scene, { advance: false });
   }, [predictForm.scene]);
 
-  async function refreshAll({ silent = false } = {}) {
+  async function refreshAll({ silent = false, sessionOverride = null } = {}) {
     if (!silent) {
       setLoadError("");
       setLoadStatus("正在加载");
     }
     try {
-      const next = await loadDashboardData();
+      const next = await loadDashboardData(sessionOverride || authSession);
       startTransition(() => {
         setData(next);
         setLoadStatus("已加载");
@@ -747,7 +762,7 @@ export default function App() {
       const session = await fetchAuthSession();
       setAuthSession(session);
       if (session.authenticated) {
-        await refreshAll();
+        await refreshAll({ sessionOverride: session });
       } else {
         setLoadStatus("等待登录");
       }
@@ -788,7 +803,7 @@ export default function App() {
       const session = await loginWithPassword(loginForm);
       setAuthSession(session);
       setNotice({ type: "ok", text: `登录成功：${session.current_user?.display_name || session.current_user?.username || ""}` });
-      await refreshAll();
+      await refreshAll({ sessionOverride: session });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", text: message });
@@ -1361,8 +1376,11 @@ export default function App() {
       accessUsers: accessOverview.users || [],
       accessRoles: accessOverview.roles || [],
       accessPermissions: accessOverview.permissions || [],
-      currentAccessUser: accessOverview.current_user || null,
-      currentAccessPermissions: accessOverview.current_permissions || [],
+      currentAccessUser: accessOverview.current_user || authSession?.current_user || null,
+      currentAccessPermissions:
+        (accessOverview.current_permissions && accessOverview.current_permissions.length
+          ? accessOverview.current_permissions
+          : authSession?.current_permissions) || [],
       runningDeployments,
       predictableModels,
       latestDeployment,
@@ -1370,7 +1388,7 @@ export default function App() {
       latestPredictArchive,
       deploymentProfiles,
     };
-  }, [data, deploymentForm.modelId]);
+  }, [authSession, data, deploymentForm.modelId]);
 
   if (authChecking) {
     return <LoginPage actionBusy={actionBusy} authChecking={authChecking} loadError={loadError} loginForm={loginForm} notice={notice} onLogin={() => void handleLogin()} onLoginFormChange={setLoginForm} />;
@@ -1648,9 +1666,9 @@ function Shell(props) {
     taskRoutingResult,
   } = props;
   const currentPermissions = derived.currentAccessPermissions || [];
-  const visibleNavGroups = getVisibleNavGroups(currentPermissions);
-  const fallbackPath = getFallbackPath(currentPermissions);
   const currentUser = derived.currentAccessUser || authSession?.current_user || null;
+  const visibleNavGroups = getVisibleNavGroups(currentPermissions, currentUser);
+  const fallbackPath = getFallbackPath(currentPermissions, currentUser);
   const currentRoleNames = (currentUser?.role_ids || []).map((item) => formatRoleLabel(item)).join(" / ") || "未分配角色";
 
   function renderGuardedRoute(path, element, options = {}) {
@@ -1658,7 +1676,7 @@ function Shell(props) {
       <Route
         element={
           <GuardedPage
-            allowed={hasRequiredPermissions(currentPermissions, getRequiredPermissionsForPath(path))}
+            allowed={canAccessPath(path, currentPermissions, currentUser)}
             fallbackPath={fallbackPath}
             note={options.note}
             title={options.title}
@@ -2161,6 +2179,9 @@ function ExperimentsPage({
     : DEFAULT_PREDICT_DATASETS;
   const activeScene = resolvePredictDatasetKey(predictForm.scene);
   const sampleBusy = actionBusy[`predict-sample-${activeScene}`];
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageArchives = derived.currentAccessUser?.is_admin;
+  const canExportArchives = currentPermissions.includes("archive.export");
 
   return (
     <>
@@ -2332,14 +2353,18 @@ function ExperimentsPage({
                       </td>
                       <td>
                         <div className="actions row-actions">
-                          <button onClick={() => onExportPredictResult(item.response_payload || item)} type="button">导出结果</button>
-                          <button
-                            disabled={actionBusy[`delete-prediction-${item.archive_id}`]}
-                            onClick={() => void onDeletePredictionArchive(item.archive_id)}
-                            type="button"
-                          >
-                            删除归档
-                          </button>
+                          {canExportArchives ? (
+                            <button onClick={() => onExportPredictResult(item.response_payload || item)} type="button">导出结果</button>
+                          ) : null}
+                          {canManageArchives ? (
+                            <button
+                              disabled={actionBusy[`delete-prediction-${item.archive_id}`]}
+                              onClick={() => void onDeletePredictionArchive(item.archive_id)}
+                              type="button"
+                            >
+                              删除归档
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -2525,7 +2550,7 @@ function AdminConsolePage({
 
   useEffect(() => {
     setDraftRoles(
-      Object.fromEntries(users.map((item) => [item.user_id, item.role_ids?.[0] || "viewer"])),
+      Object.fromEntries(users.map((item) => [item.user_id, item.role_ids?.[0] || "user"])),
     );
   }, [users]);
 
@@ -2670,7 +2695,7 @@ function AdminConsolePage({
                       onChange={(event) =>
                         setDraftRoles((current) => ({ ...current, [item.user_id]: event.target.value }))
                       }
-                      value={draftRoles[item.user_id] || item.role_ids?.[0] || "viewer"}
+                      value={draftRoles[item.user_id] || item.role_ids?.[0] || "user"}
                     >
                       {roles.map((role) => (
                         <option key={role.role_id} value={role.role_id}>
@@ -2706,7 +2731,7 @@ function AdminConsolePage({
                           void onUpdateAccessUser(item.user_id, {
                             displayName: item.display_name,
                             email: item.email,
-                            roleIds: [draftRoles[item.user_id] || item.role_ids?.[0] || "viewer"],
+                            roleIds: [draftRoles[item.user_id] || item.role_ids?.[0] || "user"],
                             notes: item.notes,
                           })
                         }
@@ -3712,6 +3737,9 @@ function DeploymentPolicyPage({
 }
 
 function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArchive }) {
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageArchives = derived.currentAccessUser?.is_admin;
+  const canExportArchives = currentPermissions.includes("archive.export");
   return (
     <>
       <section className="page-shell card section-shell">
@@ -3762,8 +3790,12 @@ function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArc
                       </td>
                       <td>
                         <div className="actions row-actions">
-                          <button onClick={() => onExportPredictionArchive(item)} type="button">导出 JSON</button>
-                          <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
+                          {canExportArchives ? (
+                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出 JSON</button>
+                          ) : null}
+                          {canManageArchives ? (
+                            <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -3799,6 +3831,10 @@ function ModelsPage({
   const [runtimeFilter, setRuntimeFilter] = useState("all");
   const [originFilter, setOriginFilter] = useState("all");
   const deferredSearch = useDeferredValue(search);
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageDeployments = currentPermissions.includes("deployments.manage");
+  const canExportPackages = currentPermissions.includes("archive.export");
+  const canManageModels = derived.currentAccessUser?.is_admin;
   const familyOptions = data.importOptions?.families || [];
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
   const recommendationByModelId = useMemo(
@@ -3831,6 +3867,7 @@ function ModelsPage({
 
   return (
     <>
+      {canManageModels ? (
       <section className="page-shell card section-shell">
         <SectionHeader
           kicker="模型导入"
@@ -3999,7 +4036,9 @@ function ModelsPage({
           </div>
         </div>
       </section>
+      ) : null}
 
+      {canManageDeployments ? (
       <section className="page-shell card section-shell">
         <SectionHeader kicker="新建部署" title="从模型库创建部署实例" note="选择模型、配置模板和备注，直接通过控制面创建部署实例。" />
         <div className="form-grid">
@@ -4081,6 +4120,7 @@ function ModelsPage({
           </div>
         </div>
       </section>
+      ) : null}
 
       <section className="page-shell card section-shell">
         <SectionHeader kicker="模型库" title="模型资产" note="模型卡片支持快速查看运行状态，并为可推理模型直接创建部署实例。" />
@@ -4161,33 +4201,37 @@ function ModelsPage({
                   <span className="tag">{manifest.stage_count || "-" } 个阶段</span>
                 </div>
                 <div className="actions inline-actions">
-                  <button
-                    className="btn-primary"
-                    disabled={!model.predict_ready || actionBusy["create-deployment"]}
-                    onClick={() =>
-                      void onCreateDeployment({
-                        model_id: model.model_id,
-                        profile_name: quickDeployProfile,
-                        launch_runtime: true,
-                        use_gpu: quickDeployUseGpu,
-                        gpu_ids: quickDeployGpuIds,
-                        notes: recommendation
-                          ? `从模型页快速创建（按部署策略：${recommendation.recommended_device_label || (quickDeployUseGpu ? "GPU" : "CPU")}）`
-                          : "从模型页快速创建",
-                      })
-                    }
-                    type="button"
-                  >
-                    快速部署
-                  </button>
-                  <button
-                    disabled={actionBusy[`export-model-${model.model_id}`]}
-                    onClick={() => void onExportModelPackage(model.model_id)}
-                    type="button"
-                  >
-                    导出制品
-                  </button>
-                  {model.deletable ? (
+                  {canManageDeployments ? (
+                    <button
+                      className="btn-primary"
+                      disabled={!model.predict_ready || actionBusy["create-deployment"]}
+                      onClick={() =>
+                        void onCreateDeployment({
+                          model_id: model.model_id,
+                          profile_name: quickDeployProfile,
+                          launch_runtime: true,
+                          use_gpu: quickDeployUseGpu,
+                          gpu_ids: quickDeployGpuIds,
+                          notes: recommendation
+                            ? `从模型页快速创建（按部署策略：${recommendation.recommended_device_label || (quickDeployUseGpu ? "GPU" : "CPU")}）`
+                            : "从模型页快速创建",
+                        })
+                      }
+                      type="button"
+                    >
+                      快速部署
+                    </button>
+                  ) : null}
+                  {canExportPackages ? (
+                    <button
+                      disabled={actionBusy[`export-model-${model.model_id}`]}
+                      onClick={() => void onExportModelPackage(model.model_id)}
+                      type="button"
+                    >
+                      导出制品
+                    </button>
+                  ) : null}
+                  {canManageModels && model.deletable ? (
                     <button
                       className="btn-danger"
                       disabled={actionBusy[`delete-model-${model.model_id}`]}
@@ -4196,9 +4240,13 @@ function ModelsPage({
                     >
                       {actionBusy[`delete-model-${model.model_id}`] ? "删除中" : "删除制品"}
                     </button>
-                  ) : (
+                  ) : !model.deletable ? (
                     <button disabled title="本机自带模型不可删除" type="button">
                       本机自带
+                    </button>
+                  ) : canManageModels ? null : (
+                    <button disabled title="仅管理员可删除用户上传模型" type="button">
+                      管理员可删除
                     </button>
                   )}
                 </div>
@@ -4458,6 +4506,9 @@ function DeploymentsPage({
   const [statusFilter, setStatusFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
   const deferredSearch = useDeferredValue(search);
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageDeployments = currentPermissions.includes("deployments.manage");
+  const canViewResources = currentPermissions.includes("resources.view");
 
   const filteredDeployments = useMemo(() => {
     let next = sortByCreatedDesc(derived.deployments).filter((item) =>
@@ -4503,6 +4554,7 @@ function DeploymentsPage({
 
   return (
     <>
+      {canManageDeployments ? (
       <section className="page-shell card section-shell">
         <SectionHeader
           kicker="部署控制"
@@ -4591,6 +4643,7 @@ function DeploymentsPage({
           </div>
         </div>
       </section>
+      ) : null}
 
       <section className="page-shell card section-shell">
         <SectionHeader
@@ -4696,10 +4749,18 @@ function DeploymentsPage({
                     <td>
                       <div className="actions row-actions">
                         <button onClick={() => void onInspectDeployment("health", item.deployment_id)} type="button">健康</button>
-                        <button onClick={() => void onInspectDeployment("logs", item.deployment_id)} type="button">日志</button>
-                        <button disabled={actionBusy[`stop-${item.deployment_id}`]} onClick={() => void onDeploymentAction("stop", item.deployment_id)} type="button">停止</button>
-                        <button disabled={actionBusy[`restart-${item.deployment_id}`]} onClick={() => void onDeploymentAction("restart", item.deployment_id)} type="button">重启</button>
-                        <button disabled={actionBusy[`delete-${item.deployment_id}`]} onClick={() => void onDeploymentAction("delete", item.deployment_id)} type="button">删除</button>
+                        {canViewResources ? (
+                          <button onClick={() => void onInspectDeployment("logs", item.deployment_id)} type="button">日志</button>
+                        ) : null}
+                        {canManageDeployments ? (
+                          <button disabled={actionBusy[`stop-${item.deployment_id}`]} onClick={() => void onDeploymentAction("stop", item.deployment_id)} type="button">停止</button>
+                        ) : null}
+                        {canManageDeployments ? (
+                          <button disabled={actionBusy[`restart-${item.deployment_id}`]} onClick={() => void onDeploymentAction("restart", item.deployment_id)} type="button">重启</button>
+                        ) : null}
+                        {canManageDeployments ? (
+                          <button disabled={actionBusy[`delete-${item.deployment_id}`]} onClick={() => void onDeploymentAction("delete", item.deployment_id)} type="button">删除</button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -4721,10 +4782,12 @@ function DeploymentsPage({
           <SectionHeader kicker="已选健康" title="健康状态" />
           <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : "点击部署实例的“健康”按钮后在此显示。"} </div>
         </article>
-        <article className="card detail-card">
-          <SectionHeader kicker="已选日志" title="运行日志" />
-          <div className="logs">{selectedLogs?.content || "点击部署实例的“日志”按钮后在此显示。"}</div>
-        </article>
+        {canViewResources ? (
+          <article className="card detail-card">
+            <SectionHeader kicker="已选日志" title="运行日志" />
+            <div className="logs">{selectedLogs?.content || "点击部署实例的“日志”按钮后在此显示。"}</div>
+          </article>
+        ) : null}
       </section>
     </>
   );
@@ -4745,6 +4808,8 @@ function BenchmarksPage({
   const [paperModelDraftId, setPaperModelDraftId] = useState("all");
   const [paperModelId, setPaperModelId] = useState("all");
   const deferredSearch = useDeferredValue(search);
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageBenchmarks = currentPermissions.includes("benchmarks.manage");
 
   const completedBenchmarks = useMemo(
     () => sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed"),
@@ -5004,6 +5069,7 @@ function BenchmarksPage({
 
   return (
     <>
+      {canManageBenchmarks ? (
       <section className="page-shell card section-shell">
         <SectionHeader kicker="新建基准" title="新建基准测试" note="为运行中的部署实例发起基准测试，并将结果写回平台。" />
         {derived.runningDeployments.length ? (
@@ -5065,6 +5131,7 @@ function BenchmarksPage({
           <EmptyState icon="B" title="暂无运行中的部署实例" note="先创建并启动部署实例，才能在这里发起基准测试。" />
         )}
       </section>
+      ) : null}
 
       <section className="page-shell card table-shell">
         <SectionHeader kicker="基准记录" title="基准记录" />
@@ -5149,13 +5216,17 @@ function BenchmarksPage({
                     <td>{escapeValue(item.avg_latency_ms)}</td>
                     <td>{escapeValue(item.p95_latency_ms)}</td>
                     <td>
-                      <button
-                        disabled={actionBusy[`delete-benchmark-${item.benchmark_id}`]}
-                        onClick={() => void onDeleteBenchmark(item.benchmark_id)}
-                        type="button"
-                      >
-                        删除
-                      </button>
+                      {canManageBenchmarks ? (
+                        <button
+                          disabled={actionBusy[`delete-benchmark-${item.benchmark_id}`]}
+                          onClick={() => void onDeleteBenchmark(item.benchmark_id)}
+                          type="button"
+                        >
+                          删除
+                        </button>
+                      ) : (
+                        <span className="table-note">只读</span>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -11,6 +11,7 @@ from luckymodels_core.schemas import SystemSummary
 from luckymodels_core.settings import get_settings
 
 from ..dependencies import get_access_store, get_benchmark_store, get_deployment_store, get_prediction_store, get_registry
+from ..permissions import require_permission
 
 router = APIRouter(tags=["system"])
 
@@ -38,6 +39,11 @@ def get_system_summary() -> SystemSummary:
 
 @router.get("/system/gpus")
 def get_gpu_status() -> dict[str, Any]:
+    require_permission("resources.view")
+    return collect_gpu_status()
+
+
+def collect_gpu_status() -> dict[str, Any]:
     deployment_store = get_deployment_store()
     deployments = deployment_store.list()
 

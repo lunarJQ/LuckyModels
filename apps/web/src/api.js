@@ -39,26 +39,40 @@ export async function loginWithPassword(payload) {
   });
 }
 
+function hasPermission(session, permissionId) {
+  const permissions = new Set(session?.current_permissions || []);
+  return permissions.has(permissionId);
+}
+
 export async function logoutSession() {
   return fetchJSON("/api/v1/auth/logout", {
     method: "POST",
   });
 }
 
-export async function loadDashboardData() {
+export async function loadDashboardData(session = null) {
+  const canViewModels = hasPermission(session, "models.view");
+  const canViewDeployments = hasPermission(session, "deployments.view");
+  const canViewBenchmarks = hasPermission(session, "benchmarks.view");
+  const canViewPredictions = hasPermission(session, "predictions.view");
+  const canViewResources = hasPermission(session, "resources.view");
+  const canViewUsers = hasPermission(session, "users.view");
+  const canRunStrategies = hasPermission(session, "strategies.manage");
+  const isAdmin = Boolean(session?.current_user?.is_admin);
+
   const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
-    fetchJSON("/api/v1/models"),
-    fetchJSON("/api/v1/deployments"),
-    fetchJSON("/api/v1/benchmarks"),
-    fetchJSON("/api/v1/prediction-archives"),
-    fetchJSON("/api/v1/demo/casrel/report"),
-    fetchJSON("/api/v1/models/capability-matrix"),
-    fetchJSON("/api/v1/system/gpus"),
-    fetchJSON("/api/v1/access-control/overview"),
-    fetchJSON("/api/v1/models/import-options"),
-    fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })),
-    fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null),
+    canViewModels ? fetchJSON("/api/v1/models") : Promise.resolve([]),
+    canViewDeployments ? fetchJSON("/api/v1/deployments") : Promise.resolve([]),
+    canViewBenchmarks ? fetchJSON("/api/v1/benchmarks") : Promise.resolve([]),
+    canViewPredictions ? fetchJSON("/api/v1/prediction-archives") : Promise.resolve([]),
+    fetchJSON("/api/v1/demo/casrel/report").catch(() => null),
+    canViewModels ? fetchJSON("/api/v1/models/capability-matrix") : Promise.resolve([]),
+    canViewResources ? fetchJSON("/api/v1/system/gpus") : Promise.resolve(null),
+    canViewUsers ? fetchJSON("/api/v1/access-control/overview") : Promise.resolve(null),
+    isAdmin ? fetchJSON("/api/v1/models/import-options") : Promise.resolve(null),
+    canViewPredictions ? fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })) : Promise.resolve({ datasets: [], default_fallback_text: "" }),
+    canRunStrategies ? fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null) : Promise.resolve(null),
   ]);
 
   const deploymentEntries = await Promise.all(
@@ -83,12 +97,14 @@ export async function loadDashboardData() {
     }),
   );
 
-  const modelDetailsEntries = await Promise.all(
-    models.map(async (model) => {
-      const detail = await fetchJSON(`/api/v1/models/${encodeURIComponent(model.model_id)}`);
-      return [model.model_id, detail];
-    }),
-  );
+  const modelDetailsEntries = canViewModels
+    ? await Promise.all(
+      models.map(async (model) => {
+        const detail = await fetchJSON(`/api/v1/models/${encodeURIComponent(model.model_id)}`);
+        return [model.model_id, detail];
+      }),
+    )
+    : [];
 
   return {
     summary,

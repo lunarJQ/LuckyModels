@@ -31,7 +31,8 @@ from ..dependencies import (
     get_registry,
     get_task_routing_feedback_store,
 )
-from .system import get_gpu_status
+from ..permissions import require_permission
+from .system import collect_gpu_status
 
 router = APIRouter(tags=["strategies"])
 _scheduler: DeploymentPolicyScheduler | None = None
@@ -49,7 +50,7 @@ def start_strategy_scheduler() -> None:
         get_benchmark_store=get_benchmark_store,
         get_prediction_store=get_prediction_store,
         get_policy_store=get_deployment_policy_store,
-        get_gpu_snapshot=get_gpu_status,
+        get_gpu_snapshot=collect_gpu_status,
         get_inference_activity_tracker=get_inference_activity_tracker,
     )
     _scheduler.start()
@@ -70,6 +71,7 @@ def _get_scheduler() -> DeploymentPolicyScheduler:
 
 @router.post("/strategies/task-routing/run", response_model=TaskRoutingResponse)
 def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
+    require_permission("strategies.manage")
     registry = get_registry()
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
@@ -112,6 +114,7 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
 
 @router.get("/strategies/task-routing/feedback/overview", response_model=TaskRoutingFeedbackOverview)
 def get_task_routing_feedback_overview() -> TaskRoutingFeedbackOverview:
+    require_permission("strategies.manage")
     registry = get_registry()
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
@@ -128,6 +131,7 @@ def get_task_routing_feedback_overview() -> TaskRoutingFeedbackOverview:
 
 @router.get("/strategies/task-routing/decisions", response_model=list[TaskRoutingDecisionSummary])
 def list_task_routing_decisions(limit: int = 20) -> list[TaskRoutingDecisionSummary]:
+    require_permission("strategies.manage")
     feedback_store = get_task_routing_feedback_store()
     overview = build_task_routing_feedback_overview(
         models=get_registry().list_models(),
@@ -143,6 +147,7 @@ def list_task_routing_decisions(limit: int = 20) -> list[TaskRoutingDecisionSumm
 
 @router.post("/strategies/task-routing/feedback", response_model=TaskRoutingFeedbackRecord)
 def submit_task_routing_feedback(request: TaskRoutingFeedbackSubmitRequest) -> TaskRoutingFeedbackRecord:
+    require_permission("strategies.manage")
     store = get_task_routing_feedback_store()
     try:
         return store.save_feedback(request)
@@ -152,11 +157,12 @@ def submit_task_routing_feedback(request: TaskRoutingFeedbackSubmitRequest) -> T
 
 @router.get("/strategies/deployment-policy", response_model=DeploymentPolicyResponse)
 def get_deployment_policy() -> DeploymentPolicyResponse:
+    require_permission("strategies.manage")
     registry = get_registry()
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
     prediction_store = get_prediction_store()
-    gpu_snapshot = get_gpu_status()
+    gpu_snapshot = collect_gpu_status()
     return build_deployment_policy(
         models=registry.list_models(),
         deployments=deployment_store.list(),
@@ -168,6 +174,7 @@ def get_deployment_policy() -> DeploymentPolicyResponse:
 
 @router.get("/strategies/deployment-policy/automation", response_model=DeploymentPolicyAutomationState)
 def get_deployment_policy_automation() -> DeploymentPolicyAutomationState:
+    require_permission("strategies.manage")
     return _get_scheduler().get_state()
 
 
@@ -175,6 +182,7 @@ def get_deployment_policy_automation() -> DeploymentPolicyAutomationState:
 def update_deployment_policy_automation(
     request: DeploymentPolicyAutomationUpdateRequest,
 ) -> DeploymentPolicyAutomationState:
+    require_permission("strategies.manage")
     return _get_scheduler().update_state(
         enabled=request.enabled,
         interval_seconds=request.interval_seconds,
@@ -184,4 +192,5 @@ def update_deployment_policy_automation(
 
 @router.post("/strategies/deployment-policy/automation/run", response_model=DeploymentPolicyAutomationState)
 def run_deployment_policy_automation_now() -> DeploymentPolicyAutomationState:
+    require_permission("strategies.manage")
     return _get_scheduler().run_once(force=True)

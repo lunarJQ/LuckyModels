@@ -5,17 +5,20 @@ from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import BenchmarkCreateRequest, BenchmarkRecord
 
 from ..dependencies import get_benchmark_store, get_deployment_store
+from ..permissions import require_permission
 
 router = APIRouter(tags=["benchmarks"])
 
 
 @router.get("/benchmarks", response_model=list[BenchmarkRecord])
 def list_benchmarks() -> list[BenchmarkRecord]:
+    require_permission("benchmarks.view")
     return get_benchmark_store().list()
 
 
 @router.get("/benchmarks/{benchmark_id}", response_model=BenchmarkRecord)
 def get_benchmark(benchmark_id: str) -> BenchmarkRecord:
+    require_permission("benchmarks.view")
     for record in get_benchmark_store().list():
         if record.benchmark_id == benchmark_id:
             return record
@@ -24,6 +27,7 @@ def get_benchmark(benchmark_id: str) -> BenchmarkRecord:
 
 @router.post("/benchmarks", response_model=BenchmarkRecord)
 def create_benchmark(request: BenchmarkCreateRequest) -> BenchmarkRecord:
+    require_permission("benchmarks.manage")
     deployment = _get_deployment_or_404(request.deployment_id)
     if not deployment.service_url:
         raise HTTPException(status_code=400, detail="Deployment is missing a service_url")
@@ -50,6 +54,7 @@ def create_benchmark(request: BenchmarkCreateRequest) -> BenchmarkRecord:
 
 @router.delete("/benchmarks/{benchmark_id}", response_model=BenchmarkRecord)
 def delete_benchmark(benchmark_id: str) -> BenchmarkRecord:
+    require_permission("benchmarks.manage")
     store = get_benchmark_store()
     deleted = store.delete(benchmark_id)
     if deleted is None:

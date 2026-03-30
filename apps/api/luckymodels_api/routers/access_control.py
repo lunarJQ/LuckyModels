@@ -16,6 +16,7 @@ from luckymodels_core.schemas import (
 )
 
 from ..dependencies import get_access_store
+from ..permissions import get_current_user, require_permission
 
 router = APIRouter(tags=["access-control"])
 
@@ -101,22 +102,11 @@ def reset_access_user_password(
 
 
 def _ensure_read_access() -> None:
-    store = get_access_store()
-    current_user = store.get_current_user()
-    if current_user is None:
-        raise HTTPException(status_code=401, detail="No active current user is configured")
-    if not current_user.is_active:
-        raise HTTPException(status_code=403, detail="Current user is inactive")
-    return
+    require_permission("users.view")
 
 
 def _ensure_manage_access() -> None:
-    store = get_access_store()
-    current_user = store.get_current_user()
-    if current_user is None:
-        raise HTTPException(status_code=401, detail="No active current user is configured")
-    if not current_user.is_active:
-        raise HTTPException(status_code=403, detail="Current user is inactive")
-    if store.has_permission(current_user, "users.manage"):
+    current_user = get_current_user()
+    if get_access_store().has_permission(current_user, "users.manage"):
         return
     raise HTTPException(status_code=403, detail="Current user lacks access-control manage permission")

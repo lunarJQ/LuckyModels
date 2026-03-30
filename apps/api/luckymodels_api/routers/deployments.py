@@ -23,6 +23,7 @@ from ..dependencies import (
     get_prediction_store,
     get_registry,
 )
+from ..permissions import require_permission
 from .system import get_gpu_status
 
 router = APIRouter(tags=["deployments"])
@@ -37,11 +38,13 @@ class DeploymentPredictRequest(BaseModel):
 
 @router.get("/deployments", response_model=list[DeploymentRecord])
 def list_deployments() -> list[DeploymentRecord]:
+    require_permission("deployments.view")
     return [_hydrate_deployment_runtime_snapshot(item) for item in get_deployment_store().list()]
 
 
 @router.post("/deployments", response_model=DeploymentRecord)
 def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
+    require_permission("deployments.manage")
     registry = get_registry()
     try:
         model = registry.get_model(request.model_id)
@@ -102,6 +105,7 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
 
 @router.get("/deployments/{deployment_id}/health")
 def check_deployment_health(deployment_id: str) -> dict[str, object]:
+    require_permission("deployments.view")
     deployment = _get_deployment_or_404(deployment_id)
     pid_alive = process_is_running(deployment.pid)
     if not deployment.service_url:
@@ -135,6 +139,7 @@ def check_deployment_health(deployment_id: str) -> dict[str, object]:
 
 @router.get("/deployments/{deployment_id}/logs")
 def get_deployment_logs(deployment_id: str, lines: int = 100) -> dict[str, object]:
+    require_permission("resources.view")
     deployment = _get_deployment_or_404(deployment_id)
     return {
         "deployment_id": deployment_id,
@@ -148,6 +153,7 @@ def predict_with_deployment(
     deployment_id: str,
     request: DeploymentPredictRequest,
 ) -> dict[str, object]:
+    require_permission("predictions.view")
     deployment = _get_deployment_or_404(deployment_id)
     if not deployment.service_url:
         raise HTTPException(status_code=400, detail="Deployment is missing a service_url")
@@ -189,6 +195,7 @@ def predict_with_deployment(
 
 @router.post("/deployments/{deployment_id}/stop", response_model=DeploymentRecord)
 def stop_deployment(deployment_id: str) -> DeploymentRecord:
+    require_permission("deployments.manage")
     store = get_deployment_store()
     deployment = _get_deployment_or_404(deployment_id)
     stopped = stop_runtime_process(deployment.pid)
@@ -202,6 +209,7 @@ def stop_deployment(deployment_id: str) -> DeploymentRecord:
 
 @router.post("/deployments/{deployment_id}/restart", response_model=DeploymentRecord)
 def restart_deployment(deployment_id: str) -> DeploymentRecord:
+    require_permission("deployments.manage")
     store = get_deployment_store()
     deployment = _get_deployment_or_404(deployment_id)
     registry = get_registry()
@@ -244,6 +252,7 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
 
 @router.delete("/deployments/{deployment_id}", response_model=DeploymentRecord)
 def delete_deployment(deployment_id: str) -> DeploymentRecord:
+    require_permission("deployments.manage")
     store = get_deployment_store()
     deployment = _get_deployment_or_404(deployment_id)
     if deployment.pid:

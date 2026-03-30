@@ -25,6 +25,9 @@ from .schemas import (
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
+
+AUTH_VERSION = 2
+
 BUILTIN_PERMISSIONS = [
     AccessPermission(
         permission_id="models.view",
@@ -102,60 +105,14 @@ BUILTIN_ROLES = [
         permissions=[item.permission_id for item in BUILTIN_PERMISSIONS],
     ),
     AccessRole(
-        role_id="operator",
-        role_name="运维操作员",
-        description="负责部署、基准、资源监控和策略执行。",
-        permissions=[
-            "models.view",
-            "deployments.view",
-            "deployments.manage",
-            "benchmarks.view",
-            "benchmarks.manage",
-            "predictions.view",
-            "strategies.manage",
-            "resources.view",
-            "archive.export",
-            "users.view",
-        ],
-    ),
-    AccessRole(
-        role_id="researcher",
-        role_name="算法研究员",
-        description="关注模型、实验和结果归档，不直接管理系统用户。",
-        permissions=[
-            "models.view",
-            "deployments.view",
-            "benchmarks.view",
-            "benchmarks.manage",
-            "predictions.view",
-            "strategies.manage",
-            "resources.view",
-            "archive.export",
-        ],
-    ),
-    AccessRole(
-        role_id="viewer",
-        role_name="只读访客",
-        description="只能查看系统状态和已有结果，不允许执行写操作。",
-        permissions=[
-            "models.view",
-            "deployments.view",
-            "benchmarks.view",
-            "predictions.view",
-            "resources.view",
-        ],
-    ),
-    AccessRole(
         role_id="user",
         role_name="普通用户",
-        description="拥有日常查看与实验使用权限，但不允许管理员操作。",
+        description="拥有日常查看、在线推理和结果导出能力，但不允许管理员操作。",
         permissions=[
             "models.view",
             "deployments.view",
             "benchmarks.view",
             "predictions.view",
-            "strategies.manage",
-            "resources.view",
             "archive.export",
         ],
     ),
@@ -389,7 +346,7 @@ class AccessStore:
     def _load_state(self) -> dict[str, object]:
         if not self.access_control_file.exists():
             state = {
-                "auth_version": 1,
+                "auth_version": AUTH_VERSION,
                 "current_user_id": None,
                 "users": DEFAULT_USERS,
                 "roles": BUILTIN_ROLES,
@@ -406,17 +363,19 @@ class AccessStore:
             raw = json.load(handle) or {}
 
         roles = [AccessRole.model_validate(item) for item in raw.get("roles") or [role.model_dump() for role in BUILTIN_ROLES]]
-        roles = self._merge_builtin_roles(roles)
+        roles = self._normalize_builtin_roles(roles)
         users = [AccessUser.model_validate(item) for item in raw.get("users") or [user.model_dump() for user in DEFAULT_USERS]]
         users = self._merge_default_users(users)
         current_user_id = raw.get("current_user_id")
         permissions = BUILTIN_PERMISSIONS
         auth_version = int(raw.get("auth_version") or 0)
-        needs_session_reset = auth_version < 1
+        users, migrated_users = self._normalize_users_for_builtin_roles(users)
+        needs_migration = auth_version < AUTH_VERSION or migrated_users
 
         if current_user_id is not None and not any(item.user_id == current_user_id and item.is_active for item in users):
             current_user_id = None
-        if needs_session_reset:
+            needs_migration = True
+        if needs_migration:
             current_user_id = None
             self._write_state(current_user_id, users, roles)
 
@@ -436,7 +395,7 @@ class AccessStore:
         with self.access_control_file.open("w", encoding="utf-8") as handle:
             json.dump(
                 {
-                    "auth_version": 1,
+                    "auth_version": AUTH_VERSION,
                     "current_user_id": current_user_id,
                     "users": [
                         {
@@ -477,9 +436,41 @@ class AccessStore:
         return users
 
     @staticmethod
-    def _merge_builtin_roles(roles: list[AccessRole]) -> list[AccessRole]:
+    def _normalize_builtin_roles(roles: list[AccessRole]) -> list[AccessRole]:
         role_map = {item.role_id: item for item in roles}
+        normalized_roles: list[AccessRole] = []
         for builtin_role in BUILTIN_ROLES:
-            if builtin_role.role_id not in role_map:
-                roles.append(builtin_role)
-        return roles
+            existing = role_map.get(builtin_role.role_id)
+            if existing is None:
+                normalized_roles.append(builtin_role)
+                continue
+            normalized_roles.append(
+                builtin_role.model_copy(
+                    update={
+                        "builtin": True,
+                    }
+                )
+            )
+        return normalized_roles
+
+    @staticmethod
+    def _normalize_users_for_builtin_roles(users: list[AccessUser]) -> tuple[list[AccessUser], bool]:
+        normalized_users: list[AccessUser] = []
+        changed = False
+        for user in users:
+            normalized_role_ids = ["admin"] if "admin" in (user.role_ids or []) or user.is_admin else ["user"]
+            normalized_is_admin = normalized_role_ids == ["admin"]
+            if user.role_ids != normalized_role_ids or user.is_admin != normalized_is_admin:
+                changed = True
+                normalized_users.append(
+                    user.model_copy(
+                        update={
+                            "role_ids": normalized_role_ids,
+                            "is_admin": normalized_is_admin,
+                            "updated_at": utc_now(),
+                        }
+                    )
+                )
+                continue
+            normalized_users.append(user)
+        return normalized_users, changed

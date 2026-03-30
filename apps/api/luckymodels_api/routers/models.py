@@ -37,22 +37,26 @@ from ..dependencies import (
     get_registry,
     get_task_routing_feedback_store,
 )
+from ..permissions import require_admin, require_permission
 
 router = APIRouter(tags=["models"])
 
 
 @router.get("/models", response_model=list[ModelSummary])
 def list_models() -> list[ModelSummary]:
+    require_permission("models.view")
     return get_registry().list_models()
 
 
 @router.get("/models/import-options", response_model=ModelImportOptions)
 def get_supported_model_import_options() -> ModelImportOptions:
+    require_admin()
     return get_model_import_options()
 
 
 @router.get("/datasets/catalog")
 def get_dataset_catalog() -> dict[str, object]:
+    require_permission("predictions.view")
     return {
         "datasets": list_dataset_catalog(),
         "default_fallback_text": DEFAULT_ONLINE_SAMPLE_TEXT,
@@ -61,6 +65,7 @@ def get_dataset_catalog() -> dict[str, object]:
 
 @router.get("/datasets/sample-text")
 def get_dataset_sample_text_preview(dataset_name: str, index: int = 0) -> dict[str, object]:
+    require_permission("predictions.view")
     return get_dataset_sample_text(dataset_name, index=index)
 
 
@@ -76,6 +81,7 @@ def import_model(
     backbone: str | None = Form(None),
     alias: str | None = Form(None),
 ) -> ModelImportResult:
+    require_admin()
     settings = get_settings()
     settings.imports_root.mkdir(parents=True, exist_ok=True)
     suffix = "".join(Path(archive.filename or "").suffixes) or ".zip"
@@ -111,6 +117,7 @@ def import_model(
 
 @router.get("/models/capability-matrix", response_model=list[CapabilityMatrixRow])
 def get_model_capability_matrix() -> list[CapabilityMatrixRow]:
+    require_permission("models.view")
     registry = get_registry()
     deployments = get_deployment_store().list()
     benchmarks = get_benchmark_store().list()
@@ -148,6 +155,7 @@ def get_model_capability_matrix() -> list[CapabilityMatrixRow]:
 
 @router.get("/models/{model_id}", response_model=ModelDetail)
 def get_model(model_id: str) -> ModelDetail:
+    require_permission("models.view")
     try:
         return get_registry().get_model(model_id)
     except KeyError as exc:
@@ -156,6 +164,7 @@ def get_model(model_id: str) -> ModelDetail:
 
 @router.delete("/models/{model_id}", response_model=ModelDeleteResult)
 def delete_model(model_id: str) -> ModelDeleteResult:
+    require_admin()
     registry = get_registry()
     try:
         model = registry.get_model(model_id)
@@ -222,6 +231,7 @@ def delete_model(model_id: str) -> ModelDeleteResult:
 
 @router.get("/models/{model_id}/export")
 def export_model(model_id: str) -> Response:
+    require_permission("archive.export")
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
@@ -244,6 +254,7 @@ def export_model(model_id: str) -> Response:
 
 @router.get("/models/{model_id}/profiles", response_model=dict[str, ProfileConfig])
 def get_model_profiles(model_id: str) -> dict[str, ProfileConfig]:
+    require_permission("models.view")
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
@@ -254,6 +265,7 @@ def get_model_profiles(model_id: str) -> dict[str, ProfileConfig]:
 
 @router.get("/models/{model_id}/sample-cases")
 def get_model_sample_cases(model_id: str, limit: int = 20) -> dict[str, object]:
+    require_permission("models.view")
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
@@ -277,6 +289,7 @@ def get_model_sample_cases(model_id: str, limit: int = 20) -> dict[str, object]:
 
 @router.post("/models/{model_id}/prepare-eval")
 def prepare_model_eval_cases(model_id: str, limit: int = 128) -> dict[str, object]:
+    require_admin()
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
