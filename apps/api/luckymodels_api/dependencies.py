@@ -1,9 +1,13 @@
 from luckymodels_core.access_store import AccessStore
 from luckymodels_core.benchmark_store import BenchmarkStore
+from luckymodels_core.deployment_policy_store import DeploymentPolicyAutomationStore
 from luckymodels_core.deployment_store import DeploymentStore
+from luckymodels_core.inference_activity_tracker import InferenceActivityTracker
 from luckymodels_core.prediction_store import PredictionStore
 from luckymodels_core.registry import ArtifactRegistry
 from luckymodels_core.settings import get_settings
+
+_inference_activity_tracker = InferenceActivityTracker()
 
 
 def get_registry() -> ArtifactRegistry:
@@ -29,3 +33,12 @@ def get_benchmark_store() -> BenchmarkStore:
 def get_prediction_store() -> PredictionStore:
     settings = get_settings()
     return PredictionStore(settings.prediction_archives_file)
+
+
+def get_inference_activity_tracker() -> InferenceActivityTracker:
+    return _inference_activity_tracker
+
+
+def get_deployment_policy_store() -> DeploymentPolicyAutomationStore:
+    settings = get_settings()
+    return DeploymentPolicyAutomationStore(settings.deployment_policy_automation_file)

@@ -30,7 +30,14 @@ def _render_dashboard() -> HTMLResponse:
     ui_root = Path(__file__).resolve().parents[1] / "ui"
     dist_index = ui_root / "dist" / "index.html"
     html_path = dist_index if dist_index.exists() else ui_root / "dashboard.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        html_path.read_text(encoding="utf-8"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 for frontend_path in FRONTEND_PATHS:

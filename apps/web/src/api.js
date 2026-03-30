@@ -163,6 +163,24 @@ export async function getDeploymentPolicy() {
   return fetchJSON("/api/v1/strategies/deployment-policy");
 }
 
+export async function getDeploymentPolicyAutomation() {
+  return fetchJSON("/api/v1/strategies/deployment-policy/automation");
+}
+
+export async function updateDeploymentPolicyAutomation(payload) {
+  return fetchJSON("/api/v1/strategies/deployment-policy/automation", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runDeploymentPolicyAutomationNow() {
+  return fetchJSON("/api/v1/strategies/deployment-policy/automation/run", {
+    method: "POST",
+  });
+}
+
 export async function createAccessUser(payload) {
   return fetchJSON("/api/v1/access-control/users", {
     method: "POST",

@@ -278,20 +278,79 @@ class DeploymentPolicyRecommendation(BaseModel):
     language: str
     demand_level: str
     demand_score: float
+    service_tier: str = "cold"
+    residency_mode: str = "on_demand"
     recent_request_count: int = 0
+    total_request_count: int = 0
     benchmark_count: int = 0
     avg_p95_latency_ms: float | None = None
+    benchmark_success_rate: float | None = None
     running_deployment_count: int = 0
+    active_deployment_ids: list[str] = Field(default_factory=list)
+    package_size_mb: float | None = None
+    stage_count: int = 1
+    estimated_cold_start_ms: float | None = None
+    cold_start_risk: str = "unknown"
     recommended_profile_name: str
+    recommended_instance_count: int = 1
     recommended_use_gpu: bool = True
     recommended_gpu_ids: list[int] = Field(default_factory=list)
     recommended_device_label: str = ""
+    gpu_pressure_action: str = "retain_gpu"
+    fallback_profile_name: str = "memory"
+    fallback_use_gpu: bool = False
+    fallback_device_label: str = "CPU"
+    policy_tags: list[str] = Field(default_factory=list)
     rationale: str
+
+
+class DeploymentPolicySummary(BaseModel):
+    total_models: int = 0
+    recent_window_days: int = 7
+    hot_count: int = 0
+    warm_count: int = 0
+    cold_count: int = 0
+    always_on_count: int = 0
+    keep_warm_count: int = 0
+    on_demand_count: int = 0
+    gpu_recommended_count: int = 0
+    cpu_recommended_count: int = 0
+    cpu_fallback_count: int = 0
+    busiest_model_id: str | None = None
+    strategy_overview: str = ""
+
+
+class DeploymentPolicyAutomationAction(BaseModel):
+    created_at: str = Field(default_factory=utc_now)
+    action_type: str
+    model_id: str
+    deployment_id: str | None = None
+    status: str = "planned"
+    detail: str = ""
+
+
+class DeploymentPolicyAutomationState(BaseModel):
+    enabled: bool = False
+    interval_seconds: int = 900
+    protect_active_window_seconds: int = 120
+    last_run_at: str | None = None
+    last_policy_generated_at: str | None = None
+    last_status: str = "idle"
+    run_count: int = 0
+    last_summary: DeploymentPolicySummary = Field(default_factory=DeploymentPolicySummary)
+    recent_actions: list[DeploymentPolicyAutomationAction] = Field(default_factory=list)
+
+
+class DeploymentPolicyAutomationUpdateRequest(BaseModel):
+    enabled: bool
+    interval_seconds: int = 900
+    protect_active_window_seconds: int = 120
 
 
 class DeploymentPolicyResponse(BaseModel):
     generated_at: str = Field(default_factory=utc_now)
     gpu_available: bool = False
+    summary: DeploymentPolicySummary = Field(default_factory=DeploymentPolicySummary)
     recommendations: list[DeploymentPolicyRecommendation] = Field(default_factory=list)
     gpu_snapshot: dict[str, Any] = Field(default_factory=dict)
 

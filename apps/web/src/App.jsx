@@ -10,6 +10,7 @@ import {
   deletePredictionArchive,
   fetchAuthSession,
   getDeploymentPolicy,
+  getDeploymentPolicyAutomation,
   getDeploymentHealth,
   getDeploymentLogs,
   getModelProfiles,
@@ -19,11 +20,13 @@ import {
   predictWithDeployment,
   resetAccessUserPassword,
   restartDeployment,
+  runDeploymentPolicyAutomationNow,
   runTaskRoutingStrategy,
   runCasrelDemo,
   switchCurrentAccessUser,
   stopDeployment,
   toggleAccessUser,
+  updateDeploymentPolicyAutomation,
   updateAccessUser,
 } from "./api";
 import { EmptyState, MetricCard, SectionHeader, StatusPill } from "./components";
@@ -70,7 +73,7 @@ const pageMeta = {
   },
   "/deployment-policy": {
     title: "部署策略",
-    note: "根据模型使用热度、历史时延和 GPU 空闲情况，生成差异化部署建议。",
+    note: "根据热温冷分层、冷启动风险与 GPU 压力，生成自适应部署建议，并支持定时自动优化。",
   },
   "/archive": {
     title: "结果归档",
@@ -362,6 +365,14 @@ function buildInitialTaskRoutingForm(report) {
   };
 }
 
+function buildInitialDeploymentPolicyAutomationForm() {
+  return {
+    enabled: false,
+    intervalSeconds: 900,
+    protectActiveWindowSeconds: 120,
+  };
+}
+
 function buildInitialAccessUserForm(roles) {
   const preferredRole = roles.find((item) => item.role_id === "user") || roles.find((item) => item.role_id === "researcher") || roles[0];
   return {
@@ -461,6 +472,8 @@ export default function App() {
   const [taskRoutingForm, setTaskRoutingForm] = useState(buildInitialTaskRoutingForm(null));
   const [taskRoutingResult, setTaskRoutingResult] = useState(null);
   const [deploymentPolicy, setDeploymentPolicy] = useState(null);
+  const [deploymentPolicyAutomation, setDeploymentPolicyAutomation] = useState(null);
+  const [deploymentPolicyAutomationForm, setDeploymentPolicyAutomationForm] = useState(buildInitialDeploymentPolicyAutomationForm());
   const [selectedHealth, setSelectedHealth] = useState(null);
   const [selectedLogs, setSelectedLogs] = useState(null);
 
@@ -620,6 +633,8 @@ export default function App() {
       setPredictResult(null);
       setTaskRoutingResult(null);
       setDeploymentPolicy(null);
+      setDeploymentPolicyAutomation(null);
+      setDeploymentPolicyAutomationForm(buildInitialDeploymentPolicyAutomationForm());
       setSelectedHealth(null);
       setSelectedLogs(null);
       setLoadStatus("已退出");
@@ -808,14 +823,70 @@ export default function App() {
     setActionBusy((current) => ({ ...current, "deployment-policy": true }));
     setNotice({ type: "ok", text: "" });
     try {
-      const result = await getDeploymentPolicy();
-      setDeploymentPolicy(result);
+      const [policyResult, automationResult] = await Promise.all([
+        getDeploymentPolicy(),
+        getDeploymentPolicyAutomation(),
+      ]);
+      setDeploymentPolicy(policyResult);
+      setDeploymentPolicyAutomation(automationResult);
+      setDeploymentPolicyAutomationForm({
+        enabled: Boolean(automationResult.enabled),
+        intervalSeconds: automationResult.interval_seconds || 900,
+        protectActiveWindowSeconds: automationResult.protect_active_window_seconds || 120,
+      });
       setNotice({ type: "ok", text: "部署策略建议已刷新。" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", text: message });
     } finally {
       setActionBusy((current) => ({ ...current, "deployment-policy": false }));
+    }
+  }
+
+  async function handleUpdateDeploymentPolicyAutomation(payloadOverride) {
+    setActionBusy((current) => ({ ...current, "deployment-policy-automation": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const payload = {
+        enabled: payloadOverride?.enabled ?? deploymentPolicyAutomationForm.enabled,
+        interval_seconds: Number(payloadOverride?.interval_seconds ?? deploymentPolicyAutomationForm.intervalSeconds),
+        protect_active_window_seconds: Number(
+          payloadOverride?.protect_active_window_seconds ?? deploymentPolicyAutomationForm.protectActiveWindowSeconds,
+        ),
+      };
+      const result = await updateDeploymentPolicyAutomation(payload);
+      setDeploymentPolicyAutomation(result);
+      setDeploymentPolicyAutomationForm({
+        enabled: Boolean(result.enabled),
+        intervalSeconds: result.interval_seconds || payload.interval_seconds,
+        protectActiveWindowSeconds: result.protect_active_window_seconds || payload.protect_active_window_seconds,
+      });
+      setNotice({ type: "ok", text: result.enabled ? "自动优化已开启。" : "自动优化已关闭。" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "deployment-policy-automation": false }));
+    }
+  }
+
+  async function handleRunDeploymentPolicyAutomationNow() {
+    setActionBusy((current) => ({ ...current, "deployment-policy-run-now": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const [automationResult, policyResult] = await Promise.all([
+        runDeploymentPolicyAutomationNow(),
+        getDeploymentPolicy(),
+      ]);
+      setDeploymentPolicyAutomation(automationResult);
+      setDeploymentPolicy(policyResult);
+      setNotice({ type: "ok", text: "自动优化已执行一轮。" });
+      await refreshAll({ silent: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "deployment-policy-run-now": false }));
     }
   }
 
@@ -999,6 +1070,11 @@ export default function App() {
       predictForm={predictForm}
       predictResult={predictResult}
       deploymentPolicy={deploymentPolicy}
+      deploymentPolicyAutomation={deploymentPolicyAutomation}
+      deploymentPolicyAutomationForm={deploymentPolicyAutomationForm}
+      onRunDeploymentPolicyAutomationNow={handleRunDeploymentPolicyAutomationNow}
+      onUpdateDeploymentPolicyAutomation={handleUpdateDeploymentPolicyAutomation}
+      onDeploymentPolicyAutomationFormChange={setDeploymentPolicyAutomationForm}
       selectedHealth={selectedHealth}
       selectedLogs={selectedLogs}
       taskRoutingForm={taskRoutingForm}
@@ -1169,6 +1245,9 @@ function Shell(props) {
     onExportPredictResult,
     onCreateAccessUser,
     onLoadDeploymentPolicy,
+    onRunDeploymentPolicyAutomationNow,
+    onUpdateDeploymentPolicyAutomation,
+    onDeploymentPolicyAutomationFormChange,
     onLogout,
     onSwitchCurrentAccessUser,
     onToggleAccessUser,
@@ -1184,6 +1263,8 @@ function Shell(props) {
     predictForm,
     predictResult,
     deploymentPolicy,
+    deploymentPolicyAutomation,
+    deploymentPolicyAutomationForm,
     selectedHealth,
     selectedLogs,
     taskRoutingForm,
@@ -1337,8 +1418,13 @@ function Shell(props) {
               <DeploymentPolicyPage
                 actionBusy={actionBusy}
                 deploymentPolicy={deploymentPolicy}
+                deploymentPolicyAutomation={deploymentPolicyAutomation}
+                deploymentPolicyAutomationForm={deploymentPolicyAutomationForm}
                 onCreateDeployment={onCreateDeployment}
                 onLoadDeploymentPolicy={onLoadDeploymentPolicy}
+                onRunDeploymentPolicyAutomationNow={onRunDeploymentPolicyAutomationNow}
+                onUpdateDeploymentPolicyAutomation={onUpdateDeploymentPolicyAutomation}
+                onDeploymentPolicyAutomationFormChange={onDeploymentPolicyAutomationFormChange}
               />,
             )}
             {renderGuardedRoute(
@@ -2230,14 +2316,60 @@ function TaskRoutingPage({
   );
 }
 
-function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment, onLoadDeploymentPolicy }) {
+function DeploymentPolicyPage({
+  actionBusy,
+  deploymentPolicy,
+  deploymentPolicyAutomation,
+  deploymentPolicyAutomationForm,
+  onCreateDeployment,
+  onLoadDeploymentPolicy,
+  onRunDeploymentPolicyAutomationNow,
+  onUpdateDeploymentPolicyAutomation,
+  onDeploymentPolicyAutomationFormChange,
+}) {
+  const recommendations = deploymentPolicy?.recommendations || [];
+  const summary = deploymentPolicy?.summary || null;
+  const hotModels = recommendations.filter((item) => item.service_tier === "hot");
+  const warmModels = recommendations.filter((item) => item.service_tier === "warm");
+  const coldModels = recommendations.filter((item) => item.service_tier === "cold");
+  const gpuPressureModels = recommendations.filter((item) => item.gpu_pressure_action === "migrate_to_cpu");
+  const freestGpu = deploymentPolicy?.gpu_snapshot?.devices?.length
+    ? [...deploymentPolicy.gpu_snapshot.devices].sort(
+        (left, right) =>
+          ((right.memory_total_mb || 0) - (right.memory_used_mb || 0)) -
+          ((left.memory_total_mb || 0) - (left.memory_used_mb || 0)),
+      )[0]
+    : null;
+
+  const tierLabel = {
+    hot: "热模型",
+    warm: "温模型",
+    cold: "冷模型",
+  };
+  const residencyLabel = {
+    always_on: "常驻",
+    keep_warm: "保温",
+    on_demand: "按需启动",
+  };
+  const pressureActionLabel = {
+    retain_gpu: "保留 GPU",
+    share_gpu: "转共享 GPU",
+    migrate_to_cpu: "转 CPU 兜底",
+  };
+  const riskLabel = {
+    low: "低",
+    medium: "中",
+    high: "高",
+    unknown: "待评估",
+  };
+
   return (
     <>
       <section className="page-shell card section-shell">
         <SectionHeader
           kicker="创新点二"
-          title="需求感知部署策略"
-          note="结合历史调用次数、已完成基准记录和 GPU 空闲资源，给不同模型提供差异化部署建议。"
+          title="分层自适应部署策略"
+          note="根据模型热度、冷启动风险、运行时延和 GPU 压力，给 LuckyModels 里的模型生成热/温/冷分层部署建议。"
           right={
             <div className="actions">
               <button
@@ -2248,12 +2380,120 @@ function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment
               >
                 {actionBusy["deployment-policy"] ? "分析中" : "刷新部署建议"}
               </button>
+              <button
+                disabled={actionBusy["deployment-policy-run-now"]}
+                onClick={() => void onRunDeploymentPolicyAutomationNow()}
+                type="button"
+              >
+                {actionBusy["deployment-policy-run-now"] ? "执行中" : "立即执行一轮"}
+              </button>
             </div>
           }
         />
         <div className="banner banner-muted">
-          这不是通用资源分配，而是面向知识抽取模型库的策略层建议：高频或时延敏感模型优先推荐更空闲的 GPU，低频模型优先推荐共享资源或 CPU。
+          {summary?.strategy_overview ||
+            "这里展示的不是简单“热门上好卡”的规则，而是面向知识抽取模型库的分层部署策略：热模型优先常驻，温模型按冷启动风险决定是否保温，冷模型在 GPU 紧张时优先转为 CPU 兜底。"}
         </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="自动优化" title="定时部署优化开关" note="用户手动开启后，平台会按设定间隔自动执行一轮安全优化；不会停掉正在执行推理任务的模型。" />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>自动优化</span>
+            <select
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  enabled: event.target.value === "true",
+                }))
+              }
+              value={String(deploymentPolicyAutomationForm.enabled)}
+            >
+              <option value="false">关闭</option>
+              <option value="true">开启</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>执行间隔（秒）</span>
+            <input
+              min="60"
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  intervalSeconds: event.target.value,
+                }))
+              }
+              type="number"
+              value={deploymentPolicyAutomationForm.intervalSeconds}
+            />
+          </label>
+          <label className="stack-field">
+            <span>忙碌保护窗口（秒）</span>
+            <input
+              min="30"
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  protectActiveWindowSeconds: event.target.value,
+                }))
+              }
+              type="number"
+              value={deploymentPolicyAutomationForm.protectActiveWindowSeconds}
+            />
+          </label>
+          <div className="actions">
+            <button
+              className="btn-primary"
+              disabled={actionBusy["deployment-policy-automation"]}
+              onClick={() => void onUpdateDeploymentPolicyAutomation()}
+              type="button"
+            >
+              {actionBusy["deployment-policy-automation"] ? "保存中" : "保存自动优化配置"}
+            </button>
+          </div>
+        </div>
+        <div className="metrics">
+          <MetricCard title="当前状态" value={deploymentPolicyAutomation?.enabled ? "已开启" : "已关闭"} note={deploymentPolicyAutomation?.last_status || "idle"} />
+          <MetricCard title="执行间隔" value={`${deploymentPolicyAutomation?.interval_seconds || 900} s`} note="定时扫描频率" />
+          <MetricCard
+            title="忙碌保护"
+            value={`${deploymentPolicyAutomation?.protect_active_window_seconds || 120} s`}
+            note="该窗口内有推理请求的模型不会被自动优化"
+          />
+          <MetricCard title="最近执行" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
+        </div>
+        {deploymentPolicyAutomation?.recent_actions?.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>动作</th>
+                  <th>模型</th>
+                  <th>状态</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deploymentPolicyAutomation.recent_actions.map((item, index) => (
+                  <tr key={`${item.created_at}-${item.model_id}-${index}`}>
+                    <td>{item.created_at}</td>
+                    <td>{item.action_type}</td>
+                    <td>
+                      <strong>{item.model_id}</strong>
+                      <div className="table-note">{item.deployment_id || "-"}</div>
+                    </td>
+                    <td>{item.status}</td>
+                    <td className="limitation-cell">{item.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="table-note">开启自动优化后，最近执行动作会记录在这里，便于截图和论文说明。</div>
+        )}
       </section>
 
       <section className="page-shell card section-shell">
@@ -2262,17 +2502,8 @@ function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment
           <div className="metrics">
             <MetricCard title="GPU 数量" value={deploymentPolicy.gpu_snapshot.gpu_count} note="当前服务器可见设备数" />
             <MetricCard title="活跃进程" value={deploymentPolicy.gpu_snapshot.process_count || 0} note="nvidia-smi 检测到的活跃进程" />
-            <MetricCard
-              title="最空闲 GPU"
-              value={
-                deploymentPolicy.gpu_snapshot.devices?.length
-                  ? `GPU ${[...deploymentPolicy.gpu_snapshot.devices]
-                      .sort((left, right) => ((right.memory_total_mb || 0) - (right.memory_used_mb || 0)) - ((left.memory_total_mb || 0) - (left.memory_used_mb || 0)))[0]?.index}`
-                  : "-"
-              }
-              note="按显存余量估算"
-            />
-            <MetricCard title="建议数" value={deploymentPolicy.recommendations?.length || 0} note="当前已生成的模型部署建议" />
+            <MetricCard title="最空闲 GPU" value={freestGpu ? `GPU ${freestGpu.index}` : "-"} note="按显存余量估算" />
+            <MetricCard title="CPU 兜底候选" value={gpuPressureModels.length} note="GPU 紧张时建议转为 CPU 的模型数" />
           </div>
         ) : (
           <EmptyState icon="G" title="还没有部署建议快照" note="点击上方“刷新部署建议”后，这里会展示实时 GPU 资源视图。" />
@@ -2280,41 +2511,108 @@ function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="策略建议" title="模型部署建议表" note="可直接据此为高频模型和低频模型创建不同资源等级的 deployment。" />
-        {deploymentPolicy?.recommendations?.length ? (
+        <SectionHeader kicker="分层概览" title="热温冷模型分层" note="这一层把 20+ 制品按服务热度与冷启动风险进行归类，便于统一讲述部署策略。" />
+        {recommendations.length ? (
+          <div className="list-grid">
+            <article className="list-card">
+              <div className="list-card-header">
+                <div>
+                  <h4>热模型</h4>
+                  <div className="table-note">优先常驻，保障时延</div>
+                </div>
+                <span className="tag">{hotModels.length}</span>
+              </div>
+              <div className="tag-list">
+                {hotModels.length ? hotModels.map((item) => <span className="tag" key={item.model_id}>{item.model_id}</span>) : <span className="table-note">暂无</span>}
+              </div>
+            </article>
+            <article className="list-card">
+              <div className="list-card-header">
+                <div>
+                  <h4>温模型</h4>
+                  <div className="table-note">按冷启动风险保温或共享</div>
+                </div>
+                <span className="tag">{warmModels.length}</span>
+              </div>
+              <div className="tag-list">
+                {warmModels.length ? warmModels.map((item) => <span className="tag" key={item.model_id}>{item.model_id}</span>) : <span className="table-note">暂无</span>}
+              </div>
+            </article>
+            <article className="list-card">
+              <div className="list-card-header">
+                <div>
+                  <h4>冷模型</h4>
+                  <div className="table-note">按需启动，GPU 紧张时优先 CPU 兜底</div>
+                </div>
+                <span className="tag">{coldModels.length}</span>
+              </div>
+              <div className="tag-list">
+                {coldModels.length ? coldModels.map((item) => <span className="tag" key={item.model_id}>{item.model_id}</span>) : <span className="table-note">暂无</span>}
+              </div>
+            </article>
+          </div>
+        ) : (
+          <EmptyState icon="L" title="还没有策略分层结果" note="点击“刷新部署建议”后，这里会展示热模型、温模型和冷模型的划分结果。" />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="策略建议" title="模型部署建议表" note="可直接据此新建 deployment，也可在 GPU 极端紧张时为低优先级模型补一个 CPU 兜底 deployment。" />
+        {recommendations.length ? (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>模型</th>
-                  <th>需求等级</th>
-                  <th>使用热度</th>
-                  <th>历史时延</th>
+                  <th>分层 / 驻留</th>
+                  <th>热度与运行</th>
+                  <th>冷启动画像</th>
                   <th>推荐部署</th>
+                  <th>GPU 紧张动作</th>
                   <th>说明</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {deploymentPolicy.recommendations.map((item) => (
+                {recommendations.map((item) => (
                   <tr key={item.model_id}>
                     <td>
                       <strong>{item.model_name}</strong>
                       <div className="mono">{item.model_id}</div>
+                      <div className="table-note">{item.language} · {item.stage_count} stage · {item.package_size_mb !== null ? `${formatFixed(item.package_size_mb, 1)} MB` : "-"}</div>
                     </td>
                     <td>
-                      <span className="tag">{item.demand_level}</span>
-                      <div className="table-note">分值：{formatFixed(item.demand_score)}</div>
+                      <div className="tag-list">
+                        <span className="tag">{tierLabel[item.service_tier] || item.service_tier}</span>
+                        <span className="tag">{residencyLabel[item.residency_mode] || item.residency_mode}</span>
+                      </div>
+                      <div className="table-note">需求等级：{item.demand_level} / 分值：{formatFixed(item.demand_score)}</div>
                     </td>
                     <td>
-                      <div>请求数：{item.recent_request_count}</div>
+                      <div>近 7 天请求：{item.recent_request_count}</div>
+                      <div className="table-note">累计请求：{item.total_request_count}</div>
                       <div className="table-note">运行实例：{item.running_deployment_count}</div>
-                      <div className="table-note">基准记录：{item.benchmark_count}</div>
+                      <div className="table-note">当前 deployment：{item.active_deployment_ids?.join(", ") || "-"}</div>
                     </td>
-                    <td>{item.avg_p95_latency_ms !== null ? `${formatFixed(item.avg_p95_latency_ms)} ms` : "-"}</td>
+                    <td>
+                      <div>风险：{riskLabel[item.cold_start_risk] || item.cold_start_risk}</div>
+                      <div className="table-note">估计冷启动：{item.estimated_cold_start_ms !== null ? `${formatFixed(item.estimated_cold_start_ms, 0)} ms` : "-"}</div>
+                      <div className="table-note">历史 P95：{item.avg_p95_latency_ms !== null ? `${formatFixed(item.avg_p95_latency_ms)} ms` : "-"}</div>
+                      <div className="table-note">成功率：{formatPercent(item.benchmark_success_rate)}</div>
+                    </td>
                     <td>
                       <div>{item.recommended_profile_name}</div>
                       <div className="table-note">{item.recommended_use_gpu ? item.recommended_device_label : "CPU"}</div>
+                      <div className="table-note">实例数：{item.recommended_instance_count}</div>
+                    </td>
+                    <td>
+                      <div>{pressureActionLabel[item.gpu_pressure_action] || item.gpu_pressure_action}</div>
+                      <div className="table-note">兜底模板：{item.fallback_profile_name}</div>
+                      <div className="tag-list">
+                        {(item.policy_tags || []).map((tag) => (
+                          <span className="tag" key={`${item.model_id}-${tag}`}>{tag}</span>
+                        ))}
+                      </div>
                     </td>
                     <td className="limitation-cell">{item.rationale}</td>
                     <td>
@@ -2328,13 +2626,30 @@ function DeploymentPolicyPage({ actionBusy, deploymentPolicy, onCreateDeployment
                               launch_runtime: true,
                               use_gpu: item.recommended_use_gpu,
                               gpu_ids: item.recommended_gpu_ids,
-                              notes: `deployment_policy_${item.demand_level}`,
+                              notes: `deployment_policy_${item.service_tier}`,
                             })
                           }
                           type="button"
                         >
                           按建议部署
                         </button>
+                        {item.gpu_pressure_action === "migrate_to_cpu" ? (
+                          <button
+                            onClick={() =>
+                              void onCreateDeployment({
+                                model_id: item.model_id,
+                                profile_name: item.fallback_profile_name,
+                                launch_runtime: true,
+                                use_gpu: false,
+                                gpu_ids: [],
+                                notes: "manual_cpu_fallback",
+                              })
+                            }
+                            type="button"
+                          >
+                            创建 CPU 兜底
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

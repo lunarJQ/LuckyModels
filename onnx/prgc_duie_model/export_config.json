@@ -1,0 +1,24 @@
+{
+  "checkpoint": "/home/liujingqian/models/prgc/model/exduie_bert_base_chinese_gpu6_fast_20260328_234152/best.pth.tar",
+  "params_json": "/home/liujingqian/models/prgc/experiments/exduie_bert_base_chinese_gpu6_fast_20260328_234152/params.json",
+  "bert_dir": "/home/liujingqian/bert/bert-base-chinese",
+  "rel2id_path": "/home/liujingqian/models/prgc/data/DuIE/rel2id.json",
+  "seq_len": 200,
+  "seq_tag_size": 3,
+  "rel_num": 60,
+  "hidden_size": 768,
+  "emb_fusion": "concat",
+  "ensure_corres": true,
+  "ensure_rel": true,
+  "corres_threshold": 0.5,
+  "rel_threshold": 0.5,
+  "opset": 13,
+  "stage1_model": "prgc_stage1_encoder.onnx",
+  "stage2_model": "prgc_stage2_tagger.onnx",
+  "notes": [
+    "PRGC inference is exported as two ONNX stages.",
+    "Stage 1 returns encoder features, relation logits, and correspondence logits.",
+    "Stage 2 consumes selected potential relations and returns subject/object sequence logits.",
+    "Potential relation filtering and final triple decoding remain in the Python inference service."
+  ]
+}

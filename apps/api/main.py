@@ -18,6 +18,16 @@ ui_dist = Path(__file__).resolve().parent / "luckymodels_api" / "ui" / "dist"
 app.mount("/static", StaticFiles(directory=str(ui_dist), check_dir=False), name="static")
 
 
+@app.on_event("startup")
+async def startup_event() -> None:
+    strategies.start_strategy_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    strategies.stop_strategy_scheduler()
+
+
 @app.middleware("http")
 async def require_authentication(request: Request, call_next):
     path = request.url.path

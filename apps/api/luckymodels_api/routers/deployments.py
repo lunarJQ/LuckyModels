@@ -16,7 +16,12 @@ from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import DeploymentCreateRequest, DeploymentRecord
 from luckymodels_core.settings import get_settings
 
-from ..dependencies import get_deployment_store, get_prediction_store, get_registry
+from ..dependencies import (
+    get_deployment_store,
+    get_inference_activity_tracker,
+    get_prediction_store,
+    get_registry,
+)
 
 router = APIRouter(tags=["deployments"])
 
@@ -145,6 +150,11 @@ def predict_with_deployment(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    activity_token = get_inference_activity_tracker().begin(
+        model_id=deployment.model_id,
+        deployment_id=deployment.deployment_id,
+        source="deployment_predict",
+    )
     try:
         with urlopen(runtime_request, timeout=90) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
@@ -164,6 +174,8 @@ def predict_with_deployment(
         return payload
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        get_inference_activity_tracker().end(activity_token)
 
 
 @router.post("/deployments/{deployment_id}/stop", response_model=DeploymentRecord)
