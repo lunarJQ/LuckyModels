@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .deployment_policy_store import DeploymentPolicyAutomationStore
 from .deployment_store import DeploymentStore
+from .inference_activity_tracker import InferenceActivityTracker
 from .launcher import launch_runtime_process, wait_for_runtime
 from .schemas import (
     BenchmarkRecord,
@@ -31,6 +32,14 @@ class _SchedulerContext:
     deployments: list[DeploymentRecord]
     prediction_archives: list[PredictionArchiveRecord]
     protect_active_window_seconds: int
+    inference_activity_tracker: InferenceActivityTracker
+
+
+@dataclass
+class _ModelProtectionStatus:
+    protected: bool
+    state: str
+    detail: str
 
 
 class DeploymentPolicyScheduler:
@@ -44,6 +53,7 @@ class DeploymentPolicyScheduler:
         get_prediction_store: Callable[[], Any],
         get_policy_store: Callable[[], DeploymentPolicyAutomationStore],
         get_gpu_snapshot: Callable[[], dict[str, Any]],
+        get_inference_activity_tracker: Callable[[], InferenceActivityTracker],
     ) -> None:
         self.settings = settings
         self.get_registry = get_registry
@@ -52,6 +62,7 @@ class DeploymentPolicyScheduler:
         self.get_prediction_store = get_prediction_store
         self.get_policy_store = get_policy_store
         self.get_gpu_snapshot = get_gpu_snapshot
+        self.get_inference_activity_tracker = get_inference_activity_tracker
         self._thread: Thread | None = None
         self._stop_event = Event()
         self._run_lock = Lock()
@@ -110,6 +121,7 @@ class DeploymentPolicyScheduler:
                     deployments=deployments,
                     prediction_archives=prediction_archives,
                     protect_active_window_seconds=state.protect_active_window_seconds,
+                    inference_activity_tracker=self.get_inference_activity_tracker(),
                 )
                 for recommendation in policy.recommendations:
                     action = self._apply_safe_fallback(recommendation, context=context)
@@ -171,16 +183,18 @@ class DeploymentPolicyScheduler:
                 status="skipped",
                 detail="已经存在 CPU 兜底 deployment，本轮不重复创建。",
             )
-        if _model_is_busy(
+        protection = _get_model_protection_status(
             recommendation.model_id,
+            inference_activity_tracker=context.inference_activity_tracker,
             prediction_archives=context.prediction_archives,
             protect_active_window_seconds=context.protect_active_window_seconds,
-        ):
+        )
+        if protection.protected:
             return DeploymentPolicyAutomationAction(
                 action_type="skip_cpu_fallback",
                 model_id=recommendation.model_id,
                 status="busy",
-                detail="模型近期仍有推理请求，跳过自动优化以保证推理任务畅通。",
+                detail=protection.detail,
             )
 
         registry = self.get_registry()
@@ -260,20 +274,62 @@ def _gpu_under_pressure(gpu_snapshot: dict[str, Any]) -> bool:
     return False
 
 
-def _model_is_busy(
+def _get_model_protection_status(
     model_id: str,
     *,
+    inference_activity_tracker: InferenceActivityTracker,
     prediction_archives: list[PredictionArchiveRecord],
     protect_active_window_seconds: int,
-) -> bool:
+) -> _ModelProtectionStatus:
+    tracker_status = inference_activity_tracker.get_protection_status(
+        model_id,
+        cooldown_seconds=protect_active_window_seconds,
+    )
+    if tracker_status.get("protected"):
+        if tracker_status.get("state") == "active":
+            active_count = int(tracker_status.get("active_count") or 0)
+            return _ModelProtectionStatus(
+                protected=True,
+                state="active",
+                detail=(
+                    f"模型当前正在执行推理任务（进行中请求 {active_count} 个），"
+                    "跳过自动优化以保证正在进行的推理不中断。"
+                ),
+            )
+        cooldown_remaining_seconds = int(tracker_status.get("cooldown_remaining_seconds") or 0)
+        return _ModelProtectionStatus(
+            protected=True,
+            state="cooldown",
+            detail=(
+                f"模型处于推理后冷却期，剩余约 {cooldown_remaining_seconds} 秒，"
+                "跳过自动优化以避免刚完成推理后立即迁移。"
+            ),
+        )
+
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(30, protect_active_window_seconds))
+    latest_archive_at: datetime | None = None
     for item in prediction_archives:
         if item.model_id != model_id:
             continue
         timestamp = _parse_datetime(item.created_at)
-        if timestamp is not None and timestamp >= cutoff:
-            return True
-    return False
+        if timestamp is None:
+            continue
+        if latest_archive_at is None or timestamp > latest_archive_at:
+            latest_archive_at = timestamp
+        if timestamp >= cutoff:
+            return _ModelProtectionStatus(
+                protected=True,
+                state="archive_cooldown",
+                detail=(
+                    "模型近期存在推理归档记录，按保守策略视为处于推理后冷却期，"
+                    "本轮跳过自动优化。"
+                ),
+            )
+    return _ModelProtectionStatus(
+        protected=False,
+        state="idle",
+        detail="模型当前不在推理保护窗口内。",
+    )
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
