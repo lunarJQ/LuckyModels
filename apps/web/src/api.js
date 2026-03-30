@@ -7,6 +7,18 @@ export async function fetchJSON(url, options) {
   return response.json();
 }
 
+export async function fetchBlob(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
+  }
+  return {
+    blob: await response.blob(),
+    filename: parseFilenameFromDisposition(response.headers.get("content-disposition")),
+  };
+}
+
 export async function fetchAuthSession() {
   return fetchJSON("/api/v1/auth/session");
 }
@@ -26,7 +38,7 @@ export async function logoutSession() {
 }
 
 export async function loadDashboardData() {
-  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview] = await Promise.all([
+  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     fetchJSON("/api/v1/models"),
     fetchJSON("/api/v1/deployments"),
@@ -36,6 +48,7 @@ export async function loadDashboardData() {
     fetchJSON("/api/v1/models/capability-matrix"),
     fetchJSON("/api/v1/system/gpus"),
     fetchJSON("/api/v1/access-control/overview"),
+    fetchJSON("/api/v1/models/import-options"),
   ]);
 
   const deploymentEntries = await Promise.all(
@@ -77,6 +90,7 @@ export async function loadDashboardData() {
     capabilityMatrix,
     gpuStatus,
     accessOverview,
+    importOptions,
     modelDetails: Object.fromEntries(modelDetailsEntries),
   };
 }
@@ -141,6 +155,27 @@ export async function getDeploymentLogs(deploymentId) {
 
 export async function getModelProfiles(modelId) {
   return fetchJSON(`/api/v1/models/${encodeURIComponent(modelId)}/profiles`);
+}
+
+export async function importModelArchive(payload) {
+  const formData = new FormData();
+  formData.append("archive", payload.archive);
+  formData.append("import_mode", payload.importMode);
+  formData.append("model_family", payload.modelFamily);
+  if (payload.language) formData.append("language", payload.language);
+  if (payload.datasetName) formData.append("dataset_name", payload.datasetName);
+  if (payload.version) formData.append("version", payload.version);
+  if (payload.modelName) formData.append("model_name", payload.modelName);
+  if (payload.backbone) formData.append("backbone", payload.backbone);
+  if (payload.alias) formData.append("alias", payload.alias);
+  return fetchJSON("/api/v1/models/import", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function exportModelPackage(modelId) {
+  return fetchBlob(`/api/v1/models/${encodeURIComponent(modelId)}/export`);
 }
 
 export async function predictWithDeployment(deploymentId, payload) {
@@ -219,4 +254,17 @@ export async function resetAccessUserPassword(userId, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+function parseFilenameFromDisposition(value) {
+  const text = String(value || "");
+  const utf8Match = text.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+  const plainMatch = text.match(/filename\s*=\s*"([^"]+)"/i) || text.match(/filename\s*=\s*([^;]+)/i);
+  if (!plainMatch) {
+    return "";
+  }
+  return plainMatch[1].trim();
 }

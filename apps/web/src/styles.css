@@ -499,6 +499,10 @@ button:disabled {
   line-height: 1.6;
 }
 
+.upload-note {
+  margin-bottom: 14px;
+}
+
 .stack-field,
 .stack-check {
   display: grid;

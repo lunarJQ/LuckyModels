@@ -108,6 +108,38 @@ class ModelDetail(BaseModel):
     resolved_labels: dict[str, str]
 
 
+class ModelImportModeOption(BaseModel):
+    code: str
+    label: str
+    note: str
+
+
+class ModelImportFamilyOption(BaseModel):
+    code: str
+    label: str
+    default_language: str | None = None
+    note: str = ""
+
+
+class ModelImportOptions(BaseModel):
+    modes: list[ModelImportModeOption] = Field(default_factory=list)
+    families: list[ModelImportFamilyOption] = Field(default_factory=list)
+
+
+class ModelImportResult(BaseModel):
+    model_id: str
+    model_name: str
+    model_family: str
+    language: str
+    dataset_name: str | None = None
+    version: str
+    import_mode: str
+    package_root: str
+    archive_filename: str | None = None
+    detected_files: dict[str, str] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class CapabilityMatrixRow(BaseModel):
     model_id: str
     model_name: str

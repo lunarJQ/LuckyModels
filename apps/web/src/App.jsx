@@ -8,12 +8,14 @@ import {
   deleteBenchmark,
   deleteDeployment,
   deletePredictionArchive,
+  exportModelPackage,
   fetchAuthSession,
   getDeploymentPolicy,
   getDeploymentPolicyAutomation,
   getDeploymentHealth,
   getDeploymentLogs,
   getModelProfiles,
+  importModelArchive,
   loginWithPassword,
   loadDashboardData,
   logoutSession,
@@ -44,6 +46,7 @@ const initialData = {
   report: null,
   gpuStatus: null,
   accessOverview: null,
+  importOptions: null,
 };
 
 const pageMeta = {
@@ -120,6 +123,21 @@ function buildInitialDeploymentForm(models, details) {
     gpuIdsText: "",
     notes: "",
     launchRuntime: true,
+  };
+}
+
+function buildInitialModelImportForm(importOptions) {
+  const defaultFamily = importOptions?.families?.[0];
+  return {
+    importMode: "auto_package",
+    modelFamily: defaultFamily?.code || "casrel",
+    language: defaultFamily?.default_language || "en",
+    datasetName: "",
+    version: "v1",
+    modelName: "",
+    backbone: "",
+    alias: "",
+    archive: null,
   };
 }
 
@@ -307,18 +325,15 @@ function downloadCsvFile(filename, rows) {
     ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
   ];
   const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = buildDownloadFilename(filename);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  window.URL.revokeObjectURL(url);
+  downloadBlobFile(filename, blob);
 }
 
 function downloadJsonFile(filename, value) {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json;charset=utf-8;" });
+  downloadBlobFile(filename, blob);
+}
+
+function downloadBlobFile(filename, blob) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -465,6 +480,7 @@ export default function App() {
   const [notice, setNotice] = useState({ type: "ok", text: "" });
   const [demoRunning, setDemoRunning] = useState(false);
   const [actionBusy, setActionBusy] = useState({});
+  const [modelImportForm, setModelImportForm] = useState(buildInitialModelImportForm(null));
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
@@ -497,6 +513,21 @@ export default function App() {
       return buildInitialDeploymentForm(data.models, data.modelDetails);
     });
   }, [data.models, data.modelDetails]);
+
+  useEffect(() => {
+    if (!data.importOptions?.families?.length) {
+      return;
+    }
+    setModelImportForm((current) => {
+      const families = data.importOptions.families;
+      const matchedFamily = families.find((item) => item.code === current.modelFamily) || families[0];
+      return {
+        ...current,
+        modelFamily: matchedFamily.code,
+        language: current.language || matchedFamily.default_language || "en",
+      };
+    });
+  }, [data.importOptions]);
 
   useEffect(() => {
     setBenchmarkForm((current) => {
@@ -695,6 +726,43 @@ export default function App() {
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
     await runAction("create-deployment", () => createDeployment(payload), `部署已创建：${payload.model_id}`);
+  }
+
+  async function handleImportModel() {
+    if (!modelImportForm.archive) {
+      setNotice({ type: "error", text: "请先选择一个模型压缩包。" });
+      return;
+    }
+    if (!modelImportForm.modelFamily) {
+      setNotice({ type: "error", text: "请先选择模型种类。" });
+      return;
+    }
+    if (modelImportForm.importMode === "auto_package" && !modelImportForm.datasetName.trim()) {
+      setNotice({ type: "error", text: "模式A需要填写数据集名称，平台才能生成统一命名。" });
+      return;
+    }
+
+    const result = await runAction(
+      "import-model",
+      () =>
+        importModelArchive({
+          archive: modelImportForm.archive,
+          importMode: modelImportForm.importMode,
+          modelFamily: modelImportForm.modelFamily,
+          language: modelImportForm.language,
+          datasetName: modelImportForm.datasetName.trim(),
+          version: modelImportForm.version.trim() || "v1",
+          modelName: modelImportForm.modelName.trim(),
+          backbone: modelImportForm.backbone.trim(),
+          alias: modelImportForm.alias.trim(),
+        }),
+      "模型制品已导入。",
+    );
+    setModelImportForm(buildInitialModelImportForm(data.importOptions));
+    setNotice({
+      type: "ok",
+      text: `模型制品已导入：${result.model_id}。命名规则为 模型家族-语言-数据集[-别名]-版本。`,
+    });
   }
 
   async function handleDeploymentAction(actionName, deploymentId) {
@@ -969,6 +1037,20 @@ export default function App() {
     }
   }
 
+  async function handleExportModelPackage(modelId) {
+    setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: true }));
+    try {
+      const { blob, filename } = await exportModelPackage(modelId);
+      downloadBlobFile(filename || `${modelId}.zip`, blob);
+      setNotice({ type: "ok", text: `已导出模型制品包：${modelId}` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: false }));
+    }
+  }
+
   const derived = useMemo(() => {
     const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0, user_count: 0, admin_count: 0 };
     const models = data.models || [];
@@ -1046,6 +1128,7 @@ export default function App() {
         downloadCsvFile("luckymodels-deployments.csv", rows);
       }}
       onExportModelManifest={handleExportModelManifest}
+      onExportModelPackage={handleExportModelPackage}
       onExportModelProfiles={handleExportModelProfiles}
       onExportPredictResult={(value) =>
         downloadJsonFile(
@@ -1053,6 +1136,7 @@ export default function App() {
           value,
         )
       }
+      onImportModel={handleImportModel}
       onCreateAccessUser={handleCreateAccessUser}
       onLoadDeploymentPolicy={handleLoadDeploymentPolicy}
       onLogout={handleLogout}
@@ -1069,6 +1153,8 @@ export default function App() {
       onTaskRoutingFormChange={setTaskRoutingForm}
       predictForm={predictForm}
       predictResult={predictResult}
+      modelImportForm={modelImportForm}
+      onModelImportFormChange={setModelImportForm}
       deploymentPolicy={deploymentPolicy}
       deploymentPolicyAutomation={deploymentPolicyAutomation}
       deploymentPolicyAutomationForm={deploymentPolicyAutomationForm}
@@ -1241,8 +1327,10 @@ function Shell(props) {
     onDeploymentFormChange,
     onExportDeploymentRows,
     onExportModelManifest,
+    onExportModelPackage,
     onExportModelProfiles,
     onExportPredictResult,
+    onImportModel,
     onCreateAccessUser,
     onLoadDeploymentPolicy,
     onRunDeploymentPolicyAutomationNow,
@@ -1262,6 +1350,8 @@ function Shell(props) {
     onTaskRoutingFormChange,
     predictForm,
     predictResult,
+    modelImportForm,
+    onModelImportFormChange,
     deploymentPolicy,
     deploymentPolicyAutomation,
     deploymentPolicyAutomationForm,
@@ -1472,6 +1562,10 @@ function Shell(props) {
                 derived={derived}
                 onCreateDeployment={onCreateDeployment}
                 onDeploymentFormChange={onDeploymentFormChange}
+                modelImportForm={modelImportForm}
+                onExportModelPackage={onExportModelPackage}
+                onImportModel={onImportModel}
+                onModelImportFormChange={onModelImportFormChange}
               />,
             )}
             {renderGuardedRoute(
@@ -2733,11 +2827,24 @@ function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArc
   );
 }
 
-function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeployment, onDeploymentFormChange }) {
+function ModelsPage({
+  actionBusy,
+  data,
+  deploymentForm,
+  derived,
+  modelImportForm,
+  onCreateDeployment,
+  onDeploymentFormChange,
+  onExportModelPackage,
+  onImportModel,
+  onModelImportFormChange,
+}) {
   const [search, setSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState("all");
   const [availabilityFilter, setAvailabilityFilter] = useState("all");
   const deferredSearch = useDeferredValue(search);
+  const familyOptions = data.importOptions?.families || [];
+  const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
 
   const filteredModels = useMemo(() => {
     return [...derived.models]
@@ -2769,6 +2876,133 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
 
   return (
     <>
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="模型导入"
+          title="上传模型制品"
+          note="模式A上传原始 ONNX 压缩包后由平台自动补齐标准目录；模式B直接接入已经标准化的 LuckyModels 模型包。"
+        />
+        <div className="detail-note upload-note">
+          导入命名规则：模型家族-语言-数据集[-别名]-版本，例如 <span className="mono">casrel-zh-duie-myexp-v1</span>。
+        </div>
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>导入模式</span>
+            <select
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, importMode: event.target.value }))}
+              value={modelImportForm.importMode}
+            >
+              {(data.importOptions?.modes || []).map((mode) => (
+                <option key={mode.code} value={mode.code}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>模型种类</span>
+            <select
+              onChange={(event) => {
+                const nextFamily = familyOptions.find((item) => item.code === event.target.value);
+                onModelImportFormChange((current) => ({
+                  ...current,
+                  modelFamily: event.target.value,
+                  language: nextFamily?.default_language || current.language,
+                }));
+              }}
+              value={modelImportForm.modelFamily}
+            >
+              {familyOptions.map((family) => (
+                <option key={family.code} value={family.code}>
+                  {family.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>语言</span>
+            <select
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, language: event.target.value }))}
+              value={modelImportForm.language}
+            >
+              <option value="en">英文</option>
+              <option value="zh">中文</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>数据集</span>
+            <input
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, datasetName: event.target.value }))}
+              placeholder={modelImportForm.importMode === "auto_package" ? "例如 webnlg / duie / scierc" : "可选，留空沿用标准包"}
+              type="text"
+              value={modelImportForm.datasetName}
+            />
+          </label>
+          <label className="stack-field">
+            <span>版本</span>
+            <input
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, version: event.target.value }))}
+              placeholder="v1"
+              type="text"
+              value={modelImportForm.version}
+            />
+          </label>
+          <label className="stack-field">
+            <span>展示名称</span>
+            <input
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, modelName: event.target.value }))}
+              placeholder={selectedFamilyOption?.label || "模型名称"}
+              type="text"
+              value={modelImportForm.modelName}
+            />
+          </label>
+          <label className="stack-field">
+            <span>主干模型</span>
+            <input
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, backbone: event.target.value }))}
+              placeholder={modelImportForm.language === "zh" ? "bert-base-chinese" : "bert-base-cased"}
+              type="text"
+              value={modelImportForm.backbone}
+            />
+          </label>
+          <label className="stack-field">
+            <span>别名</span>
+            <input
+              onChange={(event) => onModelImportFormChange((current) => ({ ...current, alias: event.target.value }))}
+              placeholder="可选，用于区分同家族不同实验包"
+              type="text"
+              value={modelImportForm.alias}
+            />
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>模型压缩包</span>
+            <input
+              accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tar.xz"
+              onChange={(event) =>
+                onModelImportFormChange((current) => ({
+                  ...current,
+                  archive: event.target.files?.[0] || null,
+                }))
+              }
+              type="file"
+            />
+            <small className="detail-note">
+              当前选择：{modelImportForm.archive?.name || "未选择文件"}
+            </small>
+          </label>
+          <div className="actions">
+            <button
+              className="btn-primary"
+              disabled={actionBusy["import-model"] || !modelImportForm.archive || !modelImportForm.modelFamily}
+              onClick={() => void onImportModel()}
+              type="button"
+            >
+              {actionBusy["import-model"] ? "导入中" : "导入模型"}
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section className="page-shell card section-shell">
         <SectionHeader kicker="新建部署" title="从模型库创建部署实例" note="选择模型、配置模板和备注，直接通过控制面创建部署实例。" />
         <div className="form-grid">
@@ -2935,6 +3169,13 @@ function ModelsPage({ actionBusy, data, deploymentForm, derived, onCreateDeploym
                     type="button"
                   >
                     快速部署
+                  </button>
+                  <button
+                    disabled={actionBusy[`export-model-${model.model_id}`]}
+                    onClick={() => void onExportModelPackage(model.model_id)}
+                    type="button"
+                  >
+                    导出制品
                   </button>
                 </div>
               </article>
