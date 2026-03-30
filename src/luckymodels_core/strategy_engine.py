@@ -1753,9 +1753,9 @@ def _build_policy_tags(
     ]
     tags.append("GPU 优先" if recommended_use_gpu else "CPU 优先")
     if gpu_pressure_action == "migrate_to_cpu":
-        tags.append("GPU 紧张转 CPU")
+        tags.append("全局高压迁 CPU")
     elif gpu_pressure_action == "share_gpu":
-        tags.append("GPU 紧张转共享")
+        tags.append("局部压力先换卡")
     else:
         tags.append("GPU 保留")
     return tags
@@ -1795,7 +1795,7 @@ def _build_deployment_policy_summary(
     strategy_overview = (
         f"平台当前共分析 {len(recommendations)} 个模型，其中热模型 {hot_count} 个、温模型 {warm_count} 个、冷模型 {cold_count} 个。"
         f"建议常驻 {always_on_count} 个、保温 {keep_warm_count} 个、按需启动 {on_demand_count} 个；"
-        f"GPU 紧张时有 {cpu_fallback_count} 个低优先级模型可转为 CPU 兜底部署。"
+        f"局部 GPU 压力时优先执行换卡重平衡；全局 GPU 高压时有 {cpu_fallback_count} 个低优先级模型建议迁移到 CPU 释放显存。"
     )
     return DeploymentPolicySummary(
         total_models=len(recommendations),
@@ -1825,8 +1825,8 @@ def _residency_label(value: str) -> str:
 def _gpu_pressure_action_label(value: str) -> str:
     return {
         "retain_gpu": "保留 GPU",
-        "share_gpu": "转为共享 GPU",
-        "migrate_to_cpu": "转为 CPU 兜底部署",
+        "share_gpu": "优先换卡并共享 GPU",
+        "migrate_to_cpu": "全局高压时迁移到 CPU",
     }.get(value, value)
 
 

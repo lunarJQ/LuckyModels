@@ -33,6 +33,7 @@ class _SchedulerContext:
     prediction_archives: list[PredictionArchiveRecord]
     protect_active_window_seconds: int
     inference_activity_tracker: InferenceActivityTracker
+    cluster_overloaded: bool
 
 
 @dataclass
@@ -116,12 +117,14 @@ class DeploymentPolicyScheduler:
             status = "idle"
             if _gpu_under_pressure(policy.gpu_snapshot):
                 status = "applied"
+                cluster_overloaded = _gpu_cluster_overloaded(policy.gpu_snapshot)
                 context = _SchedulerContext(
                     policy=policy,
                     deployments=deployments,
                     prediction_archives=prediction_archives,
                     protect_active_window_seconds=state.protect_active_window_seconds,
                     inference_activity_tracker=self.get_inference_activity_tracker(),
+                    cluster_overloaded=cluster_overloaded,
                 )
                 rebalance_applied = 0
                 for recommendation in policy.recommendations:
@@ -131,9 +134,33 @@ class DeploymentPolicyScheduler:
                             actions.append(action)
                             if action.status == "migrated":
                                 rebalance_applied += 1
-                    action = self._apply_safe_fallback(recommendation, context=context)
-                    if action is not None:
-                        actions.append(action)
+                if cluster_overloaded:
+                    cpu_relief_applied = 0
+                    pressure_relief_candidates = sorted(
+                        policy.recommendations,
+                        key=lambda item: (
+                            {"cold": 0, "warm": 1, "hot": 2}.get(item.service_tier, 3),
+                            item.demand_score,
+                            item.model_id,
+                        ),
+                    )
+                    for recommendation in pressure_relief_candidates:
+                        if cpu_relief_applied >= 3:
+                            break
+                        action = self._apply_safe_fallback(recommendation, context=context)
+                        if action is not None:
+                            actions.append(action)
+                            if action.status == "migrated":
+                                cpu_relief_applied += 1
+                else:
+                    actions.append(
+                        DeploymentPolicyAutomationAction(
+                            action_type="rebalance_only",
+                            model_id=policy.summary.busiest_model_id or "-",
+                            status="applied",
+                            detail="检测到局部 GPU 压力，当前优先执行 GPU 内部换卡与重平衡，不触发 CPU 迁移。",
+                        )
+                    )
             else:
                 actions.append(
                     DeploymentPolicyAutomationAction(
@@ -168,27 +195,24 @@ class DeploymentPolicyScheduler:
         *,
         context: _SchedulerContext,
     ) -> DeploymentPolicyAutomationAction | None:
+        if not context.cluster_overloaded:
+            return None
         if recommendation.gpu_pressure_action != "migrate_to_cpu":
             return None
         if recommendation.service_tier not in {"cold", "warm"}:
             return None
 
-        active_model_deployments = [
-            item for item in context.deployments if item.model_id == recommendation.model_id and item.status in {"running", "starting", "planned"}
+        active_gpu_deployments = [
+            item
+            for item in context.deployments
+            if item.model_id == recommendation.model_id and item.status in {"running", "starting", "planned"} and item.use_gpu
         ]
-        if not any(item.use_gpu for item in active_model_deployments):
+        if not active_gpu_deployments:
             return DeploymentPolicyAutomationAction(
-                action_type="skip_cpu_fallback",
+                action_type="skip_cpu_migration",
                 model_id=recommendation.model_id,
                 status="skipped",
-                detail="当前没有 GPU 部署实例，不需要转为 CPU 兜底。",
-            )
-        if any(not item.use_gpu for item in active_model_deployments):
-            return DeploymentPolicyAutomationAction(
-                action_type="skip_cpu_fallback",
-                model_id=recommendation.model_id,
-                status="skipped",
-                detail="已经存在 CPU 兜底 deployment，本轮不重复创建。",
+                detail="当前没有可迁移的 GPU deployment，不需要执行 CPU 释放动作。",
             )
         protection = _get_model_protection_status(
             recommendation.model_id,
@@ -198,7 +222,7 @@ class DeploymentPolicyScheduler:
         )
         if protection.protected:
             return DeploymentPolicyAutomationAction(
-                action_type="skip_cpu_fallback",
+                action_type="skip_cpu_migration",
                 model_id=recommendation.model_id,
                 status="busy",
                 detail=protection.detail,
@@ -210,48 +234,80 @@ class DeploymentPolicyScheduler:
         profile_name = recommendation.fallback_profile_name
         if profile_name not in model.resolved_profiles:
             profile_name = "default" if "default" in model.resolved_profiles else next(iter(model.resolved_profiles))
-        request = DeploymentCreateRequest(
-            model_id=recommendation.model_id,
-            profile_name=profile_name,
-            use_gpu=False,
-            gpu_ids=[],
-            launch_runtime=bool(model.summary.predict_ready),
-            notes="auto_policy_cpu_fallback",
-        )
-        deployment = deployment_store.create(request)
-        deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
-        deployment.profile_path = model.resolved_profiles[profile_name]
-        deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
-        deployment.log_path = str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
-
-        if request.launch_runtime:
-            port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
-            pid, service_url = launch_runtime_process(
-                root_dir=self.settings.root_dir,
-                manifest_path=deployment.manifest_path,
-                profile_path=deployment.profile_path,
-                port=port,
-                log_path=deployment.log_path,
-                gpu_ids=[],
-                use_gpu=False,
-            )
-            deployment.pid = pid
-            deployment.service_url = service_url
-            deployment.status = "running" if wait_for_runtime(service_url) else "starting"
-        else:
-            deployment.status = "planned"
-
-        deployment_store.update(deployment)
-        return DeploymentPolicyAutomationAction(
-            action_type="create_cpu_fallback",
-            model_id=recommendation.model_id,
-            deployment_id=deployment.deployment_id,
-            status="created",
-            detail=(
-                f"检测到 GPU 压力较高，已为 {recommendation.model_id} 创建 CPU 兜底 deployment，"
-                f"使用 profile={profile_name}，不影响原有 GPU 推理实例。"
+        deployment = sorted(
+            active_gpu_deployments,
+            key=lambda item: (
+                {"planned": 0, "starting": 1, "running": 2}.get(item.status, 3),
+                item.profile_name != profile_name,
+                item.deployment_id,
             ),
-        )
+        )[0]
+        previous_gpu_ids = list(deployment.gpu_ids or [])
+        previous_profile_name = deployment.profile_name
+        previous_status = deployment.status
+
+        try:
+            if deployment.pid:
+                stop_runtime_process(deployment.pid)
+
+            deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
+            deployment.profile_name = profile_name
+            deployment.profile_path = model.resolved_profiles[profile_name]
+            deployment.use_gpu = False
+            deployment.gpu_ids = []
+            deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
+            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            deployment.notes = " | ".join(
+                item
+                for item in [
+                    deployment.notes,
+                    "auto_policy_cpu_pressure_relief",
+                ]
+                if item
+            )
+
+            if model.summary.predict_ready:
+                port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
+                pid, service_url = launch_runtime_process(
+                    root_dir=self.settings.root_dir,
+                    manifest_path=deployment.manifest_path,
+                    profile_path=deployment.profile_path,
+                    port=port,
+                    log_path=deployment.log_path,
+                    gpu_ids=[],
+                    use_gpu=False,
+                )
+                deployment.pid = pid
+                deployment.service_url = service_url
+                deployment.status = "running" if wait_for_runtime(service_url) else "starting"
+            else:
+                deployment.pid = None
+                deployment.status = "planned"
+
+            deployment_store.update(deployment)
+            return DeploymentPolicyAutomationAction(
+                action_type="migrate_to_cpu",
+                model_id=recommendation.model_id,
+                deployment_id=deployment.deployment_id,
+                status="migrated",
+                detail=(
+                    f"检测到全局 GPU 高压，已将 deployment {deployment.deployment_id} 从 GPU "
+                    f"{','.join(str(item) for item in previous_gpu_ids) or '-'} 迁移到 CPU，"
+                    f"profile {previous_profile_name} -> {profile_name}，释放 GPU 资源给更高优先级模型。"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            deployment.profile_name = previous_profile_name
+            deployment.use_gpu = True
+            deployment.gpu_ids = previous_gpu_ids
+            deployment.status = previous_status
+            return DeploymentPolicyAutomationAction(
+                action_type="migrate_to_cpu",
+                model_id=recommendation.model_id,
+                deployment_id=deployment.deployment_id,
+                status="failed",
+                detail=f"CPU 迁移失败：{type(exc).__name__}: {exc}",
+            )
 
     def _apply_gpu_rebalance(
         self,
@@ -260,6 +316,8 @@ class DeploymentPolicyScheduler:
         context: _SchedulerContext,
     ) -> DeploymentPolicyAutomationAction | None:
         if not recommendation.recommended_use_gpu or not recommendation.recommended_gpu_ids:
+            return None
+        if context.cluster_overloaded and recommendation.gpu_pressure_action == "migrate_to_cpu":
             return None
         if recommendation.service_tier not in {"hot", "warm"}:
             return None
@@ -380,6 +438,23 @@ def _gpu_under_pressure(gpu_snapshot: dict[str, Any]) -> bool:
         if free_ratio <= 0.18 or utilization >= 85.0:
             return True
     return False
+
+
+def _gpu_cluster_overloaded(gpu_snapshot: dict[str, Any]) -> bool:
+    if not gpu_snapshot.get("available"):
+        return False
+    devices = list(gpu_snapshot.get("devices") or [])
+    if not devices:
+        return False
+    pressured_count = 0
+    for item in devices:
+        total = float(item.get("memory_total_mb") or 0.0)
+        used = float(item.get("memory_used_mb") or 0.0)
+        utilization = float(item.get("utilization_gpu_pct") or 0.0)
+        free_ratio = ((total - used) / total) if total > 0 else 1.0
+        if free_ratio <= 0.18 or utilization >= 85.0:
+            pressured_count += 1
+    return pressured_count >= len(devices)
 
 
 def _get_model_protection_status(

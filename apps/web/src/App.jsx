@@ -3356,8 +3356,8 @@ function DeploymentPolicyPage({
   };
   const pressureActionLabel = {
     retain_gpu: "保留 GPU",
-    share_gpu: "转共享 GPU",
-    migrate_to_cpu: "转 CPU 兜底",
+    share_gpu: "优先换卡 / 共享 GPU",
+    migrate_to_cpu: "全局高压迁移 CPU",
   };
   const riskLabel = {
     low: "低",
@@ -3408,7 +3408,7 @@ function DeploymentPolicyPage({
         <SectionHeader
           kicker="创新点二"
           title="分层自适应部署策略"
-          note="根据模型热度、冷启动风险、运行时延和 GPU 压力，给 LuckyModels 里的模型生成热/温/冷分层部署建议。"
+          note="根据模型热度、冷启动风险、运行时延和 GPU 压力，采用“先换卡、再降级”的两阶段策略生成热/温/冷部署建议。"
           right={
             <div className="actions">
               <button
@@ -3431,7 +3431,7 @@ function DeploymentPolicyPage({
         />
         <div className="banner banner-muted">
           {summary?.strategy_overview ||
-            "这里展示的不是简单“热门上好卡”的规则，而是面向知识抽取模型库的分层部署策略：热模型优先常驻，温模型按冷启动风险决定是否保温，冷模型在 GPU 紧张时优先转为 CPU 兜底。"}
+            "这里展示的不是简单“热门上好卡”的规则，而是面向知识抽取模型库的两阶段部署策略：先在 GPU 池内换卡与重平衡；只有在全局 GPU 高压时，才把冷模型或低优先级模型迁往 CPU 释放显存。"}
         </div>
       </section>
 
@@ -3502,6 +3502,9 @@ function DeploymentPolicyPage({
           />
           <MetricCard title="最近执行" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
         </div>
+        <div className="detail-note">
+          自动优化遵循两阶段规则：先检查是否可以通过 GPU 内部换卡解决局部拥塞；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
+        </div>
         {deploymentPolicyAutomation?.recent_actions?.length ? (
           <div className="table-wrap">
             <table>
@@ -3542,7 +3545,7 @@ function DeploymentPolicyPage({
             <MetricCard title="GPU 数量" value={deploymentPolicy.gpu_snapshot.gpu_count} note="当前服务器可见设备数" />
             <MetricCard title="活跃进程" value={deploymentPolicy.gpu_snapshot.process_count || 0} note="nvidia-smi 检测到的活跃进程" />
             <MetricCard title="最空闲 GPU" value={freestGpu ? `GPU ${freestGpu.index}` : "-"} note="按显存余量估算" />
-            <MetricCard title="CPU 兜底候选" value={gpuPressureModels.length} note="GPU 紧张时建议转为 CPU 的模型数" />
+            <MetricCard title="CPU 迁移候选" value={gpuPressureModels.length} note="全局 GPU 高压时建议迁移到 CPU 的模型数" />
           </div>
         ) : (
           <EmptyState icon="G" title="还没有部署建议快照" note="点击上方“刷新部署建议”后，这里会展示实时 GPU 资源视图。" />
@@ -3569,7 +3572,7 @@ function DeploymentPolicyPage({
               <div className="list-card-header">
                 <div>
                   <h4>温模型</h4>
-                  <div className="table-note">按冷启动风险保温或共享</div>
+                  <div className="table-note">优先换卡与共享，必要时再考虑降级</div>
                 </div>
                 <span className="tag">{warmModels.length}</span>
               </div>
@@ -3581,7 +3584,7 @@ function DeploymentPolicyPage({
               <div className="list-card-header">
                 <div>
                   <h4>冷模型</h4>
-                  <div className="table-note">按需启动，GPU 紧张时优先 CPU 兜底</div>
+                  <div className="table-note">按需启动，全局 GPU 高压时优先迁移到 CPU</div>
                 </div>
                 <span className="tag">{coldModels.length}</span>
               </div>
@@ -3656,7 +3659,7 @@ function DeploymentPolicyPage({
                     </td>
                     <td className="limitation-cell">
                       {row.recommendation.rationale}
-                      <div className="table-note">GPU 紧张动作：{pressureActionLabel[row.recommendation.gpu_pressure_action] || row.recommendation.gpu_pressure_action}</div>
+                      <div className="table-note">高压动作：{pressureActionLabel[row.recommendation.gpu_pressure_action] || row.recommendation.gpu_pressure_action}</div>
                     </td>
                     <td>
                       <div className="actions row-actions">
@@ -3690,7 +3693,7 @@ function DeploymentPolicyPage({
                             }
                             type="button"
                           >
-                            创建 CPU 兜底
+                            新建 CPU 迁移实例
                           </button>
                         ) : null}
                       </div>
