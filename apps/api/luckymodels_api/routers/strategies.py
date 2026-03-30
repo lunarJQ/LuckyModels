@@ -120,6 +120,7 @@ def get_task_routing_feedback_overview() -> TaskRoutingFeedbackOverview:
         models=registry.list_models(),
         deployments=deployment_store.list(),
         benchmarks=benchmark_store.list(),
+        prediction_archives=get_prediction_store().list(),
         decision_records=feedback_store.list_decisions(),
         feedback_records=feedback_store.list_feedback(),
     )
@@ -132,6 +133,7 @@ def list_task_routing_decisions(limit: int = 20) -> list[TaskRoutingDecisionSumm
         models=get_registry().list_models(),
         deployments=get_deployment_store().list(),
         benchmarks=get_benchmark_store().list(),
+        prediction_archives=get_prediction_store().list(),
         decision_records=feedback_store.list_decisions(),
         feedback_records=feedback_store.list_feedback(),
         limit=max(1, min(limit, 100)),

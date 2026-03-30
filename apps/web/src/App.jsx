@@ -26,7 +26,6 @@ import {
   restartDeployment,
   runDeploymentPolicyAutomationNow,
   runTaskRoutingStrategy,
-  submitTaskRoutingFeedback,
   switchCurrentAccessUser,
   stopDeployment,
   toggleAccessUser,
@@ -449,31 +448,8 @@ function buildInitialTaskRoutingForm(report) {
     objective: "accuracy",
     language: "auto",
     maxModels: 3,
-    scene: "",
+    scene: "zh_industrial",
     optionsJson: "{}",
-  };
-}
-
-function defaultTaskRoutingFeedbackType(objective) {
-  const mapping = {
-    accuracy: "accuracy",
-    coverage: "coverage",
-    latency: "latency",
-    balanced: "balanced",
-    resource: "latency",
-    domain: "accuracy",
-  };
-  return mapping[objective] || "accepted";
-}
-
-function buildInitialTaskRoutingFeedbackForm(taskRoutingResult) {
-  const executionResults = taskRoutingResult?.execution_results || [];
-  return {
-    decisionId: taskRoutingResult?.decision_id || "",
-    accepted: true,
-    feedbackType: defaultTaskRoutingFeedbackType(taskRoutingResult?.objective),
-    adoptedModelId: executionResults[0]?.model_id || "",
-    note: "",
   };
 }
 
@@ -586,7 +562,6 @@ export default function App() {
   const [predictResult, setPredictResult] = useState(null);
   const [taskRoutingForm, setTaskRoutingForm] = useState(buildInitialTaskRoutingForm(null));
   const [taskRoutingResult, setTaskRoutingResult] = useState(null);
-  const [taskRoutingFeedbackForm, setTaskRoutingFeedbackForm] = useState(buildInitialTaskRoutingFeedbackForm(null));
   const [deploymentPolicy, setDeploymentPolicy] = useState(null);
   const [deploymentPolicyAutomation, setDeploymentPolicyAutomation] = useState(null);
   const [deploymentPolicyAutomationForm, setDeploymentPolicyAutomationForm] = useState(buildInitialDeploymentPolicyAutomationForm());
@@ -744,10 +719,6 @@ export default function App() {
     void hydratePredictSample(predictForm.scene, { advance: false });
   }, [predictForm.scene]);
 
-  useEffect(() => {
-    setTaskRoutingFeedbackForm(buildInitialTaskRoutingFeedbackForm(taskRoutingResult));
-  }, [taskRoutingResult?.decision_id]);
-
   async function refreshAll({ silent = false } = {}) {
     if (!silent) {
       setLoadError("");
@@ -837,7 +808,6 @@ export default function App() {
       setPredictSampleInfo(null);
       setPredictSampleCursor({});
       setTaskRoutingResult(null);
-      setTaskRoutingFeedbackForm(buildInitialTaskRoutingFeedbackForm(null));
       setDeploymentPolicy(null);
       setDeploymentPolicyAutomation(null);
       setDeploymentPolicyAutomationForm(buildInitialDeploymentPolicyAutomationForm());
@@ -1086,12 +1056,21 @@ export default function App() {
     setNotice({ type: "ok", text: "" });
     try {
       const options = taskRoutingForm.optionsJson.trim() ? safeJsonParse(taskRoutingForm.optionsJson) : {};
+      const normalizedScene = String(taskRoutingForm.scene || "").trim();
+      const requestLanguage =
+        normalizedScene === "en_general"
+          ? "en"
+          : normalizedScene === "zh_general" || normalizedScene === "zh_industrial"
+            ? "zh"
+            : taskRoutingForm.language === "auto"
+              ? undefined
+              : taskRoutingForm.language;
       const result = await runTaskRoutingStrategy({
         text: taskRoutingForm.text,
         objective: taskRoutingForm.objective,
-        language: taskRoutingForm.language === "auto" ? undefined : taskRoutingForm.language,
-        scene: taskRoutingForm.scene || undefined,
-        max_models: Number(taskRoutingForm.maxModels),
+        language: requestLanguage,
+        scene: normalizedScene || undefined,
+        max_models: Math.max(1, Math.min(5, Number(taskRoutingForm.maxModels) || 1)),
         options,
       });
       setTaskRoutingResult(result);
@@ -1102,25 +1081,6 @@ export default function App() {
     } finally {
       setActionBusy((current) => ({ ...current, "task-routing": false }));
     }
-  }
-
-  async function handleSubmitTaskRoutingFeedback() {
-    if (!taskRoutingFeedbackForm.decisionId) {
-      setNotice({ type: "error", text: "当前没有可校准的调度决策，请先运行一次任务调度。" });
-      return;
-    }
-    await runAction(
-      `task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`,
-      () =>
-        submitTaskRoutingFeedback({
-          decision_id: taskRoutingFeedbackForm.decisionId,
-          accepted: Boolean(taskRoutingFeedbackForm.accepted),
-          feedback_type: taskRoutingFeedbackForm.feedbackType,
-          adopted_model_id: taskRoutingFeedbackForm.adoptedModelId || undefined,
-          note: taskRoutingFeedbackForm.note?.trim() || undefined,
-        }),
-      "任务调度校准标注已记录，后续同类请求会参考这条实验校准信息。",
-    );
   }
 
   async function handleLoadDeploymentPolicy() {
@@ -1470,9 +1430,7 @@ export default function App() {
       onRefresh={refreshAll}
       onResetAccessUserPassword={handleResetAccessUserPassword}
       onRunTaskRouting={handleRunTaskRouting}
-      onSubmitTaskRoutingFeedback={handleSubmitTaskRoutingFeedback}
       onTaskRoutingFormChange={setTaskRoutingForm}
-      onTaskRoutingFeedbackFormChange={setTaskRoutingFeedbackForm}
       predictForm={predictForm}
       predictSampleInfo={predictSampleInfo}
       predictResult={predictResult}
@@ -1488,7 +1446,6 @@ export default function App() {
       onDeploymentPolicyAutomationFormChange={setDeploymentPolicyAutomationForm}
       selectedHealth={selectedHealth}
       selectedLogs={selectedLogs}
-      taskRoutingFeedbackForm={taskRoutingFeedbackForm}
       taskRoutingForm={taskRoutingForm}
       taskRoutingResult={taskRoutingResult}
     />
@@ -1674,9 +1631,7 @@ function Shell(props) {
     onRefresh,
     onResetAccessUserPassword,
     onRunTaskRouting,
-    onSubmitTaskRoutingFeedback,
     onTaskRoutingFormChange,
-    onTaskRoutingFeedbackFormChange,
     predictForm,
     predictSampleInfo,
     predictResult,
@@ -1689,7 +1644,6 @@ function Shell(props) {
     deploymentPolicyAutomationForm,
     selectedHealth,
     selectedLogs,
-    taskRoutingFeedbackForm,
     taskRoutingForm,
     taskRoutingResult,
   } = props;
@@ -1832,10 +1786,7 @@ function Shell(props) {
                 actionBusy={actionBusy}
                 derived={derived}
                 onRunTaskRouting={onRunTaskRouting}
-                onSubmitTaskRoutingFeedback={onSubmitTaskRoutingFeedback}
                 onTaskRoutingFormChange={onTaskRoutingFormChange}
-                onTaskRoutingFeedbackFormChange={onTaskRoutingFeedbackFormChange}
-                taskRoutingFeedbackForm={taskRoutingFeedbackForm}
                 taskRoutingForm={taskRoutingForm}
                 taskRoutingResult={taskRoutingResult}
               />,
@@ -2796,10 +2747,7 @@ function TaskRoutingPage({
   actionBusy,
   derived,
   onRunTaskRouting,
-  onSubmitTaskRoutingFeedback,
   onTaskRoutingFormChange,
-  onTaskRoutingFeedbackFormChange,
-  taskRoutingFeedbackForm,
   taskRoutingForm,
   taskRoutingResult,
 }) {
@@ -2810,14 +2758,6 @@ function TaskRoutingPage({
     { value: "balanced", label: "综合平衡", note: "在准确、覆盖、时延和成本之间做折中。" },
     { value: "resource", label: "低成本", note: "优先低资源占用路径，适合 GPU 紧张场景。" },
     { value: "domain", label: "领域优先", note: "优先选择与输入领域更匹配的部署并交叉校验。" },
-  ];
-  const feedbackTypeOptions = [
-    { value: "accepted", label: "当前策略可用", note: "表示当前调度已基本满足要求，会轻微强化当前策略。" },
-    { value: "accuracy", label: "校准为更重准确", note: "后续同类请求会更偏向准确与稳定。" },
-    { value: "coverage", label: "校准为更重覆盖", note: "后续同类请求会更偏向召回更多三元组。" },
-    { value: "latency", label: "校准为更重速度", note: "后续同类请求会更偏向低时延路径。" },
-    { value: "balanced", label: "保持综合平衡", note: "表示综合折中策略更符合该类请求。" },
-    { value: "manual_revision", label: "需要人工修正", note: "表示结果不够可靠，系统会提高准确与稳定权重。" },
   ];
   const feedbackOverview = derived.taskRoutingFeedbackOverview || {
     total_decisions: 0,
@@ -2832,13 +2772,45 @@ function TaskRoutingPage({
     recent_decisions: [],
     insights: [],
   };
-  const adoptedModelOptions = (taskRoutingResult?.execution_results || []).map((item) => item.model_id);
+  const sceneOptions = [
+    { value: "en_general", label: "英文通用场景", note: "只在英文 deployment 中筛选，优先英文模型。" },
+    { value: "zh_general", label: "中文通用场景", note: "只在中文通用 deployment 中筛选，优先使用 DuIE 一类通用中文模型。" },
+    { value: "zh_industrial", label: "中文工业设备场景", note: "只在中文工业设备 deployment 中筛选，优先使用 IndustrialEquipmentMix 训练出的模型。" },
+  ];
   const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
   const benchmarkedModelCount = new Set(completedBenchmarks.map((item) => item.model_id)).size;
   const calibrationArchiveCount = derived.predictArchives.length;
-  const datasetSources = derived.datasetCatalog?.datasets || DEFAULT_PREDICT_DATASETS;
-  const availableDatasetSources = datasetSources.filter((item) => item.available);
   const recentBenchmarkRows = completedBenchmarks.slice(0, 6);
+  const selectedObjective = candidateOptions.find((item) => item.value === taskRoutingForm.objective) || candidateOptions[0];
+  const selectedScene = sceneOptions.find((item) => item.value === taskRoutingForm.scene) || sceneOptions[2];
+  const selectedDeployments = taskRoutingResult?.selected_deployments || [];
+  const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
+  const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
+  const quickStartSteps = [
+    {
+      title: "1. 选目标",
+      desc: "先选本次任务更看重什么，例如高准确、低时延或高覆盖，这会改变调度权重。",
+    },
+    {
+      title: "2. 填文本",
+      desc: "选择场景分类，再输入要抽取的文本。场景会直接约束候选模型范围。",
+    },
+    {
+      title: "3. 运行调度",
+      desc: "平台会从当前运行中的 deployment 里自动挑选 1 到多个模型，必要时做交叉验证或融合。",
+    },
+    {
+      title: "4. 看结果",
+      desc: "先看最终三元组，再看候选部署得分、基准证据和历史归档，判断这次调度是否合理。",
+    },
+  ];
+  const pageReadingHints = [
+    "调度结果：告诉你这次到底选了哪条执行路径，为什么这么选，最终融合出了哪些三元组。",
+    "候选部署与执行明细：看每个 deployment 的排序分数、领域匹配、资源级别和被选中原因。",
+    "运行证据与基准概览：看平台最近有哪些 benchmark 记录在支撑这次调度，例如 P95 和成功率。",
+    "策略校准总览与权重快照：看调度层怎样根据 benchmark 和在线归档，轻量修正不同目标下的评分权重。",
+    "最近决策记录：看过去做过哪些任务调度，适合论文里说明“系统可以自动归档并形成证据链”。",
+  ];
 
   return (
     <>
@@ -2860,85 +2832,146 @@ function TaskRoutingPage({
             </div>
           }
         />
-        <div className="form-grid">
-          <label className="stack-field">
-            <span>目标偏好</span>
-            <select
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
-              value={taskRoutingForm.objective}
-            >
-              {candidateOptions.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-            <small className="detail-note">
-              {candidateOptions.find((item) => item.value === taskRoutingForm.objective)?.note}
-            </small>
-          </label>
-          <label className="stack-field">
-            <span>语言</span>
-            <select
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, language: event.target.value }))}
-              value={taskRoutingForm.language}
-            >
-              <option value="auto">自动判断</option>
-              <option value="zh">中文</option>
-              <option value="en">英文</option>
-            </select>
-          </label>
-          <label className="stack-field">
-            <span>最大模型数</span>
-            <input
-              min="1"
-              max="5"
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, maxModels: event.target.value }))}
-              type="number"
-              value={taskRoutingForm.maxModels}
-            />
-          </label>
-          <label className="stack-field">
-            <span>场景标识</span>
-            <input
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, scene: event.target.value }))}
-              placeholder="可选，例如 industrial / scientific / duie"
-              value={taskRoutingForm.scene || ""}
-            />
-            <small className="detail-note">会辅助领域识别，也会写入决策归档。</small>
-          </label>
-          <label className="stack-field stack-field-wide">
-            <span>输入文本</span>
-            <textarea
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, text: event.target.value }))}
-              rows="5"
-              value={taskRoutingForm.text}
-            />
-          </label>
-          <label className="stack-field stack-field-wide">
-            <span>附加参数 JSON</span>
-            <textarea
-              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
-              rows="3"
-              value={taskRoutingForm.optionsJson}
-            />
-          </label>
-        </div>
-      </section>
 
-      <section className="page-shell card section-shell">
-        <SectionHeader kicker="运行说明" title="当前可用候选" note="策略只会在当前运行中的部署实例里进行选择和融合，并优先参考已有 benchmark 与在线归档证据。" />
         <div className="metrics">
-          <MetricCard title="运行中实例" value={derived.runningDeployments.length} note="可参与任务调度的 deployment" />
-          <MetricCard title="中文实例" value={derived.runningDeployments.filter((item) => derived.models.find((model) => model.model_id === item.model_id)?.language === "zh").length} note="语言为中文的运行实例" />
-          <MetricCard title="英文实例" value={derived.runningDeployments.filter((item) => derived.models.find((model) => model.model_id === item.model_id)?.language === "en").length} note="语言为英文的运行实例" />
-          <MetricCard title="已完成基准" value={derived.benchmarks.filter((item) => item.status === "completed").length} note="策略会优先参考这些记录的 P95 和成功率" />
+          <MetricCard title="运行中实例" value={derived.runningDeployments.length} note="当前真正可参与调度的 deployment 数量" />
+          <MetricCard title="已完成基准" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
+          <MetricCard title="在线归档" value={calibrationArchiveCount} note="历史推理归档会参与调度层自校准" />
+          <MetricCard title="当前目标" value={selectedObjective.label} note={selectedObjective.note} />
+        </div>
+
+        <div className="task-routing-guide-grid">
+          <div className="task-routing-step-grid">
+            {quickStartSteps.map((item) => (
+              <div className="task-routing-step-card" key={item.title}>
+                <strong>{item.title}</strong>
+                <span>{item.desc}</span>
+              </div>
+            ))}
+          </div>
+          <div className="task-routing-note-card">
+            <div className="section-kicker">页面怎么看</div>
+            <div className="task-routing-note-list">
+              {pageReadingHints.map((item, index) => (
+                <div className="relation-item" key={`${item}-${index + 1}`}>
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="策略输出" title="调度结果" />
+          <SectionHeader kicker="操作区" title="运行参数" note="这是你每次发起任务调度时真正需要填写的部分。一般只改目标偏好、场景标识和输入文本就够了。" />
+          <div className="form-grid">
+            <label className="stack-field">
+              <span>目标偏好</span>
+              <select
+                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
+                value={taskRoutingForm.objective}
+              >
+                {candidateOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <small className="detail-note">{selectedObjective.note}</small>
+            </label>
+            <label className="stack-field">
+              <span>最大模型数</span>
+              <input
+                min="1"
+                max="5"
+                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, maxModels: event.target.value }))}
+                type="number"
+                value={taskRoutingForm.maxModels}
+              />
+              <small className="detail-note">表示一次任务最多允许平台调用多少个模型参与决策或融合。除低时延场景外，现在会真实限制候选数。</small>
+            </label>
+            <label className="stack-field">
+              <span>场景标识</span>
+              <select
+                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, scene: event.target.value }))}
+                value={taskRoutingForm.scene}
+              >
+                {sceneOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <small className="detail-note">{selectedScene.note}</small>
+            </label>
+            <label className="stack-field">
+              <span>模型范围</span>
+              <div className="stack-field-readonly">
+                {selectedScene.value === "en_general" ? "英文 deployment" : selectedScene.value === "zh_general" ? "中文通用 deployment（DuIE 路线）" : "中文工业 deployment（IndustrialEquipmentMix 路线）"}
+              </div>
+              <small className="detail-note">这里会随场景自动切换，不再单独手选语言，避免英文/中文模型混用。</small>
+            </label>
+            <label className="stack-field stack-field-wide">
+              <span>输入文本</span>
+              <textarea
+                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, text: event.target.value }))}
+                rows="5"
+                value={taskRoutingForm.text}
+              />
+            </label>
+            <label className="stack-field stack-field-wide">
+              <span>附加参数 JSON</span>
+              <textarea
+                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
+                rows="3"
+                value={taskRoutingForm.optionsJson}
+              />
+              <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写。</small>
+            </label>
+          </div>
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="解读区" title="关键概念说明" note="这一页不是单纯的“调用模型”，而是展示平台如何在多个运行中模型之间做任务级调度。" />
+          <div className="relation-list">
+            <div className="relation-item">
+              <strong>目标偏好</strong>
+              <br />
+              决定调度更偏向准确、覆盖、时延还是成本。它不是模型参数，而是调度层策略。
+            </div>
+            <div className="relation-item">
+              <strong>场景标识</strong>
+              <br />
+              现在固定为 3 类：英文通用、中文通用、中文工业设备。它会直接约束候选 deployment 的范围，而不只是提示词。
+            </div>
+            <div className="relation-item">
+              <strong>执行路径</strong>
+              <br />
+              指这次任务最终采用了什么方式完成，例如单模型直出、多模型交叉验证、候选融合等。
+            </div>
+            <div className="relation-item">
+              <strong>候选部署</strong>
+              <br />
+              指当前运行中的 deployment。调度只会在这些已启动实例里选择，不会凭空调用未运行模型。
+            </div>
+            <div className="relation-item">
+              <strong>自动归档</strong>
+              <br />
+              指每次调度的输入、选中的模型、执行路径和结果都会被记录下来，供后续统计与论文展示使用。
+            </div>
+            <div className="relation-item">
+              <strong>自校准</strong>
+              <br />
+              指平台会参考 benchmark 与在线归档，调整调度评分权重；不会改动底层 ONNX 模型参数。
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section className="detail-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="结果区" title="调度结果" note="建议先看这一块。这里回答的是“平台最终怎么调度、为什么这么调度、输出了什么三元组”。" />
           {taskRoutingResult ? (
             <>
               <div className="metrics">
@@ -2952,7 +2985,7 @@ function TaskRoutingPage({
                 <MetricCard title="领域" value={taskRoutingResult.context_features?.domain || "-"} note={`实体线索 ${taskRoutingResult.context_features?.entity_hint_count || 0}`} />
                 <MetricCard title="文本长度" value={taskRoutingResult.context_features?.text_length || "-"} note={`子句数 ${taskRoutingResult.context_features?.clause_count || 0}`} />
                 <MetricCard title="融合模式" value={taskRoutingResult.fused_result?.fusion_mode || "-"} note={`三元组 ${taskRoutingResult.fused_result?.triple_count || 0}`} />
-                <MetricCard title="权重主项" value={Object.entries(taskRoutingResult.objective_weights || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || "-"} note="当前目标权重最高项" />
+                <MetricCard title="权重主项" value={topWeightEntry?.[0] || "-"} note="当前目标下影响最大的评分项" />
               </div>
               <div className="tag-list">
                 {Object.entries(taskRoutingResult.objective_weights || {}).map(([key, value]) => (
@@ -2973,8 +3006,9 @@ function TaskRoutingPage({
               {(taskRoutingResult.adaptation_reasons || []).length ? (
                 <div className="logs">{(taskRoutingResult.adaptation_reasons || []).join("\n")}</div>
               ) : null}
+              <div className="banner banner-muted">最终三元组列表：这是任务调度层融合后的统一输出，不再区分来自哪个底层模型。</div>
               <div className="relation-list">
-                {(taskRoutingResult.fused_result?.triples || []).map((item, index) => (
+                {fusedTriples.map((item, index) => (
                   <div className="relation-item" key={`${item.subject}-${item.predicate}-${item.object}-${index + 1}`}>
                     {item.subject}
                     {" -> "}
@@ -2995,9 +3029,12 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="候选明细" title="候选部署与执行明细" />
+          <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表是用来看“为什么选中这些 deployment”。论文里它可以支撑你的任务调度策略不是拍脑袋，而是有评分依据。" />
           {taskRoutingResult ? (
             <>
+              <div className="banner banner-muted">
+                表格解读：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
+              </div>
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -3034,124 +3071,51 @@ function TaskRoutingPage({
                   </tbody>
                 </table>
               </div>
-              <div className="logs">
-                {(taskRoutingResult.decision_trace || []).join("\n")}
-              </div>
+              {(taskRoutingResult.decision_trace || []).length ? <div className="logs">{(taskRoutingResult.decision_trace || []).join("\n")}</div> : null}
             </>
           ) : (
             <div className="logs">运行后这里会给出候选排序、实际选中的 deployment，以及各模型的执行结果摘要。</div>
-          )}
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader
-            kicker="策略校准"
-            title="本次调度校准标注"
-            note="真实业务中外露 API 往往只返回三元组结果，不回传最终采用模型，因此这里定位为平台维护者或评测人员使用的实验校准入口。"
-          />
-          {taskRoutingResult?.decision_id ? (
-            <>
-              <div className="metrics">
-                <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度已自动归档，可追加一次实验校准标注" />
-                <MetricCard title="默认校准方向" value={defaultTaskRoutingFeedbackType(taskRoutingResult.objective)} note="会根据当前目标偏好初始化" />
-                <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="可选补充人工偏好模型，但不是必填项" />
-                <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="校准记录会绑定本次融合输出" />
-              </div>
-              <div className="form-grid">
-                <label className="stack-field">
-                  <span>结果是否可接受</span>
-                  <select
-                    onChange={(event) =>
-                      onTaskRoutingFeedbackFormChange((current) => ({
-                        ...current,
-                        accepted: event.target.value === "yes",
-                      }))}
-                    value={taskRoutingFeedbackForm.accepted ? "yes" : "no"}
-                  >
-                    <option value="yes">可接受</option>
-                    <option value="no">需调整</option>
-                  </select>
-                </label>
-                <label className="stack-field">
-                  <span>校准方向</span>
-                  <select
-                    onChange={(event) =>
-                      onTaskRoutingFeedbackFormChange((current) => ({
-                        ...current,
-                        feedbackType: event.target.value,
-                      }))}
-                    value={taskRoutingFeedbackForm.feedbackType}
-                  >
-                    {feedbackTypeOptions.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                  <small className="detail-note">
-                    {feedbackTypeOptions.find((item) => item.value === taskRoutingFeedbackForm.feedbackType)?.note}
-                  </small>
-                </label>
-                <label className="stack-field">
-                  <span>可选：人工偏好模型</span>
-                  <select
-                    disabled={!adoptedModelOptions.length}
-                    onChange={(event) =>
-                      onTaskRoutingFeedbackFormChange((current) => ({
-                        ...current,
-                        adoptedModelId: event.target.value,
-                      }))}
-                    value={taskRoutingFeedbackForm.adoptedModelId || ""}
-                  >
-                    <option value="">不填写</option>
-                    {adoptedModelOptions.map((item) => (
-                      <option key={item} value={item}>
-                        {item}
-                      </option>
-                    ))}
-                  </select>
-                  <small className="detail-note">如果真实业务里拿不到最终采用模型，这里留空即可，不影响校准逻辑。</small>
-                </label>
-                <label className="stack-field stack-field-wide">
-                  <span>实验备注</span>
-                  <textarea
-                    onChange={(event) =>
-                      onTaskRoutingFeedbackFormChange((current) => ({
-                        ...current,
-                        note: event.target.value,
-                      }))}
-                    placeholder="可选，用来记录为什么认为当前策略可用，或应该往准确/覆盖/速度方向继续校准。"
-                    rows="3"
-                    value={taskRoutingFeedbackForm.note}
-                  />
-                </label>
-              </div>
-              <div className="actions">
-                <button
-                  className="btn-primary"
-                  disabled={actionBusy[`task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`]}
-                  onClick={() => void onSubmitTaskRoutingFeedback()}
-                  type="button"
-                >
-                  {actionBusy[`task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`] ? "保存中" : "保存校准标注"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <EmptyState icon="F" title="还没有可校准结果" note="先运行一次任务调度，系统会为该次调度生成决策编号并开放实验校准入口。" />
           )}
         </article>
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="证据来源" title="运行证据与 Benchmark 概览" note="由于平台内真实用户反馈较少，当前调度增强主要依赖 benchmark、在线归档与标准样本来源来做自校准。" />
+          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 不会回传“用户最终采用了哪个模型”，所以平台这里采用的是自动归档方案，而不是人工反馈方案。" />
+          {taskRoutingResult?.decision_id ? (
+            <>
+              <div className="metrics">
+                <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度会进入历史记录，后面可检索和截图" />
+                <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="本次真正参与运行的模型实例数" />
+                <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="会进入在线归档，参与后续统计" />
+                <MetricCard title="归档方式" value="自动归档" note="依赖 benchmark 与在线归档，不依赖终端用户确认" />
+              </div>
+              <div className="relation-list">
+                {[
+                  "任务调度记录：保存这次任务的目标偏好、执行路径、候选部署与最终选中的模型。",
+                  "预测归档记录：保存这次任务输出的三元组数量、运行情况和可用于后续统计的结果信息。",
+                  "调度层自校准：平台后续会优先参考 benchmark 和归档结果，轻量修正不同目标的调度评分权重。",
+                ].map((item, index) => (
+                  <div className="relation-item" key={`${item}-${index + 1}`}>
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <EmptyState icon="F" title="还没有归档样本" note="先运行一次任务调度，系统才会生成这次任务的决策编号和归档记录。" />
+          )}
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="证据区" title="运行证据与基准概览" note="这张表主要看平台最近有哪些 benchmark 记录在支撑调度层决策，尤其适合论文里引用 P95、成功率和 profile 信息。" />
           <div className="metrics">
             <MetricCard title="已完成 Benchmark" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
             <MetricCard title="在线归档" value={calibrationArchiveCount} note="作为运行证据参与策略校准" />
-            <MetricCard title="标准数据集" value={datasetSources.length} note={`其中可用 ${availableDatasetSources.length} 个`} />
+            <MetricCard title="当前场景" value={selectedScene.label} note="证据筛选会优先参考这一场景下的记录" />
             <MetricCard title="最近证据更新时间" value={completedBenchmarks[0]?.created_at || feedbackOverview.last_feedback_at || "-"} note="优先展示最近一条可引用记录" />
           </div>
+          <div className="banner banner-muted">表格解读：如果某个模型或 profile 最近有稳定 benchmark，它在低时延或高稳定场景中通常会更容易被调度层优先考虑。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3185,63 +3149,16 @@ function TaskRoutingPage({
             <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
           ) : null}
         </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="样本回放" title="标准样本来源" note="任务调度增强版不依赖真实终端用户回传，而是结合标准数据集样本与 benchmark 结果做实验校准。" />
-          <div className="metrics">
-            <MetricCard title="可用样本源" value={availableDatasetSources.length} note="当前机器已检测到的标准数据集" />
-            <MetricCard title="回放候选总数" value={datasetSources.length} note="来自平台已登记的数据集目录" />
-            <MetricCard title="中文样本源" value={datasetSources.filter((item) => /duie|equipment/i.test(String(item.dataset_key || item.dataset_name || ""))).length} note="可用于中文模型回放" />
-            <MetricCard title="英文样本源" value={datasetSources.filter((item) => !/duie|equipment/i.test(String(item.dataset_key || item.dataset_name || ""))).length} note="可用于英文模型回放" />
-          </div>
-          <div className="relation-list">
-            {[
-              "WebNLG / NYT / SciERC / DuIE 等标准数据集样本可作为调度验证与回放证据。",
-              "在线 API 用户只获取三元组，不回传最终采用模型，因此调度增强主要依靠运行证据而非显式用户反馈。",
-              "平台维护者可对关键案例进行人工校准标注，作为补充信号参与后续权重修正。",
-            ].map((item, index) => (
-              <div className="relation-item" key={`${item}-${index + 1}`}>
-                {item}
-              </div>
-            ))}
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>数据集</th>
-                  <th>别名</th>
-                  <th>是否可用</th>
-                  <th>样本就绪</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                {datasetSources.map((item) => (
-                  <tr key={item.dataset_key}>
-                    <td>{item.dataset_name || item.label || item.dataset_key}</td>
-                    <td>{item.label || item.dataset_key}</td>
-                    <td>{item.available ? "是" : "否"}</td>
-                    <td>{item.sample_ready ? "是" : "否"}</td>
-                    <td className="limitation-cell">
-                      {item.available ? "可作为样本回放来源，用于任务调度实验校准。" : "当前机器未检测到该数据集，平台会退回默认样本文本。"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </article>
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="自校准看板" title="策略校准总览" note="用于展示平台如何把历史调度、benchmark 证据和少量人工校准标注串成一个轻量自校准闭环。" />
+          <SectionHeader kicker="分析区" title="策略校准总览" note="这块主要回答“平台过去更常以什么目标运行、形成了多少历史调度记录”，它是调度层证据链的总览表。" />
           <div className="metrics">
             <MetricCard title="决策总数" value={feedbackOverview.total_decisions || 0} note="累计归档的任务调度记录" />
-            <MetricCard title="人工标注数" value={feedbackOverview.total_feedback || 0} note={`待标注 ${feedbackOverview.pending_feedback_count || 0} 条`} />
-            <MetricCard title="标注可接受率" value={formatPercent(feedbackOverview.acceptance_rate)} note="仅基于人工校准标注统计" />
-            <MetricCard title="最近标注时间" value={feedbackOverview.last_feedback_at || "-"} note="最后一次实验校准写入时间" />
+            <MetricCard title="Benchmark 证据" value={completedBenchmarks.length} note="已完成的 benchmark 记录数" />
+            <MetricCard title="在线归档证据" value={calibrationArchiveCount} note="实时推理沉淀的归档记录数" />
+            <MetricCard title="最近决策时间" value={feedbackOverview.recent_decisions?.[0]?.created_at || "-"} note="最近一条任务调度历史" />
           </div>
           <div className="relation-list">
             {(feedbackOverview.insights || []).map((item, index) => (
@@ -3250,15 +3167,16 @@ function TaskRoutingPage({
               </div>
             ))}
           </div>
+          <div className="banner banner-muted">表格解读：按“目标偏好”统计历史调度。你可以看出平台在哪些任务目标下已经有较多历史样本，以及常见的主参考执行路径是什么。</div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>目标</th>
                   <th>决策数</th>
-                  <th>标注数</th>
-                  <th>可接受率</th>
-                  <th>优选路径</th>
+                  <th>补充记录</th>
+                  <th>主参考路径</th>
+                  <th>说明</th>
                 </tr>
               </thead>
               <tbody>
@@ -3267,8 +3185,12 @@ function TaskRoutingPage({
                     <td>{item.objective}</td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
-                    <td>{formatPercent(item.acceptance_rate)}</td>
                     <td>{item.best_execution_path || "-"}</td>
+                    <td className="limitation-cell">
+                      {item.decision_count > 0
+                        ? `该目标已有 ${item.decision_count} 条历史调度，可直接作为权重更新的参考窗口。`
+                        : "当前还没有该目标的历史调度记录。"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3277,7 +3199,8 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="权重更新" title="自适应权重快照" note="平台不会改底层抽取模型参数，而是根据历史 benchmark、在线归档与人工校准标注对调度层权重做轻量修正。" />
+          <SectionHeader kicker="分析区" title="调度评分权重快照" note="这张表不是模型训练权重，而是调度层评分权重。它说明不同目标下，平台更看重准确、覆盖、时延还是资源成本。" />
+          <div className="banner banner-muted">表格解读：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`归档修正` 来自历史在线归档。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3302,8 +3225,8 @@ function TaskRoutingPage({
                         : "无"}
                     </td>
                     <td className="limitation-cell">
-                      {Object.keys(item.feedback_adjustments || {}).length
-                        ? Object.entries(item.feedback_adjustments || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")
+                      {Object.keys(item.archive_adjustments || {}).length
+                        ? Object.entries(item.archive_adjustments || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")
                         : "无"}
                     </td>
                   </tr>
@@ -3316,15 +3239,16 @@ function TaskRoutingPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="路径表现" title="执行路径校准表现" />
+          <SectionHeader kicker="分析区" title="执行路径分布" note="这张表看的是平台常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
+          <div className="banner banner-muted">表格解读：这里统计的是“执行方式”出现了多少次，而不是某个具体模型的性能排名。</div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>执行路径</th>
                   <th>决策数</th>
-                  <th>标注数</th>
-                  <th>可接受率</th>
+                  <th>补充记录</th>
+                  <th>说明</th>
                 </tr>
               </thead>
               <tbody>
@@ -3333,7 +3257,11 @@ function TaskRoutingPage({
                     <td>{item.execution_path}</td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
-                    <td>{formatPercent(item.acceptance_rate)}</td>
+                    <td className="limitation-cell">
+                      {item.decision_count > 0
+                        ? `该路径已出现 ${item.decision_count} 次，可用于观察不同目标下的执行路径分布。`
+                        : "暂无路径记录。"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3342,28 +3270,8 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="可选信息" title="人工偏好模型统计" note="仅在评测人员显式填写偏好模型时计入；真实 API 业务通常拿不到这个信号，因此它不是主校准依据。" />
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>模型</th>
-                  <th>偏好次数</th>
-                  <th>偏好占比</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(feedbackOverview.model_adoption_summaries || []).map((item) => (
-                  <tr key={item.model_id}>
-                    <td>{item.model_id}</td>
-                    <td>{item.adoption_count}</td>
-                    <td>{formatPercent(item.adopted_share)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <SectionHeader kicker="最近决策" title="最近校准记录" note="适合截图展示“记录策略结果并形成自校准证据链”的工程化实现。" />
+          <SectionHeader kicker="分析区" title="最近决策记录" note="这张表最适合做论文截图。它能直接展示平台不是一次性推理，而是会把每次任务调度结果完整留痕。" />
+          <div className="banner banner-muted">表格解读：一行就是一次真实调度，包含目标、领域、执行路径、参与模型和归档说明。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3372,7 +3280,7 @@ function TaskRoutingPage({
                   <th>目标 / 领域</th>
                   <th>执行路径</th>
                   <th>模型</th>
-                  <th>校准标注</th>
+                  <th>归档说明</th>
                 </tr>
               </thead>
               <tbody>
@@ -3392,8 +3300,8 @@ function TaskRoutingPage({
                     </td>
                     <td className="limitation-cell">{(item.selected_model_ids || []).join("、") || "-"}</td>
                     <td>
-                      <div>{item.feedback_status === "completed" ? (item.accepted ? "已标注可接受" : "已标注需调整") : "待标注"}</div>
-                      <div className="table-note">{item.feedback_type || item.adopted_model_id || "-"}</div>
+                      <div>{item.feedback_status === "completed" ? "附带补充记录" : "自动决策归档"}</div>
+                      <div className="table-note">{item.fusion_policy || "-"}</div>
                     </td>
                   </tr>
                 ))}

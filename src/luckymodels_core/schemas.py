@@ -418,7 +418,7 @@ class TaskRoutingAdaptiveWeightProfile(BaseModel):
     objective: str
     effective_weights: dict[str, float] = Field(default_factory=dict)
     benchmark_adjustments: dict[str, float] = Field(default_factory=dict)
-    feedback_adjustments: dict[str, float] = Field(default_factory=dict)
+    archive_adjustments: dict[str, float] = Field(default_factory=dict)
     reasons: list[str] = Field(default_factory=list)
 
 

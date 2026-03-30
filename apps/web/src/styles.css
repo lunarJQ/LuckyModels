@@ -589,6 +589,56 @@ button:disabled {
   font-weight: 700;
 }
 
+.task-routing-guide-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.task-routing-step-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.task-routing-step-card,
+.task-routing-note-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 247, 0.84);
+  box-shadow: var(--shadow);
+}
+
+.task-routing-step-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.task-routing-step-card strong {
+  color: #223142;
+  font-size: 14px;
+}
+
+.task-routing-step-card span {
+  color: #596979;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.task-routing-note-card {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.task-routing-note-list {
+  display: grid;
+  gap: 8px;
+}
+
 .graph-shell {
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -1703,7 +1753,9 @@ thead th {
   .login-stage,
   .login-badge-grid,
   .account-preset-grid,
-  .session-grid {
+  .session-grid,
+  .task-routing-guide-grid,
+  .task-routing-step-grid {
     grid-template-columns: 1fr;
   }
 
