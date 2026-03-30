@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -22,6 +23,7 @@ from ..dependencies import (
     get_prediction_store,
     get_registry,
 )
+from .system import get_gpu_status
 
 router = APIRouter(tags=["deployments"])
 
@@ -70,6 +72,13 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     settings = get_settings()
     deployment.log_path = str(settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
+    deployment.use_gpu, deployment.gpu_ids, device_note = _resolve_runtime_device(
+        model=model,
+        requested_use_gpu=deployment.use_gpu,
+        requested_gpu_ids=deployment.gpu_ids,
+    )
+    if device_note:
+        deployment.notes = " | ".join(item for item in [deployment.notes, device_note] if item)
 
     if request.launch_runtime:
         port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
@@ -195,6 +204,8 @@ def stop_deployment(deployment_id: str) -> DeploymentRecord:
 def restart_deployment(deployment_id: str) -> DeploymentRecord:
     store = get_deployment_store()
     deployment = _get_deployment_or_404(deployment_id)
+    registry = get_registry()
+    model = registry.get_model(deployment.model_id)
 
     if deployment.pid:
         stop_runtime_process(deployment.pid)
@@ -203,6 +214,14 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         raise HTTPException(status_code=400, detail="Deployment manifest_path is missing or invalid")
     if not deployment.profile_path or not Path(deployment.profile_path).exists():
         raise HTTPException(status_code=400, detail="Deployment profile_path is missing or invalid")
+
+    deployment.use_gpu, deployment.gpu_ids, device_note = _resolve_runtime_device(
+        model=model,
+        requested_use_gpu=deployment.use_gpu,
+        requested_gpu_ids=deployment.gpu_ids,
+    )
+    if device_note:
+        deployment.notes = " | ".join(item for item in [deployment.notes, device_note] if item)
 
     service_url = deployment.service_url or f"http://127.0.0.1:{store._allocate_port()}"
     port = int(service_url.rsplit(":", maxsplit=1)[-1])
@@ -266,3 +285,71 @@ def _hydrate_deployment_runtime_snapshot(deployment: DeploymentRecord) -> Deploy
         deployment.gpu_ids = list(profile.gpu_ids)
     deployment.execution = profile.execution
     return deployment
+
+
+def _resolve_runtime_device(
+    *,
+    model,
+    requested_use_gpu: bool,
+    requested_gpu_ids: list[int] | None,
+) -> tuple[bool, list[int], str | None]:
+    if not requested_use_gpu:
+        return (False, [], None)
+
+    gpu_status = get_gpu_status()
+    devices = list(gpu_status.get("devices") or [])
+    if not gpu_status.get("available") or not devices:
+        return (False, [], "gpu_unavailable_auto_fallback_cpu")
+
+    required_memory_mb = _estimate_required_gpu_memory_mb(
+        package_root=getattr(getattr(model, "summary", None), "package_root", None),
+        stage_count=int(getattr(getattr(model, "summary", None), "stage_count", 1) or 1),
+    )
+    preferred_gpu_ids = [int(item) for item in (requested_gpu_ids or [])]
+    preferred_devices = [item for item in devices if int(item.get("index")) in preferred_gpu_ids] if preferred_gpu_ids else devices
+    suitable = [item for item in preferred_devices if _gpu_has_enough_memory(item, required_memory_mb)]
+    if suitable:
+        best = sorted(suitable, key=_gpu_free_memory_mb, reverse=True)[0]
+        return (True, [int(best.get("index"))], None)
+
+    global_suitable = [item for item in devices if _gpu_has_enough_memory(item, required_memory_mb)]
+    if global_suitable:
+        best = sorted(global_suitable, key=_gpu_free_memory_mb, reverse=True)[0]
+        return (
+            True,
+            [int(best.get("index"))],
+            f"gpu_auto_reassign_to_{int(best.get('index'))}_required_{int(required_memory_mb)}mb",
+        )
+
+    return (False, [], f"gpu_insufficient_auto_fallback_cpu_required_{int(required_memory_mb)}mb")
+
+
+def _estimate_required_gpu_memory_mb(*, package_root: str | None, stage_count: int) -> float:
+    package_size_mb = _directory_size_mb(package_root)
+    base = max(1536.0, (package_size_mb or 512.0) * 1.8)
+    stage_overhead = max(256.0, float(stage_count) * 320.0)
+    return base + stage_overhead
+
+
+def _directory_size_mb(path: str | None) -> float | None:
+    if not path or not os.path.isdir(path):
+        return None
+    total_bytes = 0
+    for root, _dirs, files in os.walk(path):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            try:
+                total_bytes += os.path.getsize(file_path)
+            except OSError:
+                continue
+    return total_bytes / (1024 * 1024)
+
+
+def _gpu_free_memory_mb(device: dict[str, object]) -> float:
+    total = float(device.get("memory_total_mb") or 0.0)
+    used = float(device.get("memory_used_mb") or 0.0)
+    return max(total - used, 0.0)
+
+
+def _gpu_has_enough_memory(device: dict[str, object], required_memory_mb: float) -> bool:
+    return _gpu_free_memory_mb(device) >= required_memory_mb

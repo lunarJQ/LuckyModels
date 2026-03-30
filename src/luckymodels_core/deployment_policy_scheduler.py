@@ -9,7 +9,7 @@ from typing import Any, Callable
 from .deployment_policy_store import DeploymentPolicyAutomationStore
 from .deployment_store import DeploymentStore
 from .inference_activity_tracker import InferenceActivityTracker
-from .launcher import launch_runtime_process, wait_for_runtime
+from .launcher import launch_runtime_process, stop_runtime_process, wait_for_runtime
 from .schemas import (
     BenchmarkRecord,
     DeploymentCreateRequest,
@@ -123,7 +123,14 @@ class DeploymentPolicyScheduler:
                     protect_active_window_seconds=state.protect_active_window_seconds,
                     inference_activity_tracker=self.get_inference_activity_tracker(),
                 )
+                rebalance_applied = 0
                 for recommendation in policy.recommendations:
+                    if rebalance_applied < 3:
+                        action = self._apply_gpu_rebalance(recommendation, context=context)
+                        if action is not None:
+                            actions.append(action)
+                            if action.status == "migrated":
+                                rebalance_applied += 1
                     action = self._apply_safe_fallback(recommendation, context=context)
                     if action is not None:
                         actions.append(action)
@@ -245,6 +252,107 @@ class DeploymentPolicyScheduler:
                 f"使用 profile={profile_name}，不影响原有 GPU 推理实例。"
             ),
         )
+
+    def _apply_gpu_rebalance(
+        self,
+        recommendation: DeploymentPolicyRecommendation,
+        *,
+        context: _SchedulerContext,
+    ) -> DeploymentPolicyAutomationAction | None:
+        if not recommendation.recommended_use_gpu or not recommendation.recommended_gpu_ids:
+            return None
+        if recommendation.service_tier not in {"hot", "warm"}:
+            return None
+
+        target_gpu_ids = [int(item) for item in recommendation.recommended_gpu_ids]
+        active_gpu_deployments = [
+            item
+            for item in context.deployments
+            if item.model_id == recommendation.model_id and item.status in {"running", "starting"} and item.use_gpu
+        ]
+        if not active_gpu_deployments:
+            return None
+        if any(list(item.gpu_ids or []) == target_gpu_ids for item in active_gpu_deployments):
+            return None
+
+        protection = _get_model_protection_status(
+            recommendation.model_id,
+            inference_activity_tracker=context.inference_activity_tracker,
+            prediction_archives=context.prediction_archives,
+            protect_active_window_seconds=context.protect_active_window_seconds,
+        )
+        if protection.protected:
+            return DeploymentPolicyAutomationAction(
+                action_type="rebalance_gpu",
+                model_id=recommendation.model_id,
+                status="busy",
+                detail=protection.detail,
+            )
+
+        deployment = sorted(
+            active_gpu_deployments,
+            key=lambda item: (
+                item.profile_name != recommendation.recommended_profile_name,
+                ",".join(str(gpu_id) for gpu_id in item.gpu_ids or []),
+                item.deployment_id,
+            ),
+        )[0]
+        previous_gpu_ids = list(deployment.gpu_ids or [])
+        deployment_store = self.get_deployment_store()
+
+        try:
+            registry = self.get_registry()
+            model: ModelDetail = registry.get_model(recommendation.model_id)
+            profile_name = recommendation.recommended_profile_name
+            if profile_name not in model.resolved_profiles:
+                profile_name = deployment.profile_name if deployment.profile_name in model.resolved_profiles else (
+                    "default" if "default" in model.resolved_profiles else next(iter(model.resolved_profiles))
+                )
+
+            if deployment.pid:
+                stop_runtime_process(deployment.pid)
+
+            deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
+            deployment.profile_name = profile_name
+            deployment.profile_path = model.resolved_profiles[profile_name]
+            deployment.use_gpu = True
+            deployment.gpu_ids = target_gpu_ids
+            deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
+            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
+
+            pid, service_url = launch_runtime_process(
+                root_dir=self.settings.root_dir,
+                manifest_path=deployment.manifest_path,
+                profile_path=deployment.profile_path,
+                port=port,
+                log_path=deployment.log_path,
+                gpu_ids=target_gpu_ids,
+                use_gpu=True,
+            )
+            deployment.pid = pid
+            deployment.service_url = service_url
+            deployment.status = "running" if wait_for_runtime(service_url) else "starting"
+            deployment_store.update(deployment)
+            return DeploymentPolicyAutomationAction(
+                action_type="rebalance_gpu",
+                model_id=recommendation.model_id,
+                deployment_id=deployment.deployment_id,
+                status="migrated",
+                detail=(
+                    f"已将 deployment {deployment.deployment_id} 从 GPU "
+                    f"{','.join(str(item) for item in previous_gpu_ids) or '-'} 迁移到 GPU "
+                    f"{','.join(str(item) for item in target_gpu_ids)}，并切换到 profile={profile_name}。"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return DeploymentPolicyAutomationAction(
+                action_type="rebalance_gpu",
+                model_id=recommendation.model_id,
+                deployment_id=deployment.deployment_id,
+                status="failed",
+                detail=f"GPU 重平衡失败：{type(exc).__name__}: {exc}",
+            )
 
 
 def _is_due(last_run_at: str | None, interval_seconds: int) -> bool:

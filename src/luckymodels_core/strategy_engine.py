@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from .inference_activity_tracker import InferenceActivityTracker
 from .schemas import (
@@ -274,6 +275,7 @@ def build_deployment_policy(
         )
 
         recommended_use_gpu, recommended_gpu_ids, device_label = _recommend_device_allocation(
+            model_id=model.model_id,
             service_tier=service_tier,
             residency_mode=residency_mode,
             cold_start_risk=cold_start_risk,
@@ -447,7 +449,7 @@ def _scene_matches_model(scene: str | None, model: ModelSummary) -> bool:
     if normalized_scene == "zh_general":
         return model.language == "zh" and not _is_industrial_dataset_name(model.dataset_name)
     if normalized_scene == "zh_industrial":
-        return model.language == "zh" and _is_industrial_dataset_name(model.dataset_name)
+        return model.language == "zh"
     return True
 
 
@@ -720,7 +722,8 @@ def _resolve_execution_roles(execution_path: str, count: int) -> list[str]:
     if count == 1:
         return ["primary"]
     if execution_path in {"domain_priority_crosscheck", "cost_aware_primary_plus_reviewer"}:
-        return ["primary", "reviewer"][:count]
+        roles = ["primary", "reviewer", "supplement"]
+        return roles[:count] + ["supplement"] * max(0, count - len(roles))
     if execution_path in {"parallel_multi_union", "multi_consensus_vote", "consensus_with_backfill"}:
         roles = ["primary", "reviewer", "supplement"]
         return roles[:count] + ["supplement"] * max(0, count - len(roles))
@@ -1101,8 +1104,57 @@ def _predict_with_runtime(
             source="task_routing",
         )
     try:
-        with urlopen(request, timeout=90) as response:  # noqa: S310
-            result = json.loads(response.read().decode("utf-8"))
+        try:
+            with urlopen(request, timeout=90) as response:  # noqa: S310
+                result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            return TaskRoutingExecution(
+                deployment_id=candidate.deployment_id,
+                model_id=candidate.model_id,
+                profile_name=candidate.profile_name,
+                selected_for_fusion=False,
+                execution_role=execution_role,
+                latency_ms=None,
+                triple_count=0,
+                triples=[],
+                warnings=[f"runtime_http_error: {exc.code} {exc.reason}"],
+            )
+        except URLError as exc:
+            return TaskRoutingExecution(
+                deployment_id=candidate.deployment_id,
+                model_id=candidate.model_id,
+                profile_name=candidate.profile_name,
+                selected_for_fusion=False,
+                execution_role=execution_role,
+                latency_ms=None,
+                triple_count=0,
+                triples=[],
+                warnings=[f"runtime_unreachable: {exc.reason}"],
+            )
+        except json.JSONDecodeError as exc:
+            return TaskRoutingExecution(
+                deployment_id=candidate.deployment_id,
+                model_id=candidate.model_id,
+                profile_name=candidate.profile_name,
+                selected_for_fusion=False,
+                execution_role=execution_role,
+                latency_ms=None,
+                triple_count=0,
+                triples=[],
+                warnings=[f"runtime_invalid_json: {exc.msg}"],
+            )
+        except Exception as exc:
+            return TaskRoutingExecution(
+                deployment_id=candidate.deployment_id,
+                model_id=candidate.model_id,
+                profile_name=candidate.profile_name,
+                selected_for_fusion=False,
+                execution_role=execution_role,
+                latency_ms=None,
+                triple_count=0,
+                triples=[],
+                warnings=[f"runtime_error: {type(exc).__name__}: {exc}"],
+            )
     finally:
         if activity_tracker is not None:
             activity_tracker.end(activity_token)
@@ -1502,6 +1554,7 @@ def _build_feedback_insights(
 
 def _recommend_device_allocation(
     *,
+    model_id: str,
     service_tier: str,
     residency_mode: str,
     cold_start_risk: str,
@@ -1513,27 +1566,48 @@ def _recommend_device_allocation(
     if not gpu_snapshot.get("available") or not devices:
         return (False, [], "CPU")
 
+    def _device_free_mb(item: dict[str, Any]) -> float:
+        return max(float(item.get("memory_total_mb") or 0.0) - float(item.get("memory_used_mb") or 0.0), 0.0)
+
     ranked = sorted(
         devices,
         key=lambda item: (
-            -float((item.get("memory_total_mb") or 0) - (item.get("memory_used_mb") or 0)),
+            -_device_free_mb(item),
             float(item.get("utilization_gpu_pct") or 0),
             len(item.get("active_processes") or []),
         ),
     )
+    eligible = []
+    for item in ranked:
+        total = float(item.get("memory_total_mb") or 0.0)
+        free_ratio = (_device_free_mb(item) / total) if total > 0 else 1.0
+        utilization = float(item.get("utilization_gpu_pct") or 0.0)
+        if free_ratio <= 0.06 or utilization >= 98.0:
+            continue
+        eligible.append(item)
+    if not eligible:
+        eligible = ranked
+
+    hash_seed = sum(ord(ch) for ch in str(model_id or ""))
+
+    def _pick(pool: list[dict[str, Any]]) -> dict[str, Any]:
+        if not pool:
+            return ranked[0]
+        return pool[hash_seed % len(pool)]
+
     if service_tier == "hot":
-        selected = ranked[0]
+        selected = _pick(eligible[: min(2, len(eligible))])
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（优先常驻）")
     if service_tier == "warm":
         if residency_mode == "on_demand" and cold_start_risk == "low":
             return (False, [], "CPU")
-        selected = ranked[min(1, len(ranked) - 1)]
+        selected = _pick(eligible[: min(2, len(eligible))])
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（共享保温）")
     if cold_start_risk == "high" and (package_size_mb or 0.0) >= 150:
-        selected = ranked[-1]
+        selected = _pick(eligible[: min(3, len(eligible))])
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（共享）")
     if avg_p95_latency_ms is not None and avg_p95_latency_ms > 250 and len(ranked) >= 2:
-        selected = ranked[-1]
+        selected = _pick(eligible[: min(3, len(eligible))])
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（低优先级共享）")
     return (False, [], "CPU")
 

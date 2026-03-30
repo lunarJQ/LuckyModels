@@ -445,7 +445,7 @@ function buildInitialTaskRoutingForm(report) {
     "";
   return {
     text: sampleText,
-    objective: "accuracy",
+    objective: "domain",
     language: "auto",
     maxModels: 3,
     scene: "zh_industrial",
@@ -1795,6 +1795,7 @@ function Shell(props) {
               "/deployment-policy",
               <DeploymentPolicyPage
                 actionBusy={actionBusy}
+                derived={derived}
                 deploymentPolicy={deploymentPolicy}
                 deploymentPolicyAutomation={deploymentPolicyAutomation}
                 deploymentPolicyAutomationForm={deploymentPolicyAutomationForm}
@@ -1847,6 +1848,7 @@ function Shell(props) {
                 actionBusy={actionBusy}
                 data={data}
                 deploymentForm={deploymentForm}
+                deploymentPolicy={deploymentPolicy}
                 derived={derived}
                 onCreateDeployment={onCreateDeployment}
                 onDeploymentFormChange={onDeploymentFormChange}
@@ -2775,7 +2777,7 @@ function TaskRoutingPage({
   const sceneOptions = [
     { value: "en_general", label: "英文通用场景", note: "只在英文 deployment 中筛选，优先英文模型。" },
     { value: "zh_general", label: "中文通用场景", note: "只在中文通用 deployment 中筛选，优先使用 DuIE 一类通用中文模型。" },
-    { value: "zh_industrial", label: "中文工业设备场景", note: "只在中文工业设备 deployment 中筛选，优先使用 IndustrialEquipmentMix 训练出的模型。" },
+    { value: "zh_industrial", label: "中文工业设备场景", note: "优先使用带 equipmentmix15k 标识的工业专用模型；若通用中文模型历史表现更强，也允许参与调度。" },
   ];
   const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
   const benchmarkedModelCount = new Set(completedBenchmarks.map((item) => item.model_id)).size;
@@ -3316,6 +3318,7 @@ function TaskRoutingPage({
 
 function DeploymentPolicyPage({
   actionBusy,
+  derived,
   deploymentPolicy,
   deploymentPolicyAutomation,
   deploymentPolicyAutomationForm,
@@ -3327,10 +3330,12 @@ function DeploymentPolicyPage({
 }) {
   const recommendations = deploymentPolicy?.recommendations || [];
   const summary = deploymentPolicy?.summary || null;
+  const deployments = derived?.deployments || [];
   const hotModels = recommendations.filter((item) => item.service_tier === "hot");
   const warmModels = recommendations.filter((item) => item.service_tier === "warm");
   const coldModels = recommendations.filter((item) => item.service_tier === "cold");
   const gpuPressureModels = recommendations.filter((item) => item.gpu_pressure_action === "migrate_to_cpu");
+  const recommendationByModelId = new Map(recommendations.map((item) => [item.model_id, item]));
   const freestGpu = deploymentPolicy?.gpu_snapshot?.devices?.length
     ? [...deploymentPolicy.gpu_snapshot.devices].sort(
         (left, right) =>
@@ -3360,6 +3365,42 @@ function DeploymentPolicyPage({
     high: "高",
     unknown: "待评估",
   };
+  const deploymentPlanRows = deployments
+    .filter((item) => item.status !== "deleted")
+    .map((deployment) => {
+      const recommendation = recommendationByModelId.get(deployment.model_id);
+      if (!recommendation) return null;
+      const currentGpuLabel = deployment.use_gpu
+        ? `GPU ${deployment.gpu_ids?.length ? deployment.gpu_ids.join(",") : "未指定"}`
+        : "CPU";
+      const targetGpuLabel = recommendation.recommended_use_gpu
+        ? (recommendation.recommended_gpu_ids?.length
+            ? `GPU ${recommendation.recommended_gpu_ids.join(",")}`
+            : recommendation.recommended_device_label || "GPU")
+        : "CPU";
+      const profileChanged = deployment.profile_name !== recommendation.recommended_profile_name;
+      const gpuChanged =
+        Boolean(deployment.use_gpu) !== Boolean(recommendation.recommended_use_gpu) ||
+        JSON.stringify(deployment.gpu_ids || []) !== JSON.stringify(recommendation.recommended_gpu_ids || []);
+      let optimizationAction = "保持现状";
+      if (gpuChanged && recommendation.recommended_use_gpu) {
+        optimizationAction = "迁移到建议 GPU";
+      } else if (gpuChanged && !recommendation.recommended_use_gpu) {
+        optimizationAction = "转为 CPU";
+      } else if (profileChanged) {
+        optimizationAction = "调整 Profile";
+      }
+      return {
+        deployment,
+        recommendation,
+        currentGpuLabel,
+        targetGpuLabel,
+        optimizationAction,
+        profileChanged,
+        gpuChanged,
+      };
+    })
+    .filter(Boolean);
 
   return (
     <>
@@ -3555,88 +3596,92 @@ function DeploymentPolicyPage({
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="策略建议" title="模型部署建议表" note="可直接据此新建 deployment，也可在 GPU 极端紧张时为低优先级模型补一个 CPU 兜底 deployment。" />
-        {recommendations.length ? (
+        <SectionHeader kicker="策略建议" title="现有 Deployment 优化方案表" note="每一行对应平台里已经存在的 deployment，展示它当前状态、建议目标和下一步优化动作。" />
+        {deploymentPlanRows.length ? (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>模型</th>
-                  <th>分层 / 驻留</th>
-                  <th>热度与运行</th>
-                  <th>冷启动画像</th>
-                  <th>推荐部署</th>
-                  <th>GPU 紧张动作</th>
+                  <th>Deployment</th>
+                  <th>模型 / 分层</th>
+                  <th>当前部署</th>
+                  <th>建议目标</th>
+                  <th>优化动作</th>
                   <th>说明</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {recommendations.map((item) => (
-                  <tr key={item.model_id}>
+                {deploymentPlanRows.map((row) => (
+                  <tr key={row.deployment.deployment_id}>
                     <td>
-                      <strong>{item.model_name}</strong>
-                      <div className="mono">{item.model_id}</div>
-                      <div className="table-note">{item.language} · {item.stage_count} stage · {item.package_size_mb !== null ? `${formatFixed(item.package_size_mb, 1)} MB` : "-"}</div>
+                      <strong>{row.deployment.deployment_id}</strong>
+                      <div className="table-note">{row.deployment.status}</div>
+                      <div className="table-note">{row.deployment.notes || "-"}</div>
                     </td>
                     <td>
+                      <strong>{row.recommendation.model_name}</strong>
+                      <div className="mono">{row.recommendation.model_id}</div>
                       <div className="tag-list">
-                        <span className="tag">{tierLabel[item.service_tier] || item.service_tier}</span>
-                        <span className="tag">{residencyLabel[item.residency_mode] || item.residency_mode}</span>
+                        <span className="tag">{tierLabel[row.recommendation.service_tier] || row.recommendation.service_tier}</span>
+                        <span className="tag">{residencyLabel[row.recommendation.residency_mode] || row.recommendation.residency_mode}</span>
                       </div>
-                      <div className="table-note">需求等级：{item.demand_level} / 分值：{formatFixed(item.demand_score)}</div>
+                      <div className="table-note">需求等级：{row.recommendation.demand_level} / 分值：{formatFixed(row.recommendation.demand_score)}</div>
                     </td>
                     <td>
-                      <div>近 7 天请求：{item.recent_request_count}</div>
-                      <div className="table-note">累计请求：{item.total_request_count}</div>
-                      <div className="table-note">运行实例：{item.running_deployment_count}</div>
-                      <div className="table-note">当前 deployment：{item.active_deployment_ids?.join(", ") || "-"}</div>
+                      <div>{row.currentGpuLabel}</div>
+                      <div className="table-note">Profile：{row.deployment.profile_name}</div>
+                      <div className="table-note">runtime：{row.deployment.profile_runtime || row.deployment.runtime || "-"}</div>
+                      <div className="table-note">近 7 天请求：{row.recommendation.recent_request_count}</div>
                     </td>
                     <td>
-                      <div>风险：{riskLabel[item.cold_start_risk] || item.cold_start_risk}</div>
-                      <div className="table-note">估计冷启动：{item.estimated_cold_start_ms !== null ? `${formatFixed(item.estimated_cold_start_ms, 0)} ms` : "-"}</div>
-                      <div className="table-note">历史 P95：{item.avg_p95_latency_ms !== null ? `${formatFixed(item.avg_p95_latency_ms)} ms` : "-"}</div>
-                      <div className="table-note">成功率：{formatPercent(item.benchmark_success_rate)}</div>
+                      <div>{row.targetGpuLabel}</div>
+                      <div className="table-note">建议 Profile：{row.recommendation.recommended_profile_name}</div>
+                      <div className="table-note">实例数：{row.recommendation.recommended_instance_count}</div>
+                      <div className="table-note">冷启动风险：{riskLabel[row.recommendation.cold_start_risk] || row.recommendation.cold_start_risk}</div>
                     </td>
                     <td>
-                      <div>{item.recommended_profile_name}</div>
-                      <div className="table-note">{item.recommended_use_gpu ? item.recommended_device_label : "CPU"}</div>
-                      <div className="table-note">实例数：{item.recommended_instance_count}</div>
-                    </td>
-                    <td>
-                      <div>{pressureActionLabel[item.gpu_pressure_action] || item.gpu_pressure_action}</div>
-                      <div className="table-note">兜底模板：{item.fallback_profile_name}</div>
+                      <div>{row.optimizationAction}</div>
+                      <div className="table-note">
+                        {row.gpuChanged ? `设备调整为 ${row.targetGpuLabel}` : "设备保持不变"}
+                      </div>
+                      <div className="table-note">
+                        {row.profileChanged ? `Profile 调整为 ${row.recommendation.recommended_profile_name}` : "Profile 保持不变"}
+                      </div>
                       <div className="tag-list">
-                        {(item.policy_tags || []).map((tag) => (
-                          <span className="tag" key={`${item.model_id}-${tag}`}>{tag}</span>
+                        {(row.recommendation.policy_tags || []).map((tag) => (
+                          <span className="tag" key={`${row.deployment.deployment_id}-${tag}`}>{tag}</span>
                         ))}
                       </div>
                     </td>
-                    <td className="limitation-cell">{item.rationale}</td>
+                    <td className="limitation-cell">
+                      {row.recommendation.rationale}
+                      <div className="table-note">GPU 紧张动作：{pressureActionLabel[row.recommendation.gpu_pressure_action] || row.recommendation.gpu_pressure_action}</div>
+                    </td>
                     <td>
                       <div className="actions row-actions">
                         <button
                           className="btn-primary"
                           onClick={() =>
                             void onCreateDeployment({
-                              model_id: item.model_id,
-                              profile_name: item.recommended_profile_name,
+                              model_id: row.recommendation.model_id,
+                              profile_name: row.recommendation.recommended_profile_name,
                               launch_runtime: true,
-                              use_gpu: item.recommended_use_gpu,
-                              gpu_ids: item.recommended_gpu_ids,
-                              notes: `deployment_policy_${item.service_tier}`,
+                              use_gpu: row.recommendation.recommended_use_gpu,
+                              gpu_ids: row.recommendation.recommended_gpu_ids,
+                              notes: `deployment_policy_${row.recommendation.service_tier}`,
                             })
                           }
                           type="button"
                         >
-                          按建议部署
+                          按建议新建
                         </button>
-                        {item.gpu_pressure_action === "migrate_to_cpu" ? (
+                        {row.recommendation.gpu_pressure_action === "migrate_to_cpu" ? (
                           <button
                             onClick={() =>
                               void onCreateDeployment({
-                                model_id: item.model_id,
-                                profile_name: item.fallback_profile_name,
+                                model_id: row.recommendation.model_id,
+                                profile_name: row.recommendation.fallback_profile_name,
                                 launch_runtime: true,
                                 use_gpu: false,
                                 gpu_ids: [],
@@ -3656,7 +3701,7 @@ function DeploymentPolicyPage({
             </table>
           </div>
         ) : (
-          <EmptyState icon="P" title="还没有生成部署建议" note="点击“刷新部署建议”后，这里会出现每个模型的资源分配建议。" />
+          <EmptyState icon="P" title="还没有生成 Deployment 优化方案" note="点击“刷新部署建议”后，这里会按现有 deployment 生成优化方案。" />
         )}
       </section>
     </>
@@ -3735,6 +3780,7 @@ function ModelsPage({
   actionBusy,
   data,
   deploymentForm,
+  deploymentPolicy,
   derived,
   modelImportForm,
   modelTransferItems,
@@ -3752,6 +3798,10 @@ function ModelsPage({
   const deferredSearch = useDeferredValue(search);
   const familyOptions = data.importOptions?.families || [];
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
+  const recommendationByModelId = useMemo(
+    () => new Map((deploymentPolicy?.recommendations || []).map((item) => [item.model_id, item])),
+    [deploymentPolicy],
+  );
 
   const filteredModels = useMemo(() => {
     return [...derived.models]
@@ -4079,6 +4129,14 @@ function ModelsPage({
           {filteredModels.map((model) => {
             const detail = data.modelDetails[model.model_id] || {};
             const manifest = detail.manifest || {};
+            const recommendation = recommendationByModelId.get(model.model_id);
+            const quickDeployProfile = resolveProfileName(
+              model.model_id,
+              data.modelDetails,
+              recommendation?.recommended_profile_name || "default",
+            );
+            const quickDeployUseGpu = recommendation?.recommended_use_gpu ?? true;
+            const quickDeployGpuIds = quickDeployUseGpu ? (recommendation?.recommended_gpu_ids || []) : [];
             return (
               <article className="asset-card" key={model.model_id}>
                 <h4>{model.model_name}</h4>
@@ -4106,9 +4164,13 @@ function ModelsPage({
                     onClick={() =>
                       void onCreateDeployment({
                         model_id: model.model_id,
-                        profile_name: resolveProfileName(model.model_id, data.modelDetails, "default"),
+                        profile_name: quickDeployProfile,
                         launch_runtime: true,
-                        notes: "从模型页快速创建",
+                        use_gpu: quickDeployUseGpu,
+                        gpu_ids: quickDeployGpuIds,
+                        notes: recommendation
+                          ? `从模型页快速创建（按部署策略：${recommendation.recommended_device_label || (quickDeployUseGpu ? "GPU" : "CPU")}）`
+                          : "从模型页快速创建",
                       })
                     }
                     type="button"
