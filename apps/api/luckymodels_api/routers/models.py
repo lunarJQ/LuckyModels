@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from luckymodels_core.dataset_samples import export_dataset_eval_cases, get_dataset_eval_cases
 from luckymodels_core.manifest import load_profile
@@ -127,7 +127,7 @@ def get_model(model_id: str) -> ModelDetail:
 
 
 @router.get("/models/{model_id}/export")
-def export_model(model_id: str) -> StreamingResponse:
+def export_model(model_id: str) -> Response:
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
@@ -138,11 +138,12 @@ def export_model(model_id: str) -> StreamingResponse:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    return StreamingResponse(
-        iter([payload]),
+    return Response(
+        content=payload,
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(payload)),
         },
     )
 

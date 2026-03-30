@@ -49,6 +49,17 @@ const initialData = {
   importOptions: null,
 };
 
+const initialModelTransferStatus = {
+  direction: "",
+  phase: "idle",
+  percent: null,
+  loadedBytes: 0,
+  totalBytes: null,
+  fileName: "",
+  modelId: "",
+  detail: "",
+};
+
 const pageMeta = {
   "/": {
     title: "平台首页",
@@ -139,6 +150,23 @@ function buildInitialModelImportForm(importOptions) {
     alias: "",
     archive: null,
   };
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "-";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function getProfilesForModel(modelId, details) {
@@ -481,6 +509,7 @@ export default function App() {
   const [demoRunning, setDemoRunning] = useState(false);
   const [actionBusy, setActionBusy] = useState({});
   const [modelImportForm, setModelImportForm] = useState(buildInitialModelImportForm(null));
+  const [modelTransferStatus, setModelTransferStatus] = useState(initialModelTransferStatus);
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
@@ -741,28 +770,71 @@ export default function App() {
       setNotice({ type: "error", text: "模式A需要填写数据集名称，平台才能生成统一命名。" });
       return;
     }
-
-    const result = await runAction(
-      "import-model",
-      () =>
-        importModelArchive({
-          archive: modelImportForm.archive,
-          importMode: modelImportForm.importMode,
-          modelFamily: modelImportForm.modelFamily,
-          language: modelImportForm.language,
-          datasetName: modelImportForm.datasetName.trim(),
-          version: modelImportForm.version.trim() || "v1",
-          modelName: modelImportForm.modelName.trim(),
-          backbone: modelImportForm.backbone.trim(),
-          alias: modelImportForm.alias.trim(),
-        }),
-      "模型制品已导入。",
-    );
-    setModelImportForm(buildInitialModelImportForm(data.importOptions));
-    setNotice({
-      type: "ok",
-      text: `模型制品已导入：${result.model_id}。命名规则为 模型家族-语言-数据集[-别名]-版本。`,
+    setActionBusy((current) => ({ ...current, "import-model": true }));
+    setNotice({ type: "ok", text: "" });
+    setModelTransferStatus({
+      direction: "upload",
+      phase: "running",
+      percent: 0,
+      loadedBytes: 0,
+      totalBytes: modelImportForm.archive.size || null,
+      fileName: modelImportForm.archive.name,
+      modelId: "",
+      detail: "正在上传模型压缩包到 LuckyModels。",
     });
+    try {
+      const result = await importModelArchive({
+        archive: modelImportForm.archive,
+        importMode: modelImportForm.importMode,
+        modelFamily: modelImportForm.modelFamily,
+        language: modelImportForm.language,
+        datasetName: modelImportForm.datasetName.trim(),
+        version: modelImportForm.version.trim() || "v1",
+        modelName: modelImportForm.modelName.trim(),
+        backbone: modelImportForm.backbone.trim(),
+        alias: modelImportForm.alias.trim(),
+        onUploadProgress: (progress) => {
+          setModelTransferStatus((current) => ({
+            ...current,
+            direction: "upload",
+            phase: "running",
+            percent: progress.percent,
+            loadedBytes: progress.loaded,
+            totalBytes: progress.total,
+            detail: progress.percent === 100
+              ? "上传完成，正在由平台生成标准模型包。"
+              : "正在上传模型压缩包到 LuckyModels。",
+          }));
+        },
+      });
+      await refreshAll({ silent: true });
+      setModelImportForm(buildInitialModelImportForm(data.importOptions));
+      setModelTransferStatus({
+        direction: "upload",
+        phase: "completed",
+        percent: 100,
+        loadedBytes: modelImportForm.archive.size || 0,
+        totalBytes: modelImportForm.archive.size || null,
+        fileName: modelImportForm.archive.name,
+        modelId: result.model_id,
+        detail: `模型制品已导入：${result.model_id}`,
+      });
+      setNotice({
+        type: "ok",
+        text: `模型制品已导入：${result.model_id}。命名规则为 模型家族-语言-数据集[-别名]-版本。`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setModelTransferStatus((current) => ({
+        ...current,
+        direction: "upload",
+        phase: "failed",
+        detail: message,
+      }));
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "import-model": false }));
+    }
   }
 
   async function handleDeploymentAction(actionName, deploymentId) {
@@ -1039,12 +1111,52 @@ export default function App() {
 
   async function handleExportModelPackage(modelId) {
     setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: true }));
+    setModelTransferStatus({
+      direction: "download",
+      phase: "running",
+      percent: 0,
+      loadedBytes: 0,
+      totalBytes: null,
+      fileName: `${modelId}.zip`,
+      modelId,
+      detail: `正在导出模型制品：${modelId}`,
+    });
     try {
-      const { blob, filename } = await exportModelPackage(modelId);
+      const { blob, filename } = await exportModelPackage(modelId, (progress) => {
+        setModelTransferStatus((current) => ({
+          ...current,
+          direction: "download",
+          phase: "running",
+          percent: progress.percent,
+          loadedBytes: progress.loaded,
+          totalBytes: progress.total,
+          fileName: current.fileName || `${modelId}.zip`,
+          modelId,
+          detail: "正在从平台下载模型制品。",
+        }));
+      });
       downloadBlobFile(filename || `${modelId}.zip`, blob);
+      setModelTransferStatus((current) => ({
+        ...current,
+        direction: "download",
+        phase: "completed",
+        percent: 100,
+        loadedBytes: current.totalBytes || blob.size || current.loadedBytes,
+        totalBytes: current.totalBytes || blob.size || null,
+        fileName: filename || `${modelId}.zip`,
+        modelId,
+        detail: `模型制品已导出：${modelId}`,
+      }));
       setNotice({ type: "ok", text: `已导出模型制品包：${modelId}` });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      setModelTransferStatus((current) => ({
+        ...current,
+        direction: "download",
+        phase: "failed",
+        modelId,
+        detail: message,
+      }));
       setNotice({ type: "error", text: message });
     } finally {
       setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: false }));
@@ -1154,6 +1266,7 @@ export default function App() {
       predictForm={predictForm}
       predictResult={predictResult}
       modelImportForm={modelImportForm}
+      modelTransferStatus={modelTransferStatus}
       onModelImportFormChange={setModelImportForm}
       deploymentPolicy={deploymentPolicy}
       deploymentPolicyAutomation={deploymentPolicyAutomation}
@@ -1351,6 +1464,7 @@ function Shell(props) {
     predictForm,
     predictResult,
     modelImportForm,
+    modelTransferStatus,
     onModelImportFormChange,
     deploymentPolicy,
     deploymentPolicyAutomation,
@@ -1563,6 +1677,7 @@ function Shell(props) {
                 onCreateDeployment={onCreateDeployment}
                 onDeploymentFormChange={onDeploymentFormChange}
                 modelImportForm={modelImportForm}
+                modelTransferStatus={modelTransferStatus}
                 onExportModelPackage={onExportModelPackage}
                 onImportModel={onImportModel}
                 onModelImportFormChange={onModelImportFormChange}
@@ -2833,6 +2948,7 @@ function ModelsPage({
   deploymentForm,
   derived,
   modelImportForm,
+  modelTransferStatus,
   onCreateDeployment,
   onDeploymentFormChange,
   onExportModelPackage,
@@ -2885,6 +3001,34 @@ function ModelsPage({
         <div className="detail-note upload-note">
           导入命名规则：模型家族-语言-数据集[-别名]-版本，例如 <span className="mono">casrel-zh-duie-myexp-v1</span>。
         </div>
+        {modelTransferStatus.phase !== "idle" ? (
+          <div className={`transfer-card transfer-${modelTransferStatus.phase}`}>
+            <div className="transfer-head">
+              <strong>{modelTransferStatus.direction === "download" ? "模型制品下载进度" : "模型制品上传进度"}</strong>
+              <span>
+                {modelTransferStatus.percent !== null
+                  ? `${modelTransferStatus.percent}%`
+                  : modelTransferStatus.phase === "running"
+                    ? "处理中"
+                    : ""}
+              </span>
+            </div>
+            <div className="transfer-track">
+              <div
+                className={`transfer-fill ${modelTransferStatus.percent === null ? "transfer-fill-indeterminate" : ""}`}
+                style={{ width: `${modelTransferStatus.percent ?? 35}%` }}
+              />
+            </div>
+            <div className="transfer-meta">
+              <span>{modelTransferStatus.fileName || modelTransferStatus.modelId || "-"}</span>
+              <span>
+                {formatBytes(modelTransferStatus.loadedBytes)}
+                {modelTransferStatus.totalBytes ? ` / ${formatBytes(modelTransferStatus.totalBytes)}` : ""}
+              </span>
+            </div>
+            <div className="detail-note">{modelTransferStatus.detail}</div>
+          </div>
+        ) : null}
         <div className="form-grid">
           <label className="stack-field">
             <span>导入模式</span>

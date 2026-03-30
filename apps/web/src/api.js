@@ -19,6 +19,14 @@ export async function fetchBlob(url, options) {
   };
 }
 
+export function xhrJSON(url, options = {}) {
+  return xhrRequest(url, { ...options, responseType: "json" });
+}
+
+export function xhrBlob(url, options = {}) {
+  return xhrRequest(url, { ...options, responseType: "blob" });
+}
+
 export async function fetchAuthSession() {
   return fetchJSON("/api/v1/auth/session");
 }
@@ -168,14 +176,18 @@ export async function importModelArchive(payload) {
   if (payload.modelName) formData.append("model_name", payload.modelName);
   if (payload.backbone) formData.append("backbone", payload.backbone);
   if (payload.alias) formData.append("alias", payload.alias);
-  return fetchJSON("/api/v1/models/import", {
+  return xhrJSON("/api/v1/models/import", {
     method: "POST",
     body: formData,
+    onUploadProgress: payload.onUploadProgress,
   });
 }
 
-export async function exportModelPackage(modelId) {
-  return fetchBlob(`/api/v1/models/${encodeURIComponent(modelId)}/export`);
+export async function exportModelPackage(modelId, onDownloadProgress) {
+  return xhrBlob(`/api/v1/models/${encodeURIComponent(modelId)}/export`, {
+    method: "GET",
+    onDownloadProgress,
+  });
 }
 
 export async function predictWithDeployment(deploymentId, payload) {
@@ -267,4 +279,86 @@ function parseFilenameFromDisposition(value) {
     return "";
   }
   return plainMatch[1].trim();
+}
+
+function xhrRequest(url, options = {}) {
+  const {
+    method = "GET",
+    body,
+    headers = {},
+    responseType = "json",
+    onUploadProgress,
+    onDownloadProgress,
+  } = options;
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.withCredentials = true;
+    if (responseType === "blob") {
+      xhr.responseType = "blob";
+    }
+
+    Object.entries(headers).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        xhr.setRequestHeader(key, value);
+      }
+    });
+
+    xhr.upload.onprogress = (event) => {
+      if (typeof onUploadProgress === "function") {
+        onUploadProgress(toProgressPayload(event));
+      }
+    };
+
+    xhr.onprogress = (event) => {
+      if (typeof onDownloadProgress === "function") {
+        onDownloadProgress(toProgressPayload(event));
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("网络请求失败"));
+    };
+
+    xhr.onabort = () => {
+      reject(new Error("请求已取消"));
+    };
+
+    xhr.onload = () => {
+      const ok = xhr.status >= 200 && xhr.status < 300;
+      if (!ok) {
+        const text = xhr.responseType === "blob" ? "" : xhr.responseText;
+        reject(new Error(`${xhr.status} ${xhr.statusText}: ${text}`));
+        return;
+      }
+
+      try {
+        if (responseType === "blob") {
+          resolve({
+            blob: xhr.response,
+            filename: parseFilenameFromDisposition(xhr.getResponseHeader("content-disposition")),
+          });
+          return;
+        }
+        const text = xhr.responseText || "";
+        resolve(text ? JSON.parse(text) : null);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    xhr.send(body);
+  });
+}
+
+function toProgressPayload(event) {
+  const total = event.lengthComputable ? event.total : null;
+  const loaded = event.loaded ?? 0;
+  return {
+    loaded,
+    total,
+    lengthComputable: Boolean(event.lengthComputable),
+    percent: total && total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : null,
+  };
 }
