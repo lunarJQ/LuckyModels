@@ -190,6 +190,12 @@ export async function exportModelPackage(modelId, onDownloadProgress) {
   });
 }
 
+export async function deleteModelPackage(modelId) {
+  return fetchJSON(`/api/v1/models/${encodeURIComponent(modelId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function predictWithDeployment(deploymentId, payload) {
   return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/predict`, {
     method: "POST",

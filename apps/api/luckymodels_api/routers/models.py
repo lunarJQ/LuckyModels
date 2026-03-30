@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from luckymodels_core.dataset_samples import export_dataset_eval_cases, get_dataset_eval_cases
+from luckymodels_core.launcher import stop_runtime_process
 from luckymodels_core.manifest import load_profile
 from luckymodels_core.model_package_manager import (
     export_model_package,
@@ -15,6 +16,7 @@ from luckymodels_core.model_package_manager import (
 from luckymodels_core.schemas import (
     CapabilityMatrixRow,
     ModelDetail,
+    ModelDeleteResult,
     ModelImportOptions,
     ModelImportResult,
     ModelSummary,
@@ -22,7 +24,7 @@ from luckymodels_core.schemas import (
 )
 from luckymodels_core.settings import get_settings
 
-from ..dependencies import get_benchmark_store, get_deployment_store, get_registry
+from ..dependencies import get_benchmark_store, get_deployment_store, get_prediction_store, get_registry
 
 router = APIRouter(tags=["models"])
 
@@ -66,6 +68,7 @@ def import_model(
             archive_path=temp_archive_path,
             archive_filename=archive.filename or temp_archive_path.name,
             import_mode=import_mode,
+            source_type="user_upload",
             model_family=model_family,
             language=language,
             dataset_name=dataset_name,
@@ -124,6 +127,65 @@ def get_model(model_id: str) -> ModelDetail:
         return get_registry().get_model(model_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/models/{model_id}", response_model=ModelDeleteResult)
+def delete_model(model_id: str) -> ModelDeleteResult:
+    registry = get_registry()
+    try:
+        model = registry.get_model(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not model.summary.deletable:
+        raise HTTPException(status_code=403, detail=f"模型制品不可删除：{model_id}（仅用户上传模型支持删除）")
+
+    settings = get_settings()
+    package_root = Path(model.summary.package_root).resolve()
+    artifacts_root = settings.artifacts_root.resolve()
+    try:
+        package_root.relative_to(artifacts_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"非法模型包路径：{package_root}") from exc
+
+    deployment_store = get_deployment_store()
+    benchmark_store = get_benchmark_store()
+    prediction_store = get_prediction_store()
+
+    stopped_runtime_count = 0
+    deleted_log_file_count = 0
+
+    deployments = [item for item in deployment_store.list() if item.model_id == model_id]
+    for deployment in deployments:
+        if deployment.pid and stop_runtime_process(deployment.pid):
+            stopped_runtime_count += 1
+        if deployment.log_path:
+            log_path = Path(deployment.log_path)
+            if log_path.exists():
+                log_path.unlink(missing_ok=True)
+                deleted_log_file_count += 1
+        deployment_store.delete(deployment.deployment_id)
+
+    benchmarks = [item for item in benchmark_store.list() if item.model_id == model_id]
+    for benchmark in benchmarks:
+        benchmark_store.delete(benchmark.benchmark_id)
+
+    prediction_archives = [item for item in prediction_store.list() if item.model_id == model_id]
+    for archive in prediction_archives:
+        prediction_store.delete(archive.archive_id)
+
+    if package_root.exists():
+        shutil.rmtree(package_root)
+
+    return ModelDeleteResult(
+        model_id=model_id,
+        deleted_deployment_count=len(deployments),
+        stopped_runtime_count=stopped_runtime_count,
+        deleted_benchmark_count=len(benchmarks),
+        deleted_prediction_archive_count=len(prediction_archives),
+        deleted_log_file_count=deleted_log_file_count,
+        removed_package_root=str(package_root),
+    )
 
 
 @router.get("/models/{model_id}/export")

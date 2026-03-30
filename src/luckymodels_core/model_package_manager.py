@@ -27,6 +27,7 @@ from .settings import Settings
 
 IMPORT_MODE_AUTO_PACKAGE = "auto_package"
 IMPORT_MODE_DIRECT_IMPORT = "direct_import"
+PACKAGE_METADATA_FILENAME = ".luckymodels_package.json"
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,7 @@ def import_model_archive(
     archive_path: Path,
     archive_filename: str,
     import_mode: str,
+    source_type: str = "builtin",
     model_family: str | None = None,
     language: str | None = None,
     dataset_name: str | None = None,
@@ -282,6 +284,7 @@ def import_model_archive(
                 settings=settings,
                 extracted_root=extracted_root,
                 archive_filename=archive_filename,
+                source_type=source_type,
                 model_family=model_family,
                 language=language,
                 dataset_name=dataset_name,
@@ -295,6 +298,7 @@ def import_model_archive(
             settings=settings,
             extracted_root=extracted_root,
             archive_filename=archive_filename,
+            source_type=source_type,
             model_family=model_family,
             language=language,
             dataset_name=dataset_name,
@@ -376,6 +380,9 @@ def export_model_package(model: ModelDetail) -> tuple[str, bytes]:
         readme_path = package_root / "README.md"
         if readme_path.exists():
             archive.write(readme_path, (root_prefix / "README.md").as_posix())
+        metadata_path = package_root / PACKAGE_METADATA_FILENAME
+        if metadata_path.exists():
+            archive.write(metadata_path, (root_prefix / PACKAGE_METADATA_FILENAME).as_posix())
     return filename, buffer.getvalue()
 
 
@@ -384,6 +391,7 @@ def _auto_package_raw_archive(
     settings: Settings,
     extracted_root: Path,
     archive_filename: str,
+    source_type: str,
     model_family: str | None,
     language: str | None,
     dataset_name: str | None,
@@ -478,6 +486,12 @@ def _auto_package_raw_archive(
         )
 
     _write_yaml(target_root / "manifest.yaml", manifest_data)
+    _write_package_metadata(
+        target_root=target_root,
+        origin=source_type,
+        import_mode=IMPORT_MODE_AUTO_PACKAGE,
+        archive_filename=archive_filename,
+    )
     loaded = load_manifest(target_root / "manifest.yaml")
     validate_loaded_manifest(loaded)
     return ModelImportResult(
@@ -500,6 +514,7 @@ def _direct_import_standard_package(
     settings: Settings,
     extracted_root: Path,
     archive_filename: str,
+    source_type: str,
     model_family: str | None,
     language: str | None,
     dataset_name: str | None,
@@ -547,6 +562,12 @@ def _direct_import_standard_package(
     runtime_notes.append(f"Imported via LuckyModels 模式B，源压缩包：{archive_filename}。")
     manifest_data["runtime_notes"] = _unique_text_items(runtime_notes)
     _write_yaml(target_root / "manifest.yaml", manifest_data)
+    _write_package_metadata(
+        target_root=target_root,
+        origin=source_type,
+        import_mode=IMPORT_MODE_DIRECT_IMPORT,
+        archive_filename=archive_filename,
+    )
 
     direct_loaded = load_manifest(target_root / "manifest.yaml")
     validate_loaded_manifest(direct_loaded)
@@ -697,6 +718,58 @@ def _write_readme(
         ]
     )
     (target_root / "README.md").write_text(readme, encoding="utf-8")
+
+
+def read_package_metadata(package_root: str | Path) -> dict[str, Any]:
+    package_root = Path(package_root)
+    metadata_path = package_root / PACKAGE_METADATA_FILENAME
+    if not metadata_path.exists():
+        return {
+            "origin": "builtin",
+            "origin_label": _origin_label("builtin"),
+            "deletable": False,
+        }
+    try:
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except Exception:
+        return {
+            "origin": "builtin",
+            "origin_label": _origin_label("builtin"),
+            "deletable": False,
+        }
+
+    origin = str(payload.get("origin") or "builtin").strip().lower() or "builtin"
+    normalized = {
+        **payload,
+        "origin": origin,
+        "origin_label": _origin_label(origin),
+        "deletable": bool(payload.get("deletable")) if origin == "user_upload" else False,
+    }
+    return normalized
+
+
+def _write_package_metadata(
+    *,
+    target_root: Path,
+    origin: str,
+    import_mode: str,
+    archive_filename: str,
+) -> None:
+    normalized_origin = str(origin or "builtin").strip().lower() or "builtin"
+    payload = {
+        "origin": normalized_origin,
+        "origin_label": _origin_label(normalized_origin),
+        "deletable": normalized_origin == "user_upload",
+        "import_mode": import_mode,
+        "archive_filename": archive_filename,
+    }
+    metadata_path = target_root / PACKAGE_METADATA_FILENAME
+    metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _origin_label(origin: str) -> str:
+    return "用户上传" if str(origin or "").strip().lower() == "user_upload" else "本机自带"
 
 
 def _build_profile_mapping(profiles_dir: Path) -> dict[str, str]:

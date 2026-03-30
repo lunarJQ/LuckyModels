@@ -7,6 +7,7 @@ import {
   createDeployment,
   deleteBenchmark,
   deleteDeployment,
+  deleteModelPackage,
   deletePredictionArchive,
   exportModelPackage,
   fetchAuthSession,
@@ -1163,6 +1164,32 @@ export default function App() {
     }
   }
 
+  async function handleDeleteModelPackage(modelId) {
+    const detail = data.modelDetails[modelId];
+    const originLabel = detail?.summary?.package_origin_label || "本机自带";
+    if (!detail?.summary?.deletable) {
+      setNotice({ type: "error", text: `当前模型制品不可删除：${modelId}（来源：${originLabel}）` });
+      return;
+    }
+    if (!window.confirm(`确认删除模型制品 ${modelId} 吗？关联部署、基准和预测归档会一并删除。`)) {
+      return;
+    }
+    const result = await runAction(
+      `delete-model-${modelId}`,
+      () => deleteModelPackage(modelId),
+      `模型制品已删除：${modelId}`,
+    );
+    setPredictResult((current) => (current?.model_id === modelId ? null : current));
+    setSelectedHealth(null);
+    setSelectedLogs(null);
+    if (result) {
+      setNotice({
+        type: "ok",
+        text: `模型制品已删除：${modelId}，同步清理部署 ${result.deleted_deployment_count} 条、基准 ${result.deleted_benchmark_count} 条、预测归档 ${result.deleted_prediction_archive_count} 条。`,
+      });
+    }
+  }
+
   const derived = useMemo(() => {
     const summary = data.summary || { model_count: 0, deployment_count: 0, benchmark_count: 0, user_count: 0, admin_count: 0 };
     const models = data.models || [];
@@ -1242,6 +1269,7 @@ export default function App() {
       onExportModelManifest={handleExportModelManifest}
       onExportModelPackage={handleExportModelPackage}
       onExportModelProfiles={handleExportModelProfiles}
+      onDeleteModelPackage={handleDeleteModelPackage}
       onExportPredictResult={(value) =>
         downloadJsonFile(
           `${value?.model_id || "predict"}-${value?.archive_id || "result"}.json`,
@@ -1442,6 +1470,7 @@ function Shell(props) {
     onExportModelManifest,
     onExportModelPackage,
     onExportModelProfiles,
+    onDeleteModelPackage,
     onExportPredictResult,
     onImportModel,
     onCreateAccessUser,
@@ -1678,6 +1707,7 @@ function Shell(props) {
                 onDeploymentFormChange={onDeploymentFormChange}
                 modelImportForm={modelImportForm}
                 modelTransferStatus={modelTransferStatus}
+                onDeleteModelPackage={onDeleteModelPackage}
                 onExportModelPackage={onExportModelPackage}
                 onImportModel={onImportModel}
                 onModelImportFormChange={onModelImportFormChange}
@@ -1687,6 +1717,8 @@ function Shell(props) {
               "/artifacts",
               <ArtifactsPage
                 data={data}
+                actionBusy={actionBusy}
+                onDeleteModelPackage={onDeleteModelPackage}
                 onExportModelManifest={onExportModelManifest}
                 onExportModelProfiles={onExportModelProfiles}
               />,
@@ -2949,6 +2981,7 @@ function ModelsPage({
   derived,
   modelImportForm,
   modelTransferStatus,
+  onDeleteModelPackage,
   onCreateDeployment,
   onDeploymentFormChange,
   onExportModelPackage,
@@ -3295,6 +3328,7 @@ function ModelsPage({
                 </div>
                 <div className="tag-list">
                   <span className="tag">{formatStatusLabel(model.runtime_status)}</span>
+                  <span className="tag">{model.package_origin_label || "本机自带"}</span>
                   <span className="tag">{manifest.framework || "-"}</span>
                   <span className="tag">{manifest.stage_count || "-" } 个阶段</span>
                 </div>
@@ -3321,6 +3355,20 @@ function ModelsPage({
                   >
                     导出制品
                   </button>
+                  {model.deletable ? (
+                    <button
+                      className="btn-danger"
+                      disabled={actionBusy[`delete-model-${model.model_id}`]}
+                      onClick={() => void onDeleteModelPackage(model.model_id)}
+                      type="button"
+                    >
+                      {actionBusy[`delete-model-${model.model_id}`] ? "删除中" : "删除制品"}
+                    </button>
+                  ) : (
+                    <button disabled title="本机自带模型不可删除" type="button">
+                      本机自带
+                    </button>
+                  )}
                 </div>
               </article>
             );
@@ -3497,7 +3545,7 @@ function CapabilityMatrixPage({ derived }) {
   );
 }
 
-function ArtifactsPage({ data, onExportModelManifest, onExportModelProfiles }) {
+function ArtifactsPage({ actionBusy, data, onDeleteModelPackage, onExportModelManifest, onExportModelProfiles }) {
   return (
     <section className="page-shell card section-shell">
       <SectionHeader kicker="制品清单" title="制品包清单" note="展示 manifest 与解析后的制品路径，便于检查平台识别结果。" />
@@ -3514,11 +3562,14 @@ function ArtifactsPage({ data, onExportModelManifest, onExportModelProfiles }) {
             <div className="list-card-body">
               package_root：<span className="mono">{detail.summary?.package_root || "-"}</span>
               <br />
+              来源：{detail.summary?.package_origin_label || "本机自带"}
+              <br />
               tokenizer：{detail.manifest?.tokenizer?.type || "-"}
               <br />
               relation_map：{detail.manifest?.labels?.relation_map || "-"}
             </div>
             <div className="tag-list">
+              <span className="tag">{detail.summary?.package_origin_label || "本机自带"}</span>
               {Object.entries(detail.resolved_artifacts || {}).map(([name, value]) => (
                 <span className="tag" key={`${detail.summary?.model_id}-${name}`}>
                   {name}: {value}
@@ -3528,6 +3579,18 @@ function ArtifactsPage({ data, onExportModelManifest, onExportModelProfiles }) {
             <div className="actions inline-actions">
               <button onClick={() => void onExportModelManifest(detail.summary?.model_id)} type="button">导出 manifest</button>
               <button onClick={() => void onExportModelProfiles(detail.summary?.model_id)} type="button">导出配置模板</button>
+              {detail.summary?.deletable ? (
+                <button
+                  className="btn-danger"
+                  disabled={actionBusy[`delete-model-${detail.summary?.model_id}`]}
+                  onClick={() => void onDeleteModelPackage(detail.summary?.model_id)}
+                  type="button"
+                >
+                  {actionBusy[`delete-model-${detail.summary?.model_id}`] ? "删除中" : "删除制品"}
+                </button>
+              ) : (
+                <button disabled title="本机自带模型不可删除" type="button">本机自带</button>
+              )}
             </div>
           </article>
         ))}

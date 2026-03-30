@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .adapters.factory import has_adapter
 from .manifest import load_manifest, validate_loaded_manifest
+from .model_package_manager import read_package_metadata
 from .schemas import LoadedManifest, ModelDetail, ModelSummary
 
 
@@ -34,6 +35,7 @@ class ArtifactRegistry:
     @staticmethod
     def _to_summary(item: LoadedManifest) -> ModelSummary:
         manifest = item.manifest
+        metadata = read_package_metadata(item.package_root)
         adapter_available = has_adapter(manifest.runtime_adapter)
         runtime_status = (
             "inference_ready"
@@ -56,6 +58,9 @@ class ArtifactRegistry:
             runtime_status=runtime_status,
             runtime_adapter=manifest.runtime_adapter,
             package_root=item.package_root,
+            package_origin=str(metadata.get("origin") or "builtin"),
+            package_origin_label=str(metadata.get("origin_label") or "本机自带"),
+            deletable=bool(metadata.get("deletable")),
         )
 
     def _to_detail(self, item: LoadedManifest) -> ModelDetail:
@@ -66,4 +71,5 @@ class ArtifactRegistry:
             resolved_profiles=item.resolved_profiles,
             resolved_tokenizer=item.resolved_tokenizer,
             resolved_labels=item.resolved_labels,
+            package_metadata=read_package_metadata(item.package_root),
         )

@@ -97,6 +97,9 @@ class ModelSummary(BaseModel):
     runtime_status: str = "inference_ready"
     runtime_adapter: str
     package_root: str
+    package_origin: str = "builtin"
+    package_origin_label: str = "本机自带"
+    deletable: bool = False
 
 
 class ModelDetail(BaseModel):
@@ -106,6 +109,7 @@ class ModelDetail(BaseModel):
     resolved_profiles: dict[str, str]
     resolved_tokenizer: dict[str, str]
     resolved_labels: dict[str, str]
+    package_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelImportModeOption(BaseModel):
@@ -138,6 +142,16 @@ class ModelImportResult(BaseModel):
     archive_filename: str | None = None
     detected_files: dict[str, str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+
+
+class ModelDeleteResult(BaseModel):
+    model_id: str
+    deleted_deployment_count: int = 0
+    stopped_runtime_count: int = 0
+    deleted_benchmark_count: int = 0
+    deleted_prediction_archive_count: int = 0
+    deleted_log_file_count: int = 0
+    removed_package_root: str
 
 
 class CapabilityMatrixRow(BaseModel):
