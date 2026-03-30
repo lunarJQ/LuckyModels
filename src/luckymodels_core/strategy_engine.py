@@ -19,8 +19,16 @@ from .schemas import (
     DeploymentRecord,
     ModelSummary,
     PredictionArchiveRecord,
+    TaskRoutingAdaptiveWeightProfile,
     TaskRoutingCandidate,
+    TaskRoutingDecisionRecord,
+    TaskRoutingDecisionSummary,
+    TaskRoutingExecutionPathSummary,
     TaskRoutingExecution,
+    TaskRoutingFeedbackOverview,
+    TaskRoutingFeedbackRecord,
+    TaskRoutingModelAdoptionSummary,
+    TaskRoutingObjectiveFeedbackSummary,
     TaskRoutingRequest,
     TaskRoutingResponse,
 )
@@ -33,10 +41,45 @@ def run_task_routing_strategy(
     deployments: list[DeploymentRecord],
     benchmarks: list[BenchmarkRecord],
     prediction_archives: list[PredictionArchiveRecord],
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
     activity_tracker: InferenceActivityTracker | None = None,
 ) -> TaskRoutingResponse:
     inferred_language = request.language or infer_language(request.text)
     difficulty = estimate_difficulty(request.text)
+    context_features = analyze_request_context(
+        text=request.text,
+        scene=request.scene,
+        inferred_language=inferred_language,
+    )
+    base_objective_weights = _build_objective_weights(
+        objective=request.objective,
+        difficulty=difficulty,
+        context_features=context_features,
+    )
+    benchmark_adjustments = _build_benchmark_weight_adjustments(
+        models=models,
+        deployments=deployments,
+        benchmarks=benchmarks,
+        requested_language=inferred_language,
+        context_features=context_features,
+    )
+    feedback_adjustments, adaptation_reasons = _build_feedback_weight_adjustments(
+        objective=request.objective,
+        context_features=context_features,
+        decision_records=decision_records,
+        feedback_records=feedback_records,
+    )
+    objective_weights = _apply_adaptive_weight_adjustments(
+        base_weights=base_objective_weights,
+        benchmark_adjustments=benchmark_adjustments,
+        feedback_adjustments=feedback_adjustments,
+    )
+    adaptation_reasons = _merge_adaptation_reasons(
+        benchmark_adjustments=benchmark_adjustments,
+        feedback_adjustments=feedback_adjustments,
+        feedback_reasons=adaptation_reasons,
+    )
     candidates = _build_task_candidates(
         models=models,
         deployments=deployments,
@@ -45,23 +88,28 @@ def run_task_routing_strategy(
         requested_language=inferred_language,
         candidate_model_ids=request.candidate_model_ids,
         objective=request.objective,
+        context_features=context_features,
+        objective_weights=objective_weights,
     )
 
-    strategy_mode, selected_candidates = _select_task_candidates(
+    strategy_mode, execution_path, fusion_policy, selected_candidates = _select_task_candidates(
         candidates,
         objective=request.objective,
         difficulty=difficulty,
+        context_features=context_features,
         max_models=max(1, min(int(request.max_models or 3), 5)),
     )
 
     execution_results: list[TaskRoutingExecution] = []
-    for candidate in selected_candidates:
+    execution_roles = _resolve_execution_roles(execution_path, len(selected_candidates))
+    for candidate, execution_role in zip(selected_candidates, execution_roles, strict=False):
         result = _predict_with_runtime(
             candidate,
             text=request.text,
             scene=request.scene,
             options=request.options,
             activity_tracker=activity_tracker,
+            execution_role=execution_role,
         )
         execution_results.append(result)
 
@@ -69,13 +117,26 @@ def run_task_routing_strategy(
         execution_results,
         objective=request.objective,
         inferred_language=inferred_language,
+        fusion_policy=fusion_policy,
     )
 
     explanation = build_task_strategy_explanation(
         objective=request.objective,
         difficulty=difficulty,
         strategy_mode=strategy_mode,
+        execution_path=execution_path,
+        fusion_policy=fusion_policy,
+        context_features=context_features,
         selected_candidates=selected_candidates,
+    )
+    decision_trace = _build_task_decision_trace(
+        objective=request.objective,
+        difficulty=difficulty,
+        context_features=context_features,
+        objective_weights=objective_weights,
+        selected_candidates=selected_candidates,
+        execution_path=execution_path,
+        fusion_policy=fusion_policy,
     )
 
     return TaskRoutingResponse(
@@ -84,7 +145,14 @@ def run_task_routing_strategy(
         inferred_language=inferred_language,
         difficulty=difficulty,
         strategy_mode=strategy_mode,
+        execution_path=execution_path,
+        fusion_policy=fusion_policy,
         explanation=explanation,
+        context_features=context_features,
+        objective_weights=objective_weights,
+        adaptive_adjustments=_sum_weight_adjustments(benchmark_adjustments, feedback_adjustments),
+        adaptation_reasons=adaptation_reasons,
+        decision_trace=decision_trace,
         candidate_count=len(candidates),
         selected_count=len(selected_candidates),
         selected_deployments=selected_candidates,
@@ -302,27 +370,380 @@ def estimate_difficulty(text: str) -> str:
     return "hard"
 
 
+def analyze_request_context(
+    *,
+    text: str,
+    scene: str | None,
+    inferred_language: str,
+) -> dict[str, Any]:
+    normalized = str(text or "").strip()
+    clause_count = len(re.findall(r"[，。！？；,.!?;:]", normalized))
+    tokens = [item for item in re.split(r"\s+", normalized) if item]
+    capitalized_tokens = len(re.findall(r"\b[A-Z][a-zA-Z0-9_-]+\b", normalized))
+    quoted_entities = len(re.findall(r"[\"“”'‘’][^\"“”'‘’]{1,40}[\"“”'‘’]", normalized))
+    numeric_mentions = len(re.findall(r"\d+(?:\.\d+)?", normalized))
+    entity_hint_count = capitalized_tokens + quoted_entities + numeric_mentions
+    domain = infer_domain(text=normalized, scene=scene)
+    return {
+        "text_length": len(normalized),
+        "token_count": len(tokens),
+        "clause_count": clause_count,
+        "entity_hint_count": entity_hint_count,
+        "numeric_mentions": numeric_mentions,
+        "domain": domain,
+        "scene": scene or "",
+        "language": inferred_language,
+    }
+
+
+def infer_domain(*, text: str, scene: str | None) -> str:
+    joined = f"{scene or ''} {text or ''}".lower()
+    industrial_keywords = [
+        "equipment", "machine", "fault", "device", "manufacturing", "sensor",
+        "装备", "设备", "制造", "故障", "部件", "工厂", "产线",
+    ]
+    scientific_keywords = [
+        "dataset", "algorithm", "method", "task", "paper", "model", "science",
+        "数据集", "算法", "方法", "模型", "论文", "实验", "研究",
+    ]
+    if any(keyword in joined for keyword in industrial_keywords):
+        return "industrial"
+    if any(keyword in joined for keyword in scientific_keywords):
+        return "scientific"
+    return "general"
+
+
+def _build_objective_weights(
+    *,
+    objective: str,
+    difficulty: str,
+    context_features: dict[str, Any],
+) -> dict[str, float]:
+    weights = {
+        "accuracy": 0.28,
+        "latency": 0.18,
+        "coverage": 0.18,
+        "stability": 0.14,
+        "resource": 0.10,
+        "domain": 0.12,
+    }
+    presets = {
+        "accuracy": {"accuracy": 0.38, "stability": 0.22, "coverage": 0.14, "latency": 0.10, "resource": 0.04, "domain": 0.12},
+        "coverage": {"accuracy": 0.18, "stability": 0.10, "coverage": 0.34, "latency": 0.08, "resource": 0.06, "domain": 0.24},
+        "latency": {"accuracy": 0.12, "stability": 0.12, "coverage": 0.08, "latency": 0.48, "resource": 0.14, "domain": 0.06},
+        "balanced": weights,
+        "resource": {"accuracy": 0.14, "stability": 0.12, "coverage": 0.08, "latency": 0.18, "resource": 0.38, "domain": 0.10},
+        "domain": {"accuracy": 0.20, "stability": 0.10, "coverage": 0.12, "latency": 0.08, "resource": 0.06, "domain": 0.44},
+    }
+    weights = dict(presets.get(objective, weights))
+    if difficulty == "hard":
+        weights["accuracy"] += 0.04
+        weights["coverage"] += 0.03
+        weights["latency"] -= 0.03
+        weights["resource"] -= 0.02
+    if context_features.get("domain") in {"industrial", "scientific"}:
+        weights["domain"] += 0.04
+        weights["latency"] -= 0.02
+        weights["resource"] -= 0.02
+    total = sum(max(value, 0.0) for value in weights.values()) or 1.0
+    return {key: round(max(value, 0.0) / total, 4) for key, value in weights.items()}
+
+
+def _zero_weight_vector() -> dict[str, float]:
+    return {
+        "accuracy": 0.0,
+        "latency": 0.0,
+        "coverage": 0.0,
+        "stability": 0.0,
+        "resource": 0.0,
+        "domain": 0.0,
+    }
+
+
+def _build_benchmark_weight_adjustments(
+    *,
+    models: list[ModelSummary],
+    deployments: list[DeploymentRecord],
+    benchmarks: list[BenchmarkRecord],
+    requested_language: str,
+    context_features: dict[str, Any],
+) -> dict[str, float]:
+    model_lookup = {item.model_id: item for item in models}
+    deployment_lookup = {item.deployment_id: item for item in deployments}
+    request_domain = str(context_features.get("domain") or "general")
+    relevant: list[BenchmarkRecord] = []
+    for benchmark in benchmarks:
+        if benchmark.status != "completed":
+            continue
+        model = model_lookup.get(benchmark.model_id)
+        if model is None or (requested_language and model.language != requested_language):
+            continue
+        if request_domain != "general":
+            candidate_domain = infer_domain(text=str(model.dataset_name or ""), scene=model.dataset_name)
+            if candidate_domain not in {request_domain, "general"}:
+                continue
+        relevant.append(benchmark)
+
+    adjustments = _zero_weight_vector()
+    if not relevant:
+        adjustments["stability"] += 0.03
+        adjustments["accuracy"] += 0.02
+        return adjustments
+
+    avg_success = _mean_numeric(
+        item.success_count / item.total_requests if item.total_requests else None
+        for item in relevant
+    )
+    avg_p95 = _mean_numeric(item.p95_latency_ms for item in relevant)
+    gpu_ratio = 0.0
+    if relevant:
+        gpu_hits = 0
+        for item in relevant:
+            deployment = deployment_lookup.get(item.deployment_id)
+            if deployment and deployment.use_gpu:
+                gpu_hits += 1
+        gpu_ratio = gpu_hits / len(relevant)
+
+    if avg_success is None or avg_success < 0.82:
+        adjustments["accuracy"] += 0.04
+        adjustments["stability"] += 0.03
+        adjustments["coverage"] -= 0.01
+    if avg_p95 is not None and avg_p95 > 220:
+        adjustments["latency"] += 0.05
+        adjustments["resource"] += 0.02
+    elif avg_p95 is not None and avg_p95 < 90 and (avg_success or 0.0) >= 0.9:
+        adjustments["coverage"] += 0.02
+    if len(relevant) < 3:
+        adjustments["stability"] += 0.02
+    if gpu_ratio < 0.3:
+        adjustments["resource"] += 0.01
+    return adjustments
+
+
+def _build_feedback_weight_adjustments(
+    *,
+    objective: str,
+    context_features: dict[str, Any],
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
+) -> tuple[dict[str, float], list[str]]:
+    decision_lookup = {item.decision_id: item for item in decision_records}
+    request_domain = str(context_features.get("domain") or "general")
+    request_language = str(context_features.get("language") or "")
+    adjustments = _zero_weight_vector()
+    matched_feedback: list[TaskRoutingFeedbackRecord] = []
+
+    for feedback in feedback_records:
+        decision = decision_lookup.get(feedback.decision_id)
+        if decision is None:
+            continue
+        if feedback.objective != objective:
+            continue
+        if request_language and feedback.inferred_language != request_language:
+            continue
+        if request_domain != "general" and feedback.context_domain not in {request_domain, "general"}:
+            continue
+        matched_feedback.append(feedback)
+
+    if not matched_feedback:
+        return adjustments, []
+
+    feedback_type_adjustments = {
+        "accepted": {"stability": 0.01, "accuracy": 0.01},
+        "accuracy": {"accuracy": 0.05, "stability": 0.04, "coverage": -0.02},
+        "coverage": {"coverage": 0.06, "domain": 0.02},
+        "latency": {"latency": 0.06, "resource": 0.03, "coverage": -0.01},
+        "balanced": {"accuracy": 0.02, "coverage": 0.02, "latency": 0.01, "stability": 0.02},
+        "manual_revision": {"accuracy": 0.05, "stability": 0.05, "domain": 0.02, "coverage": -0.03},
+    }
+    accepted_count = 0
+    path_counter: Counter[str] = Counter()
+    adopted_counter: Counter[str] = Counter()
+    for feedback in matched_feedback:
+        if feedback.accepted:
+            accepted_count += 1
+            path_counter[feedback.execution_path] += 1
+        if feedback.adopted_model_id:
+            adopted_counter[feedback.adopted_model_id] += 1
+        delta = dict(feedback_type_adjustments.get(feedback.feedback_type, feedback_type_adjustments["accepted"]))
+        if not feedback.accepted:
+            delta = {key: -value * 0.35 for key, value in delta.items()}
+            delta["accuracy"] = delta.get("accuracy", 0.0) + 0.04
+            delta["stability"] = delta.get("stability", 0.0) + 0.04
+        for key, value in delta.items():
+            adjustments[key] += value
+
+    size = max(1, len(matched_feedback))
+    adjustments = {key: round(max(min(value / size, 0.08), -0.08), 4) for key, value in adjustments.items()}
+
+    reasons: list[str] = []
+    acceptance_rate = accepted_count / size
+    if acceptance_rate >= 0.75:
+        reasons.append(f"历史反馈中该类请求采纳率 {acceptance_rate * 100:.1f}%，保留当前主权重方向。")
+    elif acceptance_rate <= 0.45:
+        reasons.append(f"历史反馈中该类请求采纳率仅 {acceptance_rate * 100:.1f}%，系统上调准确与稳定维度。")
+    dominant_path = path_counter.most_common(1)[0][0] if path_counter else ""
+    if dominant_path:
+        reasons.append(f"最近同类请求更常采纳 {dominant_path} 路径。")
+    dominant_model = adopted_counter.most_common(1)[0][0] if adopted_counter else ""
+    if dominant_model:
+        reasons.append(f"用户反馈中最终采用 {dominant_model} 的频次更高。")
+    return adjustments, reasons
+
+
+def _apply_adaptive_weight_adjustments(
+    *,
+    base_weights: dict[str, float],
+    benchmark_adjustments: dict[str, float],
+    feedback_adjustments: dict[str, float],
+) -> dict[str, float]:
+    merged = {}
+    for key, value in base_weights.items():
+        merged[key] = value + benchmark_adjustments.get(key, 0.0) + feedback_adjustments.get(key, 0.0)
+    total = sum(max(item, 0.0) for item in merged.values()) or 1.0
+    return {key: round(max(value, 0.0) / total, 4) for key, value in merged.items()}
+
+
+def _sum_weight_adjustments(*vectors: dict[str, float]) -> dict[str, float]:
+    summed = _zero_weight_vector()
+    for vector in vectors:
+        for key in summed:
+            summed[key] += float(vector.get(key, 0.0) or 0.0)
+    return {key: round(value, 4) for key, value in summed.items() if abs(value) > 0.0001}
+
+
+def _merge_adaptation_reasons(
+    *,
+    benchmark_adjustments: dict[str, float],
+    feedback_adjustments: dict[str, float],
+    feedback_reasons: list[str],
+) -> list[str]:
+    reasons: list[str] = []
+    if benchmark_adjustments.get("latency", 0.0) >= 0.04:
+        reasons.append("近期基准记录显示尾延迟偏高，系统临时提升时延权重。")
+    if benchmark_adjustments.get("stability", 0.0) >= 0.03:
+        reasons.append("当前可参考基准较少或成功率偏低，系统适度提升稳定性权重。")
+    if feedback_adjustments.get("coverage", 0.0) >= 0.04:
+        reasons.append("历史反馈更偏向覆盖型结果，系统适度提升召回相关权重。")
+    if feedback_adjustments.get("accuracy", 0.0) >= 0.04:
+        reasons.append("历史反馈更偏向准确与一致性，系统适度提升准确率权重。")
+    reasons.extend(feedback_reasons)
+    return reasons[:5]
+
+
+def _candidate_domain_match(request_domain: Any, dataset_name: str | None) -> str:
+    request_label = str(request_domain or "general")
+    candidate_domain = infer_domain(text=str(dataset_name or ""), scene=dataset_name)
+    if request_label == candidate_domain:
+        return "high"
+    if request_label == "general" or candidate_domain == "general":
+        return "medium"
+    return "low"
+
+
+def _resource_efficiency_score(deployment: DeploymentRecord) -> float:
+    execution = deployment.execution or {}
+    instance_count = max(1, int(execution.get("instance_count", 1) or 1))
+    intra_threads = max(1, int(execution.get("intra_op_threads", 1) or 1))
+    inter_threads = max(1, int(execution.get("inter_op_threads", 1) or 1))
+    gpu_penalty = 0.28 if deployment.use_gpu else 0.0
+    worker_penalty = min(0.35, (instance_count - 1) * 0.12)
+    thread_penalty = min(0.25, max(intra_threads, inter_threads) * 0.03)
+    return max(0.0, 1.0 - gpu_penalty - worker_penalty - thread_penalty)
+
+
+def _resource_cost_level(deployment: DeploymentRecord) -> str:
+    score = _resource_efficiency_score(deployment)
+    if score >= 0.72:
+        return "low"
+    if score >= 0.46:
+        return "medium"
+    return "high"
+
+
+def _resolve_execution_roles(execution_path: str, count: int) -> list[str]:
+    if count <= 0:
+        return []
+    if count == 1:
+        return ["primary"]
+    if execution_path in {"domain_priority_crosscheck", "cost_aware_primary_plus_reviewer"}:
+        return ["primary", "reviewer"][:count]
+    if execution_path in {"parallel_multi_union", "multi_consensus_vote", "consensus_with_backfill"}:
+        roles = ["primary", "reviewer", "supplement"]
+        return roles[:count] + ["supplement"] * max(0, count - len(roles))
+    return ["primary"] + ["supplement"] * (count - 1)
+
+
+def _build_task_decision_trace(
+    *,
+    objective: str,
+    difficulty: str,
+    context_features: dict[str, Any],
+    objective_weights: dict[str, float],
+    selected_candidates: list[TaskRoutingCandidate],
+    execution_path: str,
+    fusion_policy: str,
+) -> list[str]:
+    trace = [
+        f"识别语言：{context_features.get('language')}",
+        f"任务难度：{difficulty}，领域：{context_features.get('domain')}",
+        f"实体线索数：{context_features.get('entity_hint_count')}，子句数：{context_features.get('clause_count')}",
+        "目标权重：" + " / ".join(f"{key}={value:.2f}" for key, value in objective_weights.items()),
+        f"执行路径：{execution_path}，融合策略：{fusion_policy}",
+    ]
+    if selected_candidates:
+        trace.append(
+            "选中部署：" + "、".join(
+                f"{item.model_id}({item.profile_name}, score={item.selection_score})"
+                for item in selected_candidates
+            )
+        )
+    else:
+        trace.append(f"未找到满足 {objective} 目标的可用运行部署。")
+    return trace
+
+
 def build_task_strategy_explanation(
     *,
     objective: str,
     difficulty: str,
     strategy_mode: str,
+    execution_path: str,
+    fusion_policy: str,
+    context_features: dict[str, Any],
     selected_candidates: list[TaskRoutingCandidate],
 ) -> str:
     selected_models = "、".join(item.model_id for item in selected_candidates) or "无可用模型"
+    domain = str(context_features.get("domain") or "general")
+    entity_hint_count = int(context_features.get("entity_hint_count") or 0)
     if objective == "latency":
         return (
             f"当前文本被判定为{difficulty}任务，系统优先选择 P95 延迟更低的单模型部署，"
-            f"本次使用 {selected_models} 以降低响应时间。"
+            f"在 {domain} 场景下采用 {execution_path} 路径，使用 {selected_models} 以降低响应时间。"
         )
     if objective == "coverage":
         return (
-            f"当前文本被判定为{difficulty}任务，系统采用 {strategy_mode}，"
-            f"汇总 {selected_models} 的抽取结果并做并集融合，以提升三元组覆盖率。"
+            f"当前文本被判定为{difficulty}任务，系统识别到约 {entity_hint_count} 个潜在实体线索，"
+            f"采用 {strategy_mode}，执行 {execution_path} 并以 {fusion_policy} 融合 {selected_models} 的结果，以提升三元组覆盖率。"
+        )
+    if objective == "resource":
+        return (
+            f"当前文本被判定为{difficulty}任务，系统在 {domain} 场景下优先控制资源成本，"
+            f"采用 {execution_path}，选择 {selected_models} 以降低 GPU/实例开销，并保留可接受的抽取质量。"
+        )
+    if objective == "domain":
+        return (
+            f"当前文本被判定为{difficulty}任务，系统识别其更接近 {domain} 领域，"
+            f"采用 {execution_path} 优先调用领域匹配更高的模型，并以 {fusion_policy} 进行交叉校验。"
+        )
+    if objective == "balanced":
+        return (
+            f"当前文本被判定为{difficulty}任务，系统在准确率、覆盖率、时延与成本之间做折中，"
+            f"采用 {execution_path}，并对 {selected_models} 执行 {fusion_policy} 融合。"
         )
     return (
         f"当前文本被判定为{difficulty}任务，系统采用 {strategy_mode}，"
-        f"汇总 {selected_models} 的抽取结果并按出现频次投票，以提升结果稳定性。"
+        f"执行 {execution_path}，汇总 {selected_models} 的抽取结果并按 {fusion_policy} 提升结果稳定性。"
     )
 
 
@@ -374,6 +795,8 @@ def _build_task_candidates(
     requested_language: str,
     candidate_model_ids: list[str],
     objective: str,
+    context_features: dict[str, Any],
+    objective_weights: dict[str, float],
 ) -> list[TaskRoutingCandidate]:
     model_lookup = {item.model_id: item for item in models}
     completed_benchmarks = [item for item in benchmarks if item.status == "completed"]
@@ -414,12 +837,19 @@ def _build_task_candidates(
         avg_triple_count = _mean_numeric(
             item.triple_count for item in archives_by_deployment.get(deployment.deployment_id, [])
         )
-        score = _selection_score(
-            objective=objective,
+        domain_match = _candidate_domain_match(context_features.get("domain"), model.dataset_name)
+        resource_cost_level = _resource_cost_level(deployment)
+        score_breakdown = _selection_score_breakdown(
             success_rate=avg_success,
             p95_latency_ms=avg_p95,
             recent_request_count=recent_requests,
             avg_triple_count=avg_triple_count,
+            domain_match=domain_match,
+            deployment=deployment,
+        )
+        score = sum(
+            score_breakdown.get(key, 0.0) * objective_weights.get(key, 0.0)
+            for key in objective_weights
         )
         candidates.append(
             TaskRoutingCandidate(
@@ -431,69 +861,80 @@ def _build_task_candidates(
                 selection_score=round(score, 6),
                 selection_reason=_selection_reason(
                     objective=objective,
-                    success_rate=avg_success,
+                    score_breakdown=score_breakdown,
                     p95_latency_ms=avg_p95,
                     recent_request_count=recent_requests,
+                    domain_match=domain_match,
+                    resource_cost_level=resource_cost_level,
                 ),
+                score_breakdown={key: round(value, 4) for key, value in score_breakdown.items()},
                 estimated_p95_latency_ms=avg_p95,
                 benchmark_success_rate=avg_success,
                 recent_request_count=recent_requests,
                 predicted_triple_count=int(round(avg_triple_count))
                 if avg_triple_count is not None
                 else None,
+                domain_match=domain_match,
+                resource_cost_level=resource_cost_level,
             )
         )
 
-    reverse = objective != "latency"
     candidates.sort(
         key=lambda item: (
-            item.selection_score if item.selection_score is not None else (-math.inf if reverse else math.inf),
+            -(item.selection_score if item.selection_score is not None else -math.inf),
             -item.recent_request_count,
             item.model_id,
         ),
-        reverse=reverse,
     )
     return candidates
 
 
-def _selection_score(
+def _selection_score_breakdown(
     *,
-    objective: str,
     success_rate: float | None,
     p95_latency_ms: float | None,
     recent_request_count: int,
     avg_triple_count: float | None,
-) -> float:
-    if objective == "latency":
-        return -float(p95_latency_ms if p95_latency_ms is not None else 10_000.0)
-    if objective == "coverage":
-        return (
-            (success_rate or 0.0) * 40.0
-            + min(recent_request_count, 10) * 2.5
-            + min(avg_triple_count or 0.0, 20.0)
-            - ((p95_latency_ms or 0.0) / 200.0)
-        )
-    return (
-        (success_rate or 0.0) * 60.0
-        + min(recent_request_count, 10) * 1.5
-        - ((avg_triple_count or 0.0) / 8.0)
-        - ((p95_latency_ms or 0.0) / 250.0)
-    )
+    domain_match: str,
+    deployment: DeploymentRecord,
+) -> dict[str, float]:
+    accuracy_score = min(1.0, max(0.0, float(success_rate if success_rate is not None else 0.55)))
+    latency_score = max(0.0, 1.0 - min(float(p95_latency_ms or 1200.0), 1500.0) / 1500.0)
+    coverage_score = min(1.0, ((avg_triple_count or 0.0) / 18.0) + min(recent_request_count, 10) / 30.0)
+    stability_score = min(1.0, accuracy_score * 0.7 + min(recent_request_count, 10) / 10.0 * 0.3)
+    resource_score = _resource_efficiency_score(deployment)
+    domain_score = {"high": 1.0, "medium": 0.65, "low": 0.3}.get(domain_match, 0.45)
+    return {
+        "accuracy": round(accuracy_score, 6),
+        "latency": round(latency_score, 6),
+        "coverage": round(coverage_score, 6),
+        "stability": round(stability_score, 6),
+        "resource": round(resource_score, 6),
+        "domain": round(domain_score, 6),
+    }
 
 
 def _selection_reason(
     *,
     objective: str,
-    success_rate: float | None,
+    score_breakdown: dict[str, float],
     p95_latency_ms: float | None,
     recent_request_count: int,
+    domain_match: str,
+    resource_cost_level: str,
 ) -> str:
     latency_text = f"{p95_latency_ms:.3f} ms" if p95_latency_ms is not None else "暂无 P95"
-    success_text = f"{(success_rate or 0.0) * 100:.1f}%"
+    success_text = f"{score_breakdown.get('accuracy', 0.0) * 100:.1f}%"
     if objective == "latency":
         return f"优先考虑低尾延迟，本候选历史 P95 为 {latency_text}。"
     if objective == "coverage":
         return f"优先考虑覆盖与稳定运行，本候选成功率 {success_text}，近期请求 {recent_request_count} 次。"
+    if objective == "resource":
+        return f"优先考虑低资源成本，本候选资源级别 {resource_cost_level}，历史 P95 为 {latency_text}。"
+    if objective == "domain":
+        return f"优先考虑领域匹配，本候选领域匹配度 {domain_match}，成功率 {success_text}。"
+    if objective == "balanced":
+        return f"兼顾准确、覆盖、时延与成本，本候选成功率 {success_text}，P95 为 {latency_text}。"
     return f"优先考虑稳定性，本候选成功率 {success_text}，历史 P95 为 {latency_text}。"
 
 
@@ -502,22 +943,59 @@ def _select_task_candidates(
     *,
     objective: str,
     difficulty: str,
+    context_features: dict[str, Any],
     max_models: int,
-) -> tuple[str, list[TaskRoutingCandidate]]:
+) -> tuple[str, str, str, list[TaskRoutingCandidate]]:
     if not candidates:
-        return ("none", [])
+        return ("none", "none", "empty", [])
     if objective == "latency":
-        return ("single-low-latency", candidates[:1])
+        return ("multi-objective-adaptive", "single_low_latency", "single_primary", candidates[:1])
 
     if objective == "coverage":
         target_count = 2 if difficulty == "simple" else min(max_models, 3)
-        return ("multi-union", _unique_models(candidates, target_count))
+        return ("multi-objective-adaptive", "parallel_multi_union", "union_all", _unique_models(candidates, target_count))
+
+    if objective == "resource":
+        if difficulty == "hard" and len(candidates) > 1:
+            return (
+                "multi-objective-adaptive",
+                "cost_aware_primary_plus_reviewer",
+                "primary_with_fallback",
+                _unique_models(candidates, min(2, max_models)),
+            )
+        return ("multi-objective-adaptive", "single_low_cost", "single_primary", candidates[:1])
+
+    if objective == "domain":
+        domain_sorted = sorted(
+            candidates,
+            key=lambda item: (
+                {"high": 2, "medium": 1, "low": 0}.get(item.domain_match, 0),
+                item.selection_score or 0.0,
+            ),
+            reverse=True,
+        )
+        target_count = 1 if difficulty == "simple" else min(max_models, 2)
+        return (
+            "multi-objective-adaptive",
+            "domain_priority_crosscheck" if target_count > 1 else "domain_priority_single",
+            "domain_priority",
+            _unique_models(domain_sorted, target_count),
+        )
+
+    if objective == "balanced":
+        target_count = 1 if difficulty == "simple" else min(max_models, 2 if difficulty == "medium" else 3)
+        return (
+            "multi-objective-adaptive",
+            "consensus_with_backfill" if target_count > 1 else "single_balanced",
+            "consensus_backfill" if target_count > 1 else "single_primary",
+            _unique_models(candidates, target_count),
+        )
 
     if difficulty == "simple":
-        return ("single-best-accuracy", candidates[:1])
+        return ("multi-objective-adaptive", "single_high_confidence", "single_primary", candidates[:1])
 
     target_count = 2 if difficulty == "medium" else min(max_models, 3)
-    return ("multi-majority-vote", _unique_models(candidates, target_count))
+    return ("multi-objective-adaptive", "multi_consensus_vote", "majority_vote", _unique_models(candidates, target_count))
 
 
 def _unique_models(candidates: list[TaskRoutingCandidate], limit: int) -> list[TaskRoutingCandidate]:
@@ -542,6 +1020,7 @@ def _predict_with_runtime(
     scene: str | None,
     options: dict[str, Any],
     activity_tracker: InferenceActivityTracker | None = None,
+    execution_role: str = "primary",
 ) -> TaskRoutingExecution:
     payload = json.dumps(
         {
@@ -575,6 +1054,7 @@ def _predict_with_runtime(
         model_id=candidate.model_id,
         profile_name=candidate.profile_name,
         selected_for_fusion=True,
+        execution_role=execution_role,
         latency_ms=_safe_float(result.get("latency_ms")),
         triple_count=int(result.get("triple_count") or 0),
         triples=list(result.get("triples") or []),
@@ -593,6 +1073,7 @@ def _fuse_execution_results(
     *,
     objective: str,
     inferred_language: str,
+    fusion_policy: str,
 ) -> dict[str, Any]:
     if not execution_results:
         return {
@@ -601,11 +1082,11 @@ def _fuse_execution_results(
             "fusion_mode": "empty",
         }
 
-    if objective == "latency" or len(execution_results) == 1:
+    if fusion_policy == "single_primary" or objective == "latency" or len(execution_results) == 1:
         primary = execution_results[0]
         return {
             "triple_count": primary.triple_count,
-            "triples": primary.triples,
+            "triples": _resolve_relation_conflicts(primary.triples, inferred_language, keep_all=False),
             "fusion_mode": "single",
         }
 
@@ -620,7 +1101,7 @@ def _fuse_execution_results(
             if payload is None or confidence > (_safe_float(payload.get("confidence")) or 0.0):
                 triple_votes[signature] = dict(triple)
 
-    if objective == "coverage":
+    if fusion_policy == "union_all" or objective == "coverage":
         triples = [
             {
                 **triple_votes[signature],
@@ -628,10 +1109,48 @@ def _fuse_execution_results(
             }
             for signature, _count in normalized_counter.most_common()
         ]
+        triples = _resolve_relation_conflicts(triples, inferred_language, keep_all=True)
         return {
             "triple_count": len(triples),
             "triples": triples,
             "fusion_mode": "union",
+        }
+
+    if fusion_policy == "primary_with_fallback":
+        primary = execution_results[0]
+        seen = {_triple_signature(item, inferred_language) for item in primary.triples}
+        triples = [dict(item) for item in primary.triples]
+        for result in execution_results[1:]:
+            for triple in result.triples:
+                signature = _triple_signature(triple, inferred_language)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                triples.append({**dict(triple), "vote_count": 1})
+        triples = _resolve_relation_conflicts(triples, inferred_language, keep_all=False)
+        return {
+            "triple_count": len(triples),
+            "triples": triples,
+            "fusion_mode": "primary_with_fallback",
+        }
+
+    if fusion_policy == "domain_priority":
+        primary = execution_results[0]
+        supplemental = execution_results[1:] if len(execution_results) > 1 else []
+        triples = [dict(item) for item in primary.triples]
+        seen = {_triple_signature(item, inferred_language) for item in triples}
+        for result in supplemental:
+            for triple in result.triples:
+                signature = _triple_signature(triple, inferred_language)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                triples.append({**dict(triple), "vote_count": 1})
+        triples = _resolve_relation_conflicts(triples, inferred_language, keep_all=False)
+        return {
+            "triple_count": len(triples),
+            "triples": triples,
+            "fusion_mode": "domain_priority",
         }
 
     threshold = (len(execution_results) // 2) + 1
@@ -651,10 +1170,24 @@ def _fuse_execution_results(
             }
             for signature, count in normalized_counter.most_common()
         ][:5]
+    if fusion_policy == "consensus_backfill":
+        seen = {_triple_signature(item, inferred_language) for item in voted}
+        for signature, count in normalized_counter.most_common():
+            if signature in seen:
+                continue
+            voted.append(
+                {
+                    **triple_votes[signature],
+                    "vote_count": count,
+                }
+            )
+            if len(voted) >= max(5, len(execution_results) * 4):
+                break
+    voted = _resolve_relation_conflicts(voted, inferred_language, keep_all=False)
     return {
         "triple_count": len(voted),
         "triples": voted,
-        "fusion_mode": "majority_vote",
+        "fusion_mode": fusion_policy or "majority_vote",
         "vote_threshold": threshold,
     }
 
@@ -671,6 +1204,33 @@ def _triple_signature(triple: dict[str, Any], language: str) -> tuple[str, str, 
         normalize(triple.get("predicate")),
         normalize(triple.get("object")),
     )
+
+
+def _resolve_relation_conflicts(
+    triples: list[dict[str, Any]],
+    language: str,
+    *,
+    keep_all: bool,
+) -> list[dict[str, Any]]:
+    if keep_all:
+        return triples
+    chosen: dict[tuple[str, str], dict[str, Any]] = {}
+    for triple in triples:
+        subject = _triple_signature(triple, language)[0]
+        obj = _triple_signature(triple, language)[2]
+        key = (subject, obj)
+        current = chosen.get(key)
+        current_vote = int(current.get("vote_count", 1)) if current else -1
+        next_vote = int(triple.get("vote_count", 1))
+        current_conf = _safe_float(current.get("confidence")) if current else None
+        next_conf = _safe_float(triple.get("confidence"))
+        if (
+            current is None
+            or next_vote > current_vote
+            or (next_vote == current_vote and (next_conf or 0.0) > (current_conf or 0.0))
+        ):
+            chosen[key] = triple
+    return list(chosen.values())
 
 
 def _group_completed_benchmarks_by_model(
@@ -690,6 +1250,212 @@ def _group_prediction_archives_by_model(
     for item in prediction_archives:
         grouped[item.model_id].append(item)
     return grouped
+
+
+def build_task_routing_feedback_overview(
+    *,
+    models: list[ModelSummary],
+    deployments: list[DeploymentRecord],
+    benchmarks: list[BenchmarkRecord],
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
+    limit: int = 12,
+) -> TaskRoutingFeedbackOverview:
+    feedback_by_decision = {item.decision_id: item for item in feedback_records}
+    total_feedback = len(feedback_records)
+    accepted_feedback = [item for item in feedback_records if item.accepted]
+    acceptance_rate = (len(accepted_feedback) / total_feedback) if total_feedback else None
+    last_feedback_at = max((item.updated_at for item in feedback_records), default=None)
+
+    objective_summaries: list[TaskRoutingObjectiveFeedbackSummary] = []
+    decisions_by_objective: dict[str, list[TaskRoutingDecisionRecord]] = defaultdict(list)
+    for item in decision_records:
+        decisions_by_objective[item.objective].append(item)
+    for objective, items in sorted(decisions_by_objective.items()):
+        feedback_subset = [feedback_by_decision[item.decision_id] for item in items if item.decision_id in feedback_by_decision]
+        path_stats: dict[str, list[bool]] = defaultdict(list)
+        for item in feedback_subset:
+            path_stats[item.execution_path].append(bool(item.accepted))
+        best_execution_path = None
+        if path_stats:
+            best_execution_path = sorted(
+                path_stats.items(),
+                key=lambda pair: (
+                    -(sum(pair[1]) / len(pair[1]) if pair[1] else 0.0),
+                    -len(pair[1]),
+                    pair[0],
+                ),
+            )[0][0]
+        objective_summaries.append(
+            TaskRoutingObjectiveFeedbackSummary(
+                objective=objective,
+                decision_count=len(items),
+                feedback_count=len(feedback_subset),
+                acceptance_rate=(sum(item.accepted for item in feedback_subset) / len(feedback_subset)) if feedback_subset else None,
+                best_execution_path=best_execution_path,
+            )
+        )
+
+    execution_path_summaries: list[TaskRoutingExecutionPathSummary] = []
+    decisions_by_path: dict[str, list[TaskRoutingDecisionRecord]] = defaultdict(list)
+    for item in decision_records:
+        decisions_by_path[item.execution_path].append(item)
+    for execution_path, items in sorted(decisions_by_path.items()):
+        feedback_subset = [feedback_by_decision[item.decision_id] for item in items if item.decision_id in feedback_by_decision]
+        execution_path_summaries.append(
+            TaskRoutingExecutionPathSummary(
+                execution_path=execution_path,
+                decision_count=len(items),
+                feedback_count=len(feedback_subset),
+                acceptance_rate=(sum(item.accepted for item in feedback_subset) / len(feedback_subset)) if feedback_subset else None,
+            )
+        )
+    execution_path_summaries.sort(
+        key=lambda item: (
+            -(item.acceptance_rate if item.acceptance_rate is not None else -1.0),
+            -item.feedback_count,
+            item.execution_path,
+        )
+    )
+
+    adopted_counter: Counter[str] = Counter()
+    for item in feedback_records:
+        adopted_model_id = item.adopted_model_id
+        if not adopted_model_id and item.accepted and item.selected_model_ids:
+            adopted_model_id = item.selected_model_ids[0]
+        if adopted_model_id:
+            adopted_counter[adopted_model_id] += 1
+    model_adoption_summaries = [
+        TaskRoutingModelAdoptionSummary(
+            model_id=model_id,
+            adoption_count=count,
+            adopted_share=round(count / total_feedback, 4) if total_feedback else None,
+        )
+        for model_id, count in adopted_counter.most_common(8)
+    ]
+
+    weight_profiles: list[TaskRoutingAdaptiveWeightProfile] = []
+    for objective in ["accuracy", "coverage", "latency", "balanced", "resource", "domain"]:
+        base_weights = _build_objective_weights(
+            objective=objective,
+            difficulty="medium",
+            context_features={"domain": "general", "language": ""},
+        )
+        benchmark_adjustments = _build_benchmark_weight_adjustments(
+            models=models,
+            deployments=deployments,
+            benchmarks=benchmarks,
+            requested_language="",
+            context_features={"domain": "general", "language": ""},
+        )
+        feedback_adjustments, reasons = _build_feedback_weight_adjustments(
+            objective=objective,
+            context_features={"domain": "general", "language": ""},
+            decision_records=decision_records,
+            feedback_records=feedback_records,
+        )
+        weight_profiles.append(
+            TaskRoutingAdaptiveWeightProfile(
+                objective=objective,
+                effective_weights=_apply_adaptive_weight_adjustments(
+                    base_weights=base_weights,
+                    benchmark_adjustments=benchmark_adjustments,
+                    feedback_adjustments=feedback_adjustments,
+                ),
+                benchmark_adjustments={key: round(value, 4) for key, value in benchmark_adjustments.items() if abs(value) > 0.0001},
+                feedback_adjustments={key: round(value, 4) for key, value in feedback_adjustments.items() if abs(value) > 0.0001},
+                reasons=_merge_adaptation_reasons(
+                    benchmark_adjustments=benchmark_adjustments,
+                    feedback_adjustments=feedback_adjustments,
+                    feedback_reasons=reasons,
+                ),
+            )
+        )
+
+    recent_decisions = []
+    for item in sorted(decision_records, key=lambda record: record.created_at, reverse=True)[: max(1, limit)]:
+        feedback = feedback_by_decision.get(item.decision_id)
+        recent_decisions.append(
+            TaskRoutingDecisionSummary(
+                decision_id=item.decision_id,
+                objective=item.objective,
+                inferred_language=item.inferred_language,
+                context_domain=str(item.context_features.get("domain") or "general"),
+                execution_path=item.execution_path,
+                fusion_policy=item.fusion_policy,
+                selected_model_ids=[candidate.model_id for candidate in item.selected_deployments],
+                fused_triple_count=int(item.fused_result.get("triple_count") or 0),
+                feedback_status="completed" if feedback else "pending",
+                accepted=feedback.accepted if feedback else None,
+                feedback_type=feedback.feedback_type if feedback else None,
+                adopted_model_id=feedback.adopted_model_id if feedback else None,
+                created_at=item.created_at,
+            )
+        )
+
+    insights = _build_feedback_insights(
+        total_decisions=len(decision_records),
+        total_feedback=total_feedback,
+        acceptance_rate=acceptance_rate,
+        objective_summaries=objective_summaries,
+        execution_path_summaries=execution_path_summaries,
+        model_adoption_summaries=model_adoption_summaries,
+    )
+
+    return TaskRoutingFeedbackOverview(
+        total_decisions=len(decision_records),
+        total_feedback=total_feedback,
+        acceptance_rate=acceptance_rate,
+        pending_feedback_count=max(len(decision_records) - total_feedback, 0),
+        last_feedback_at=last_feedback_at,
+        objective_summaries=objective_summaries,
+        execution_path_summaries=execution_path_summaries[:8],
+        model_adoption_summaries=model_adoption_summaries,
+        weight_profiles=weight_profiles,
+        recent_decisions=recent_decisions,
+        insights=insights,
+    )
+
+
+def _build_feedback_insights(
+    *,
+    total_decisions: int,
+    total_feedback: int,
+    acceptance_rate: float | None,
+    objective_summaries: list[TaskRoutingObjectiveFeedbackSummary],
+    execution_path_summaries: list[TaskRoutingExecutionPathSummary],
+    model_adoption_summaries: list[TaskRoutingModelAdoptionSummary],
+) -> list[str]:
+    insights: list[str] = []
+    if total_decisions <= 0:
+        return ["当前还没有任务调度历史，先运行一轮策略并提交反馈后，这里会显示闭环结论。"]
+    if total_feedback <= 0:
+        return ["平台已开始记录调度决策，但还没有用户反馈，当前闭环仍处于冷启动阶段。"]
+    if acceptance_rate is not None:
+        insights.append(f"当前反馈闭环已累计 {total_feedback} 条反馈，整体采纳率为 {acceptance_rate * 100:.1f}%。")
+    if objective_summaries:
+        best_objective = sorted(
+            objective_summaries,
+            key=lambda item: (
+                -(item.acceptance_rate if item.acceptance_rate is not None else -1.0),
+                -item.feedback_count,
+                item.objective,
+            ),
+        )[0]
+        if best_objective.acceptance_rate is not None:
+            insights.append(
+                f"在已收集反馈中，{best_objective.objective} 目标的采纳表现最好，采纳率为 {best_objective.acceptance_rate * 100:.1f}%。"
+            )
+    if execution_path_summaries:
+        best_path = execution_path_summaries[0]
+        if best_path.acceptance_rate is not None:
+            insights.append(
+                f"{best_path.execution_path} 是当前更稳定的执行路径之一，已反馈采纳率为 {best_path.acceptance_rate * 100:.1f}%。"
+            )
+    if model_adoption_summaries:
+        leading_model = model_adoption_summaries[0]
+        insights.append(f"最近反馈中最终采用频次最高的模型是 {leading_model.model_id}。")
+    return insights[:4]
 
 
 def _recommend_device_allocation(

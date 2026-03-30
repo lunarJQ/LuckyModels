@@ -46,7 +46,7 @@ export async function logoutSession() {
 }
 
 export async function loadDashboardData() {
-  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions] = await Promise.all([
+  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     fetchJSON("/api/v1/models"),
     fetchJSON("/api/v1/deployments"),
@@ -57,6 +57,8 @@ export async function loadDashboardData() {
     fetchJSON("/api/v1/system/gpus"),
     fetchJSON("/api/v1/access-control/overview"),
     fetchJSON("/api/v1/models/import-options"),
+    fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })),
+    fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null),
   ]);
 
   const deploymentEntries = await Promise.all(
@@ -99,12 +101,20 @@ export async function loadDashboardData() {
     gpuStatus,
     accessOverview,
     importOptions,
+    datasetCatalog,
+    taskRoutingFeedbackOverview,
     modelDetails: Object.fromEntries(modelDetailsEntries),
   };
 }
 
 export async function runCasrelDemo() {
   return fetchJSON("/api/v1/demo/casrel/run", { method: "POST" });
+}
+
+export async function getDatasetSampleText(datasetName, index = 0) {
+  return fetchJSON(
+    `/api/v1/datasets/sample-text?dataset_name=${encodeURIComponent(datasetName)}&index=${encodeURIComponent(index)}`,
+  );
 }
 
 export async function createDeployment(payload) {
@@ -206,6 +216,14 @@ export async function predictWithDeployment(deploymentId, payload) {
 
 export async function runTaskRoutingStrategy(payload) {
   return fetchJSON("/api/v1/strategies/task-routing/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitTaskRoutingFeedback(payload) {
+  return fetchJSON("/api/v1/strategies/task-routing/feedback", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

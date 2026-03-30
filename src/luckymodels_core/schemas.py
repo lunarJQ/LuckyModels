@@ -150,6 +150,8 @@ class ModelDeleteResult(BaseModel):
     stopped_runtime_count: int = 0
     deleted_benchmark_count: int = 0
     deleted_prediction_archive_count: int = 0
+    deleted_task_routing_decision_count: int = 0
+    deleted_task_routing_feedback_count: int = 0
     deleted_log_file_count: int = 0
     removed_package_root: str
 
@@ -287,10 +289,13 @@ class TaskRoutingCandidate(BaseModel):
     service_url: str | None = None
     selection_score: float | None = None
     selection_reason: str = ""
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
     estimated_p95_latency_ms: float | None = None
     benchmark_success_rate: float | None = None
     recent_request_count: int = 0
     predicted_triple_count: int | None = None
+    domain_match: str = "general"
+    resource_cost_level: str = "medium"
 
 
 class TaskRoutingExecution(BaseModel):
@@ -298,6 +303,7 @@ class TaskRoutingExecution(BaseModel):
     model_id: str
     profile_name: str
     selected_for_fusion: bool = True
+    execution_role: str = "primary"
     latency_ms: float | None = None
     triple_count: int = 0
     triples: list[dict[str, Any]] = Field(default_factory=list)
@@ -305,17 +311,129 @@ class TaskRoutingExecution(BaseModel):
 
 
 class TaskRoutingResponse(BaseModel):
+    decision_id: str | None = None
     objective: str
     requested_language: str | None = None
     inferred_language: str
     difficulty: str
     strategy_mode: str
+    execution_path: str = ""
+    fusion_policy: str = ""
     explanation: str
+    context_features: dict[str, Any] = Field(default_factory=dict)
+    objective_weights: dict[str, float] = Field(default_factory=dict)
+    adaptive_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptation_reasons: list[str] = Field(default_factory=list)
+    decision_trace: list[str] = Field(default_factory=list)
     candidate_count: int = 0
     selected_count: int = 0
     selected_deployments: list[TaskRoutingCandidate] = Field(default_factory=list)
     execution_results: list[TaskRoutingExecution] = Field(default_factory=list)
     fused_result: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskRoutingDecisionRecord(BaseModel):
+    decision_id: str
+    request_text: str
+    scene: str | None = None
+    objective: str
+    requested_language: str | None = None
+    inferred_language: str
+    difficulty: str
+    strategy_mode: str
+    execution_path: str = ""
+    fusion_policy: str = ""
+    context_features: dict[str, Any] = Field(default_factory=dict)
+    objective_weights: dict[str, float] = Field(default_factory=dict)
+    adaptive_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptation_reasons: list[str] = Field(default_factory=list)
+    selected_deployments: list[TaskRoutingCandidate] = Field(default_factory=list)
+    execution_results: list[TaskRoutingExecution] = Field(default_factory=list)
+    fused_result: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now)
+
+
+class TaskRoutingFeedbackSubmitRequest(BaseModel):
+    decision_id: str
+    accepted: bool = True
+    feedback_type: str = "accepted"
+    adopted_model_id: str | None = None
+    note: str | None = None
+
+
+class TaskRoutingFeedbackRecord(BaseModel):
+    feedback_id: str
+    decision_id: str
+    accepted: bool = True
+    feedback_type: str = "accepted"
+    adopted_model_id: str | None = None
+    objective: str
+    inferred_language: str
+    context_domain: str = "general"
+    execution_path: str = ""
+    selected_model_ids: list[str] = Field(default_factory=list)
+    note: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
+
+
+class TaskRoutingDecisionSummary(BaseModel):
+    decision_id: str
+    objective: str
+    inferred_language: str
+    context_domain: str = "general"
+    execution_path: str = ""
+    fusion_policy: str = ""
+    selected_model_ids: list[str] = Field(default_factory=list)
+    fused_triple_count: int = 0
+    feedback_status: str = "pending"
+    accepted: bool | None = None
+    feedback_type: str | None = None
+    adopted_model_id: str | None = None
+    created_at: str = Field(default_factory=utc_now)
+
+
+class TaskRoutingObjectiveFeedbackSummary(BaseModel):
+    objective: str
+    decision_count: int = 0
+    feedback_count: int = 0
+    acceptance_rate: float | None = None
+    best_execution_path: str | None = None
+
+
+class TaskRoutingExecutionPathSummary(BaseModel):
+    execution_path: str
+    decision_count: int = 0
+    feedback_count: int = 0
+    acceptance_rate: float | None = None
+
+
+class TaskRoutingModelAdoptionSummary(BaseModel):
+    model_id: str
+    adoption_count: int = 0
+    adopted_share: float | None = None
+
+
+class TaskRoutingAdaptiveWeightProfile(BaseModel):
+    objective: str
+    effective_weights: dict[str, float] = Field(default_factory=dict)
+    benchmark_adjustments: dict[str, float] = Field(default_factory=dict)
+    feedback_adjustments: dict[str, float] = Field(default_factory=dict)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class TaskRoutingFeedbackOverview(BaseModel):
+    total_decisions: int = 0
+    total_feedback: int = 0
+    acceptance_rate: float | None = None
+    pending_feedback_count: int = 0
+    last_feedback_at: str | None = None
+    objective_summaries: list[TaskRoutingObjectiveFeedbackSummary] = Field(default_factory=list)
+    execution_path_summaries: list[TaskRoutingExecutionPathSummary] = Field(default_factory=list)
+    model_adoption_summaries: list[TaskRoutingModelAdoptionSummary] = Field(default_factory=list)
+    weight_profiles: list[TaskRoutingAdaptiveWeightProfile] = Field(default_factory=list)
+    recent_decisions: list[TaskRoutingDecisionSummary] = Field(default_factory=list)
+    insights: list[str] = Field(default_factory=list)
 
 
 class DeploymentPolicyRecommendation(BaseModel):

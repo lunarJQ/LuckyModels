@@ -11,6 +11,7 @@ import {
   deletePredictionArchive,
   exportModelPackage,
   fetchAuthSession,
+  getDatasetSampleText,
   getDeploymentPolicy,
   getDeploymentPolicyAutomation,
   getDeploymentHealth,
@@ -25,7 +26,7 @@ import {
   restartDeployment,
   runDeploymentPolicyAutomationNow,
   runTaskRoutingStrategy,
-  runCasrelDemo,
+  submitTaskRoutingFeedback,
   switchCurrentAccessUser,
   stopDeployment,
   toggleAccessUser,
@@ -48,18 +49,39 @@ const initialData = {
   gpuStatus: null,
   accessOverview: null,
   importOptions: null,
+  datasetCatalog: null,
+  taskRoutingFeedbackOverview: null,
 };
 
-const initialModelTransferStatus = {
-  direction: "",
-  phase: "idle",
-  percent: null,
-  loadedBytes: 0,
-  totalBytes: null,
-  fileName: "",
-  modelId: "",
-  detail: "",
-};
+const DEFAULT_PREDICT_TEXT = "LuckyModels provides a stable fallback sample for relation extraction.";
+const DEFAULT_PREDICT_DATASETS = [
+  { dataset_key: "webnlg", label: "WebNLG", dataset_name: "WebNLG", available: false, sample_ready: false },
+  { dataset_key: "nyt", label: "NYT", dataset_name: "NYT", available: false, sample_ready: false },
+  { dataset_key: "scierc", label: "SciERC", dataset_name: "SciERC", available: false, sample_ready: false },
+  { dataset_key: "duie", label: "DuIE2.0", dataset_name: "DuIE2.0", available: false, sample_ready: false },
+  {
+    dataset_key: "equipmentmix15k",
+    label: "IndustrialEquipmentMix15k",
+    dataset_name: "IndustrialEquipmentMix15k",
+    available: false,
+    sample_ready: false,
+  },
+];
+
+function buildModelTransferTask(overrides = {}) {
+  return {
+    taskId: overrides.taskId || `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    direction: "",
+    phase: "idle",
+    percent: null,
+    loadedBytes: 0,
+    totalBytes: null,
+    fileName: "",
+    modelId: "",
+    detail: "",
+    ...overrides,
+  };
+}
 
 const pageMeta = {
   "/": {
@@ -84,7 +106,7 @@ const pageMeta = {
   },
   "/task-routing": {
     title: "任务调度",
-    note: "根据高准确、高覆盖、低时延三类目标，在单模型与多模型抽取之间自适应切换。",
+    note: "根据目标偏好、文本难度、领域信息和历史反馈，在单模型与多模型抽取之间自适应切换并形成轻量闭环。",
   },
   "/deployment-policy": {
     title: "部署策略",
@@ -384,13 +406,35 @@ function buildInitialBenchmarkForm(deployments) {
   };
 }
 
+function resolvePredictDatasetKey(datasetName) {
+  const raw = String(datasetName || "").trim().toLowerCase();
+  if (!raw) {
+    return "webnlg";
+  }
+  const aliasMap = {
+    duie: "duie",
+    "duie2.0": "duie",
+    "duie2.0-main": "duie",
+    nyt: "nyt",
+    raw_webnlg: "webnlg",
+    scierc: "scierc",
+    webnlg: "webnlg",
+    equipmentmix15k: "equipmentmix15k",
+    industrial: "equipmentmix15k",
+    industrialequipmentmix15k: "equipmentmix15k",
+    industrialequipmentmix15k_mfgdominant: "equipmentmix15k",
+  };
+  return aliasMap[raw] || raw;
+}
+
 function buildInitialPredictForm(deployments, models) {
   const running = deployments.find((item) => item.status === "running") || deployments[0];
   const matchingModel = models.find((item) => item.model_id === running?.model_id);
+  const datasetKey = resolvePredictDatasetKey(matchingModel?.dataset_name);
   return {
     deploymentId: running?.deployment_id || "",
-    text: "",
-    scene: matchingModel?.dataset_name ? `${matchingModel.dataset_name}_relation_extraction` : "",
+    text: DEFAULT_PREDICT_TEXT,
+    scene: datasetKey,
     optionsJson: "{\"max_length\": 100}",
   };
 }
@@ -405,7 +449,31 @@ function buildInitialTaskRoutingForm(report) {
     objective: "accuracy",
     language: "auto",
     maxModels: 3,
+    scene: "",
     optionsJson: "{}",
+  };
+}
+
+function defaultTaskRoutingFeedbackType(objective) {
+  const mapping = {
+    accuracy: "accuracy",
+    coverage: "coverage",
+    latency: "latency",
+    balanced: "balanced",
+    resource: "latency",
+    domain: "accuracy",
+  };
+  return mapping[objective] || "accepted";
+}
+
+function buildInitialTaskRoutingFeedbackForm(taskRoutingResult) {
+  const executionResults = taskRoutingResult?.execution_results || [];
+  return {
+    decisionId: taskRoutingResult?.decision_id || "",
+    accepted: true,
+    feedbackType: defaultTaskRoutingFeedbackType(taskRoutingResult?.objective),
+    adoptedModelId: executionResults[0]?.model_id || "",
+    note: "",
   };
 }
 
@@ -507,21 +575,43 @@ export default function App() {
   const [loadStatus, setLoadStatus] = useState("正在加载");
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState({ type: "ok", text: "" });
-  const [demoRunning, setDemoRunning] = useState(false);
   const [actionBusy, setActionBusy] = useState({});
   const [modelImportForm, setModelImportForm] = useState(buildInitialModelImportForm(null));
-  const [modelTransferStatus, setModelTransferStatus] = useState(initialModelTransferStatus);
+  const [modelTransferItems, setModelTransferItems] = useState([]);
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
+  const [predictSampleInfo, setPredictSampleInfo] = useState(null);
+  const [predictSampleCursor, setPredictSampleCursor] = useState({});
   const [predictResult, setPredictResult] = useState(null);
   const [taskRoutingForm, setTaskRoutingForm] = useState(buildInitialTaskRoutingForm(null));
   const [taskRoutingResult, setTaskRoutingResult] = useState(null);
+  const [taskRoutingFeedbackForm, setTaskRoutingFeedbackForm] = useState(buildInitialTaskRoutingFeedbackForm(null));
   const [deploymentPolicy, setDeploymentPolicy] = useState(null);
   const [deploymentPolicyAutomation, setDeploymentPolicyAutomation] = useState(null);
   const [deploymentPolicyAutomationForm, setDeploymentPolicyAutomationForm] = useState(buildInitialDeploymentPolicyAutomationForm());
   const [selectedHealth, setSelectedHealth] = useState(null);
   const [selectedLogs, setSelectedLogs] = useState(null);
+
+  function addModelTransferTask(task) {
+    setModelTransferItems((current) => [task, ...current]);
+  }
+
+  function updateModelTransferTask(taskId, patch) {
+    setModelTransferItems((current) =>
+      current.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)),
+    );
+  }
+
+  function removeModelTransferTask(taskId) {
+    setModelTransferItems((current) => current.filter((item) => item.taskId !== taskId));
+  }
+
+  function scheduleModelTransferCleanup(taskId, delayMs = 3500) {
+    window.setTimeout(() => {
+      setModelTransferItems((current) => current.filter((item) => item.taskId !== taskId));
+    }, delayMs);
+  }
 
   useEffect(() => {
     void initializeSession();
@@ -585,10 +675,7 @@ export default function App() {
     }
 
     setPredictForm((current) => {
-      if (current.text) {
-        return current;
-      }
-      return { ...current, text: sampleText };
+      return current;
     });
 
     setBenchmarkForm((current) => {
@@ -605,6 +692,61 @@ export default function App() {
       return { ...current, text: sampleText };
     });
   }, [data.report]);
+
+  async function hydratePredictSample(datasetKey, { advance = false } = {}) {
+    const resolvedDatasetKey = resolvePredictDatasetKey(datasetKey);
+    const currentIndex = predictSampleCursor[resolvedDatasetKey] ?? 0;
+    const nextIndex = advance ? currentIndex + 1 : 0;
+    setActionBusy((current) => ({ ...current, [`predict-sample-${resolvedDatasetKey}`]: true }));
+    try {
+      const sample = await getDatasetSampleText(resolvedDatasetKey, nextIndex);
+      const text = String(sample?.text || data.datasetCatalog?.default_fallback_text || DEFAULT_PREDICT_TEXT);
+      setPredictSampleInfo(sample);
+      setPredictSampleCursor((current) => ({
+        ...current,
+        [resolvedDatasetKey]: Number(sample?.effective_index ?? 0),
+      }));
+      setPredictForm((current) => (
+        current.scene === resolvedDatasetKey
+          ? { ...current, text }
+          : current
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallbackText = data.datasetCatalog?.default_fallback_text || DEFAULT_PREDICT_TEXT;
+      setPredictSampleInfo({
+        dataset_key: resolvedDatasetKey,
+        dataset_name: resolvedDatasetKey,
+        dataset_source: "-",
+        record_count: 0,
+        effective_index: 0,
+        case_id: null,
+        text: fallbackText,
+        triple_count: 0,
+        is_fallback: true,
+        detail: message,
+      });
+      setPredictSampleCursor((current) => ({ ...current, [resolvedDatasetKey]: 0 }));
+      setPredictForm((current) => (
+        current.scene === resolvedDatasetKey
+          ? { ...current, text: fallbackText }
+          : current
+      ));
+    } finally {
+      setActionBusy((current) => ({ ...current, [`predict-sample-${resolvedDatasetKey}`]: false }));
+    }
+  }
+
+  useEffect(() => {
+    if (!predictForm.scene) {
+      return;
+    }
+    void hydratePredictSample(predictForm.scene, { advance: false });
+  }, [predictForm.scene]);
+
+  useEffect(() => {
+    setTaskRoutingFeedbackForm(buildInitialTaskRoutingFeedbackForm(taskRoutingResult));
+  }, [taskRoutingResult?.decision_id]);
 
   async function refreshAll({ silent = false } = {}) {
     if (!silent) {
@@ -692,7 +834,10 @@ export default function App() {
       setAuthSession(session);
       setData(initialData);
       setPredictResult(null);
+      setPredictSampleInfo(null);
+      setPredictSampleCursor({});
       setTaskRoutingResult(null);
+      setTaskRoutingFeedbackForm(buildInitialTaskRoutingFeedbackForm(null));
       setDeploymentPolicy(null);
       setDeploymentPolicyAutomation(null);
       setDeploymentPolicyAutomationForm(buildInitialDeploymentPolicyAutomationForm());
@@ -705,22 +850,6 @@ export default function App() {
       setNotice({ type: "error", text: message });
     } finally {
       setActionBusy((current) => ({ ...current, logout: false }));
-    }
-  }
-
-  async function handleRunDemo() {
-    setDemoRunning(true);
-    setLoadStatus("正在生成演示报告");
-    try {
-      await runCasrelDemo();
-      setNotice({ type: "ok", text: "CasRel 演示报告已重新生成。" });
-      await refreshAll({ silent: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setLoadError(message);
-      setLoadStatus("演示失败");
-    } finally {
-      setDemoRunning(false);
     }
   }
 
@@ -771,9 +900,9 @@ export default function App() {
       setNotice({ type: "error", text: "模式A需要填写数据集名称，平台才能生成统一命名。" });
       return;
     }
-    setActionBusy((current) => ({ ...current, "import-model": true }));
     setNotice({ type: "ok", text: "" });
-    setModelTransferStatus({
+    const task = buildModelTransferTask({
+      taskId: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       direction: "upload",
       phase: "running",
       percent: 0,
@@ -783,6 +912,7 @@ export default function App() {
       modelId: "",
       detail: "正在上传模型压缩包到 LuckyModels。",
     });
+    addModelTransferTask(task);
     try {
       const result = await importModelArchive({
         archive: modelImportForm.archive,
@@ -795,8 +925,7 @@ export default function App() {
         backbone: modelImportForm.backbone.trim(),
         alias: modelImportForm.alias.trim(),
         onUploadProgress: (progress) => {
-          setModelTransferStatus((current) => ({
-            ...current,
+          updateModelTransferTask(task.taskId, {
             direction: "upload",
             phase: "running",
             percent: progress.percent,
@@ -805,12 +934,12 @@ export default function App() {
             detail: progress.percent === 100
               ? "上传完成，正在由平台生成标准模型包。"
               : "正在上传模型压缩包到 LuckyModels。",
-          }));
+          });
         },
       });
       await refreshAll({ silent: true });
       setModelImportForm(buildInitialModelImportForm(data.importOptions));
-      setModelTransferStatus({
+      updateModelTransferTask(task.taskId, {
         direction: "upload",
         phase: "completed",
         percent: 100,
@@ -820,21 +949,20 @@ export default function App() {
         modelId: result.model_id,
         detail: `模型制品已导入：${result.model_id}`,
       });
+      scheduleModelTransferCleanup(task.taskId);
       setNotice({
         type: "ok",
         text: `模型制品已导入：${result.model_id}。命名规则为 模型家族-语言-数据集[-别名]-版本。`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setModelTransferStatus((current) => ({
-        ...current,
+      updateModelTransferTask(task.taskId, {
         direction: "upload",
         phase: "failed",
         detail: message,
-      }));
+      });
+      scheduleModelTransferCleanup(task.taskId);
       setNotice({ type: "error", text: message });
-    } finally {
-      setActionBusy((current) => ({ ...current, "import-model": false }));
     }
   }
 
@@ -938,6 +1066,21 @@ export default function App() {
     setPredictResult(result);
   }
 
+  function handleSelectPredictDeployment(deploymentId) {
+    const targetDeployment = data.deployments.find((item) => item.deployment_id === deploymentId);
+    const targetModel = data.models.find((item) => item.model_id === targetDeployment?.model_id);
+    const nextScene = resolvePredictDatasetKey(targetModel?.dataset_name);
+    setPredictForm((current) => ({
+      ...current,
+      deploymentId,
+      scene: nextScene,
+    }));
+  }
+
+  async function handleRefreshPredictSample() {
+    await hydratePredictSample(predictForm.scene, { advance: true });
+  }
+
   async function handleRunTaskRouting() {
     setActionBusy((current) => ({ ...current, "task-routing": true }));
     setNotice({ type: "ok", text: "" });
@@ -947,6 +1090,7 @@ export default function App() {
         text: taskRoutingForm.text,
         objective: taskRoutingForm.objective,
         language: taskRoutingForm.language === "auto" ? undefined : taskRoutingForm.language,
+        scene: taskRoutingForm.scene || undefined,
         max_models: Number(taskRoutingForm.maxModels),
         options,
       });
@@ -958,6 +1102,25 @@ export default function App() {
     } finally {
       setActionBusy((current) => ({ ...current, "task-routing": false }));
     }
+  }
+
+  async function handleSubmitTaskRoutingFeedback() {
+    if (!taskRoutingFeedbackForm.decisionId) {
+      setNotice({ type: "error", text: "当前没有可反馈的调度决策，请先运行一次任务调度。" });
+      return;
+    }
+    await runAction(
+      `task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`,
+      () =>
+        submitTaskRoutingFeedback({
+          decision_id: taskRoutingFeedbackForm.decisionId,
+          accepted: Boolean(taskRoutingFeedbackForm.accepted),
+          feedback_type: taskRoutingFeedbackForm.feedbackType,
+          adopted_model_id: taskRoutingFeedbackForm.adoptedModelId || undefined,
+          note: taskRoutingFeedbackForm.note?.trim() || undefined,
+        }),
+      "任务调度反馈已记录，后续同类请求会参考这条闭环信息。",
+    );
   }
 
   async function handleLoadDeploymentPolicy() {
@@ -1112,7 +1275,8 @@ export default function App() {
 
   async function handleExportModelPackage(modelId) {
     setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: true }));
-    setModelTransferStatus({
+    const task = buildModelTransferTask({
+      taskId: `download-${modelId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       direction: "download",
       phase: "running",
       percent: 0,
@@ -1122,42 +1286,42 @@ export default function App() {
       modelId,
       detail: `正在导出模型制品：${modelId}`,
     });
+    addModelTransferTask(task);
     try {
       const { blob, filename } = await exportModelPackage(modelId, (progress) => {
-        setModelTransferStatus((current) => ({
-          ...current,
+        updateModelTransferTask(task.taskId, {
           direction: "download",
           phase: "running",
           percent: progress.percent,
           loadedBytes: progress.loaded,
           totalBytes: progress.total,
-          fileName: current.fileName || `${modelId}.zip`,
+          fileName: task.fileName || `${modelId}.zip`,
           modelId,
           detail: "正在从平台下载模型制品。",
-        }));
+        });
       });
       downloadBlobFile(filename || `${modelId}.zip`, blob);
-      setModelTransferStatus((current) => ({
-        ...current,
+      updateModelTransferTask(task.taskId, {
         direction: "download",
         phase: "completed",
         percent: 100,
-        loadedBytes: current.totalBytes || blob.size || current.loadedBytes,
-        totalBytes: current.totalBytes || blob.size || null,
+        loadedBytes: blob.size || task.loadedBytes,
+        totalBytes: blob.size || null,
         fileName: filename || `${modelId}.zip`,
         modelId,
         detail: `模型制品已导出：${modelId}`,
-      }));
+      });
+      scheduleModelTransferCleanup(task.taskId);
       setNotice({ type: "ok", text: `已导出模型制品包：${modelId}` });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setModelTransferStatus((current) => ({
-        ...current,
+      updateModelTransferTask(task.taskId, {
         direction: "download",
         phase: "failed",
         modelId,
         detail: message,
-      }));
+      });
+      scheduleModelTransferCleanup(task.taskId);
       setNotice({ type: "error", text: message });
     } finally {
       setActionBusy((current) => ({ ...current, [`export-model-${modelId}`]: false }));
@@ -1201,6 +1365,20 @@ export default function App() {
     const report = data.report || {};
     const gpuStatus = data.gpuStatus || { available: false, gpu_count: 0, devices: [] };
     const accessOverview = data.accessOverview || { users: [], roles: [], permissions: [], current_permissions: [] };
+    const datasetCatalog = data.datasetCatalog || { datasets: DEFAULT_PREDICT_DATASETS, default_fallback_text: DEFAULT_PREDICT_TEXT };
+    const taskRoutingFeedbackOverview = data.taskRoutingFeedbackOverview || {
+      total_decisions: 0,
+      total_feedback: 0,
+      acceptance_rate: null,
+      pending_feedback_count: 0,
+      last_feedback_at: null,
+      objective_summaries: [],
+      execution_path_summaries: [],
+      model_adoption_summaries: [],
+      weight_profiles: [],
+      recent_decisions: [],
+      insights: [],
+    };
     const runningDeployments = deployments.filter((item) => item.status === "running");
     const predictableModels = models.filter((item) => item.predict_ready);
     const latestDeployment = deployments.length ? [...deployments].reverse()[0] : null;
@@ -1218,6 +1396,8 @@ export default function App() {
       predictArchives,
       gpuStatus,
       accessOverview,
+      datasetCatalog,
+      taskRoutingFeedbackOverview,
       accessUsers: accessOverview.users || [],
       accessRoles: accessOverview.roles || [],
       accessPermissions: accessOverview.permissions || [],
@@ -1246,7 +1426,6 @@ export default function App() {
       authSession={authSession}
       benchmarkForm={benchmarkForm}
       data={data}
-      demoRunning={demoRunning}
       deploymentForm={deploymentForm}
       derived={derived}
       loadError={loadError}
@@ -1285,16 +1464,21 @@ export default function App() {
       onUpdateAccessUser={handleUpdateAccessUser}
       onInspectDeployment={handleInspectDeployment}
       onPredict={handlePredict}
+      onRefreshPredictSample={handleRefreshPredictSample}
+      onSelectPredictDeployment={handleSelectPredictDeployment}
       onPredictFormChange={setPredictForm}
       onRefresh={refreshAll}
       onResetAccessUserPassword={handleResetAccessUserPassword}
-      onRunDemo={handleRunDemo}
       onRunTaskRouting={handleRunTaskRouting}
+      onSubmitTaskRoutingFeedback={handleSubmitTaskRoutingFeedback}
       onTaskRoutingFormChange={setTaskRoutingForm}
+      onTaskRoutingFeedbackFormChange={setTaskRoutingFeedbackForm}
       predictForm={predictForm}
+      predictSampleInfo={predictSampleInfo}
       predictResult={predictResult}
       modelImportForm={modelImportForm}
-      modelTransferStatus={modelTransferStatus}
+      modelTransferItems={modelTransferItems}
+      onDismissModelTransfer={removeModelTransferTask}
       onModelImportFormChange={setModelImportForm}
       deploymentPolicy={deploymentPolicy}
       deploymentPolicyAutomation={deploymentPolicyAutomation}
@@ -1304,6 +1488,7 @@ export default function App() {
       onDeploymentPolicyAutomationFormChange={setDeploymentPolicyAutomationForm}
       selectedHealth={selectedHealth}
       selectedLogs={selectedLogs}
+      taskRoutingFeedbackForm={taskRoutingFeedbackForm}
       taskRoutingForm={taskRoutingForm}
       taskRoutingResult={taskRoutingResult}
     />
@@ -1453,7 +1638,6 @@ function Shell(props) {
     authSession,
     benchmarkForm,
     data,
-    demoRunning,
     deploymentForm,
     derived,
     loadError,
@@ -1484,22 +1668,28 @@ function Shell(props) {
     onUpdateAccessUser,
     onInspectDeployment,
     onPredict,
+    onRefreshPredictSample,
+    onSelectPredictDeployment,
     onPredictFormChange,
     onRefresh,
     onResetAccessUserPassword,
-    onRunDemo,
     onRunTaskRouting,
+    onSubmitTaskRoutingFeedback,
     onTaskRoutingFormChange,
+    onTaskRoutingFeedbackFormChange,
     predictForm,
+    predictSampleInfo,
     predictResult,
     modelImportForm,
-    modelTransferStatus,
+    modelTransferItems,
+    onDismissModelTransfer,
     onModelImportFormChange,
     deploymentPolicy,
     deploymentPolicyAutomation,
     deploymentPolicyAutomationForm,
     selectedHealth,
     selectedLogs,
+    taskRoutingFeedbackForm,
     taskRoutingForm,
     taskRoutingResult,
   } = props;
@@ -1621,15 +1811,16 @@ function Shell(props) {
               "/experiments",
               <ExperimentsPage
                 actionBusy={actionBusy}
-                demoRunning={demoRunning}
                 derived={derived}
                 onDeletePredictionArchive={onDeletePredictionArchive}
                 onExportPredictResult={onExportPredictResult}
                 onPredict={onPredict}
+                onRefreshPredictSample={onRefreshPredictSample}
+                onSelectPredictDeployment={onSelectPredictDeployment}
                 onPredictFormChange={onPredictFormChange}
                 onRefresh={onRefresh}
-                onRunDemo={onRunDemo}
                 predictForm={predictForm}
+                predictSampleInfo={predictSampleInfo}
                 predictResult={predictResult}
                 selectedHealth={selectedHealth}
                 selectedLogs={selectedLogs}
@@ -1641,7 +1832,10 @@ function Shell(props) {
                 actionBusy={actionBusy}
                 derived={derived}
                 onRunTaskRouting={onRunTaskRouting}
+                onSubmitTaskRoutingFeedback={onSubmitTaskRoutingFeedback}
                 onTaskRoutingFormChange={onTaskRoutingFormChange}
+                onTaskRoutingFeedbackFormChange={onTaskRoutingFeedbackFormChange}
+                taskRoutingFeedbackForm={taskRoutingFeedbackForm}
                 taskRoutingForm={taskRoutingForm}
                 taskRoutingResult={taskRoutingResult}
               />,
@@ -1706,7 +1900,8 @@ function Shell(props) {
                 onCreateDeployment={onCreateDeployment}
                 onDeploymentFormChange={onDeploymentFormChange}
                 modelImportForm={modelImportForm}
-                modelTransferStatus={modelTransferStatus}
+                modelTransferItems={modelTransferItems}
+                onDismissModelTransfer={onDismissModelTransfer}
                 onDeleteModelPackage={onDeleteModelPackage}
                 onExportModelPackage={onExportModelPackage}
                 onImportModel={onImportModel}
@@ -1816,21 +2011,204 @@ function OverviewPage({ derived }) {
   );
 }
 
+function PredictionGraphCard({ predictResult }) {
+  const [nodeLimit, setNodeLimit] = useState(20);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragStart, setDragStart] = useState(null);
+
+  const graphData = useMemo(() => {
+    const triples = Array.isArray(predictResult?.triples) ? predictResult.triples : [];
+    if (!triples.length) {
+      return { nodes: [], edges: [], totalNodeCount: 0 };
+    }
+
+    const nodes = [];
+    const nodeIndex = new Map();
+    const edges = [];
+
+    for (const triple of triples) {
+      const subject = String(triple?.subject || "").trim();
+      const object = String(triple?.object || "").trim();
+      const predicate = String(triple?.predicate || "").trim();
+      if (!subject || !object || !predicate) {
+        continue;
+      }
+
+      for (const label of [subject, object]) {
+        if (!nodeIndex.has(label)) {
+          nodeIndex.set(label, nodes.length);
+          nodes.push({ id: label, label });
+        }
+      }
+
+      edges.push({
+        source: subject,
+        target: object,
+        predicate,
+        confidence: triple?.confidence,
+      });
+    }
+
+    const limitedNodes = nodes.slice(0, Math.max(1, nodeLimit));
+    const allowed = new Set(limitedNodes.map((item) => item.id));
+    const limitedEdges = edges.filter((item) => allowed.has(item.source) && allowed.has(item.target));
+
+    const centerX = 340;
+    const centerY = 220;
+    const radius = Math.max(110, Math.min(190, 30 + limitedNodes.length * 7));
+    const positionedNodes = limitedNodes.map((item, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, limitedNodes.length);
+      return {
+        ...item,
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius,
+      };
+    });
+
+    const positionMap = new Map(positionedNodes.map((item) => [item.id, item]));
+    const positionedEdges = limitedEdges
+      .map((item) => ({
+        ...item,
+        sourceNode: positionMap.get(item.source),
+        targetNode: positionMap.get(item.target),
+      }))
+      .filter((item) => item.sourceNode && item.targetNode);
+
+    return {
+      nodes: positionedNodes,
+      edges: positionedEdges,
+      totalNodeCount: nodes.length,
+    };
+  }, [nodeLimit, predictResult]);
+
+  function handleWheel(event) {
+    event.preventDefault();
+    setZoom((current) => {
+      const next = current + (event.deltaY < 0 ? 0.1 : -0.1);
+      return Math.max(0.5, Math.min(2.4, Number(next.toFixed(2))));
+    });
+  }
+
+  function handleDragStart(event) {
+    setDragStart({
+      x: event.clientX - pan.x,
+      y: event.clientY - pan.y,
+    });
+  }
+
+  function handleDragMove(event) {
+    if (!dragStart) {
+      return;
+    }
+    setPan({
+      x: event.clientX - dragStart.x,
+      y: event.clientY - dragStart.y,
+    });
+  }
+
+  function handleDragEnd() {
+    setDragStart(null);
+  }
+
+  return (
+    <article className="card detail-card">
+      <SectionHeader
+        kicker="关系图谱"
+        title="图谱视图"
+        note="根据本次预测结果自动生成小图谱，支持滚轮缩放、拖拽平移与节点数量调节。"
+      />
+      {graphData.nodes.length ? (
+        <>
+          <div className="graph-toolbar">
+            <label className="graph-slider">
+              <span>最多节点数：{nodeLimit}</span>
+              <input
+                max={Math.max(20, Math.min(80, graphData.totalNodeCount))}
+                min="5"
+                onChange={(event) => setNodeLimit(Number(event.target.value))}
+                type="range"
+                value={Math.min(nodeLimit, Math.max(20, Math.min(80, graphData.totalNodeCount)))}
+              />
+            </label>
+            <div className="actions">
+              <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.1).toFixed(2))))} type="button">缩小</button>
+              <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} type="button">重置视图</button>
+              <button onClick={() => setZoom((current) => Math.min(2.4, Number((current + 0.1).toFixed(2))))} type="button">放大</button>
+            </div>
+          </div>
+          <div
+            className="graph-shell"
+            onMouseDown={handleDragStart}
+            onMouseLeave={handleDragEnd}
+            onMouseMove={handleDragMove}
+            onMouseUp={handleDragEnd}
+            onWheel={handleWheel}
+            role="presentation"
+          >
+            <svg className="graph-svg" viewBox="0 0 680 440">
+              <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+                {graphData.edges.map((edge, index) => {
+                  const midX = (edge.sourceNode.x + edge.targetNode.x) / 2;
+                  const midY = (edge.sourceNode.y + edge.targetNode.y) / 2;
+                  return (
+                    <g key={`${edge.source}-${edge.target}-${edge.predicate}-${index + 1}`}>
+                      <line
+                        className="graph-edge"
+                        x1={edge.sourceNode.x}
+                        x2={edge.targetNode.x}
+                        y1={edge.sourceNode.y}
+                        y2={edge.targetNode.y}
+                      />
+                      <text className="graph-edge-label" x={midX} y={midY - 6}>
+                        {edge.predicate}
+                      </text>
+                    </g>
+                  );
+                })}
+                {graphData.nodes.map((node) => (
+                  <g key={node.id} transform={`translate(${node.x} ${node.y})`}>
+                    <circle className="graph-node" r="24" />
+                    <text className="graph-node-label" textAnchor="middle" y="4">
+                      {node.label.length > 10 ? `${node.label.slice(0, 10)}…` : node.label}
+                    </text>
+                  </g>
+                ))}
+              </g>
+            </svg>
+          </div>
+          <div className="detail-note">
+            当前展示 {graphData.nodes.length} / {graphData.totalNodeCount} 个节点，滚轮可缩放，按住图谱区域可拖拽平移。
+          </div>
+        </>
+      ) : (
+        <EmptyState icon="G" title="还没有可展示的图谱" note="先完成一次在线推理，平台会根据三元组自动绘制关系图谱。" />
+      )}
+    </article>
+  );
+}
+
 function ExperimentsPage({
   actionBusy,
-  demoRunning,
   derived,
   onDeletePredictionArchive,
   onExportPredictResult,
   onPredict,
+  onRefreshPredictSample,
+  onSelectPredictDeployment,
   onPredictFormChange,
-  onRefresh,
-  onRunDemo,
   predictForm,
+  predictSampleInfo,
   predictResult,
   selectedHealth,
   selectedLogs,
 }) {
+  const datasetOptions = derived.datasetCatalog?.datasets?.length
+    ? derived.datasetCatalog.datasets
+    : DEFAULT_PREDICT_DATASETS;
+  const activeScene = resolvePredictDatasetKey(predictForm.scene);
+  const sampleBusy = actionBusy[`predict-sample-${activeScene}`];
+
   return (
     <>
       <section className="page-shell card section-shell">
@@ -1840,9 +2218,8 @@ function ExperimentsPage({
           note="从平台里选择运行中的部署实例，直接通过控制面代理接口完成预测。"
           right={
             <div className="actions">
-              <button onClick={() => void onRefresh()} type="button">刷新数据</button>
-              <button className="btn-primary" disabled={demoRunning} onClick={() => void onRunDemo()} type="button">
-                {demoRunning ? "运行中" : "刷新 CasRel 演示"}
+              <button disabled={sampleBusy} onClick={() => void onRefreshPredictSample()} type="button">
+                {sampleBusy ? "刷新中" : "刷新数据"}
               </button>
             </div>
           }
@@ -1852,7 +2229,7 @@ function ExperimentsPage({
             <label className="stack-field">
               <span>选择部署实例</span>
               <select
-                onChange={(event) => onPredictFormChange((current) => ({ ...current, deploymentId: event.target.value }))}
+                onChange={(event) => onSelectPredictDeployment(event.target.value)}
                 value={predictForm.deploymentId}
               >
                 {derived.runningDeployments.map((item) => (
@@ -1863,12 +2240,18 @@ function ExperimentsPage({
               </select>
             </label>
             <label className="stack-field">
-              <span>场景标识</span>
-              <input
+              <span>数据集场景</span>
+              <select
                 onChange={(event) => onPredictFormChange((current) => ({ ...current, scene: event.target.value }))}
-                type="text"
-                value={predictForm.scene}
-              />
+                value={activeScene}
+              >
+                {datasetOptions.map((item) => (
+                  <option key={item.dataset_key} value={item.dataset_key}>
+                    {item.dataset_name}
+                    {item.available ? "" : "（未迁移）"}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="stack-field stack-field-wide">
               <span>输入文本</span>
@@ -1877,6 +2260,13 @@ function ExperimentsPage({
                 rows="4"
                 value={predictForm.text}
               />
+              <small className="detail-note">
+                {predictSampleInfo?.is_fallback
+                  ? `当前数据集样本不可用，已回退到固定默认文本。${predictSampleInfo?.detail ? `原因：${predictSampleInfo.detail}` : ""}`
+                  : predictSampleInfo?.case_id
+                    ? `当前样本：${predictSampleInfo.case_id} · 来源：${predictSampleInfo.dataset_source}`
+                    : "选择数据集后，平台会自动填充对应样本文本。"}
+              </small>
             </label>
             <label className="stack-field stack-field-wide">
               <span>推理参数 JSON</span>
@@ -1945,10 +2335,7 @@ function ExperimentsPage({
           )}
         </article>
 
-        <article className="card detail-card">
-          <SectionHeader kicker="运行明细" title="运行快照" />
-          <div className="logs">{selectedHealth ? JSON.stringify(selectedHealth, null, 2) : selectedLogs?.content || "先在部署页查看健康或日志。"} </div>
-        </article>
+        <PredictionGraphCard predictResult={predictResult} />
       </section>
 
       <section className="page-shell card section-shell">
@@ -2409,17 +2796,51 @@ function TaskRoutingPage({
   actionBusy,
   derived,
   onRunTaskRouting,
+  onSubmitTaskRoutingFeedback,
   onTaskRoutingFormChange,
+  onTaskRoutingFeedbackFormChange,
+  taskRoutingFeedbackForm,
   taskRoutingForm,
   taskRoutingResult,
 }) {
+  const candidateOptions = [
+    { value: "accuracy", label: "高准确", note: "优先稳定性与一致性投票，适合论文展示与知识库入库前校验。" },
+    { value: "coverage", label: "高覆盖", note: "优先召回更多三元组，适合线索发现与候选补全。" },
+    { value: "latency", label: "低时延", note: "优先低 P95 部署，适合在线交互快速返回。" },
+    { value: "balanced", label: "综合平衡", note: "在准确、覆盖、时延和成本之间做折中。" },
+    { value: "resource", label: "低成本", note: "优先低资源占用路径，适合 GPU 紧张场景。" },
+    { value: "domain", label: "领域优先", note: "优先选择与输入领域更匹配的部署并交叉校验。" },
+  ];
+  const feedbackTypeOptions = [
+    { value: "accepted", label: "按当前策略即可", note: "表示当前调度已经满足需求，会轻微强化当前策略。" },
+    { value: "accuracy", label: "更重准确", note: "后续同类请求会更偏向准确与稳定。" },
+    { value: "coverage", label: "更重覆盖", note: "后续同类请求会更偏向召回更多三元组。" },
+    { value: "latency", label: "更重速度", note: "后续同类请求会更偏向低时延路径。" },
+    { value: "balanced", label: "保持平衡", note: "表示综合折中策略更符合该类请求。" },
+    { value: "manual_revision", label: "需要人工修正", note: "表示结果不够可靠，系统会提高准确与稳定权重。" },
+  ];
+  const feedbackOverview = derived.taskRoutingFeedbackOverview || {
+    total_decisions: 0,
+    total_feedback: 0,
+    acceptance_rate: null,
+    pending_feedback_count: 0,
+    last_feedback_at: null,
+    objective_summaries: [],
+    execution_path_summaries: [],
+    model_adoption_summaries: [],
+    weight_profiles: [],
+    recent_decisions: [],
+    insights: [],
+  };
+  const adoptedModelOptions = (taskRoutingResult?.execution_results || []).map((item) => item.model_id);
+
   return (
     <>
       <section className="page-shell card section-shell">
         <SectionHeader
           kicker="创新点一"
           title="任务级模型调度策略"
-          note="根据用户目标在单模型与多模型之间切换：高准确采用投票融合，高覆盖采用并集融合，低时延优先选取 P95 更低的部署。"
+          note="平台会综合用户目标、文本难度、领域特征、历史 benchmark、近期调用情况与资源成本，在单模型、交叉验证和多模型融合路径之间动态切换。"
           right={
             <div className="actions">
               <button
@@ -2440,10 +2861,15 @@ function TaskRoutingPage({
               onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
               value={taskRoutingForm.objective}
             >
-              <option value="accuracy">高准确</option>
-              <option value="coverage">高覆盖</option>
-              <option value="latency">低时延</option>
+              {candidateOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
             </select>
+            <small className="detail-note">
+              {candidateOptions.find((item) => item.value === taskRoutingForm.objective)?.note}
+            </small>
           </label>
           <label className="stack-field">
             <span>语言</span>
@@ -2465,6 +2891,15 @@ function TaskRoutingPage({
               type="number"
               value={taskRoutingForm.maxModels}
             />
+          </label>
+          <label className="stack-field">
+            <span>场景标识</span>
+            <input
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, scene: event.target.value }))}
+              placeholder="可选，例如 industrial / scientific / duie"
+              value={taskRoutingForm.scene || ""}
+            />
+            <small className="detail-note">会辅助领域识别，也会写入决策归档。</small>
           </label>
           <label className="stack-field stack-field-wide">
             <span>输入文本</span>
@@ -2504,9 +2939,34 @@ function TaskRoutingPage({
                 <MetricCard title="目标" value={taskRoutingResult.objective} note={taskRoutingResult.strategy_mode} />
                 <MetricCard title="语言" value={taskRoutingResult.inferred_language} note={`请求语言：${taskRoutingResult.requested_language || "自动"}`} />
                 <MetricCard title="任务难度" value={taskRoutingResult.difficulty} note={`候选 ${taskRoutingResult.candidate_count} 个，选中 ${taskRoutingResult.selected_count} 个`} />
-                <MetricCard title="融合模式" value={taskRoutingResult.fused_result?.fusion_mode || "-"} note="任务级调度输出" />
+                <MetricCard title="执行路径" value={taskRoutingResult.execution_path || "-"} note={taskRoutingResult.fusion_policy || "任务级调度输出"} />
               </div>
               <div className="banner banner-muted">{taskRoutingResult.explanation}</div>
+              <div className="metrics">
+                <MetricCard title="领域" value={taskRoutingResult.context_features?.domain || "-"} note={`实体线索 ${taskRoutingResult.context_features?.entity_hint_count || 0}`} />
+                <MetricCard title="文本长度" value={taskRoutingResult.context_features?.text_length || "-"} note={`子句数 ${taskRoutingResult.context_features?.clause_count || 0}`} />
+                <MetricCard title="融合模式" value={taskRoutingResult.fused_result?.fusion_mode || "-"} note={`三元组 ${taskRoutingResult.fused_result?.triple_count || 0}`} />
+                <MetricCard title="权重主项" value={Object.entries(taskRoutingResult.objective_weights || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || "-"} note="当前目标权重最高项" />
+              </div>
+              <div className="tag-list">
+                {Object.entries(taskRoutingResult.objective_weights || {}).map(([key, value]) => (
+                  <span className="tag" key={key}>
+                    {key}: {Number(value).toFixed(2)}
+                  </span>
+                ))}
+              </div>
+              {(taskRoutingResult.adaptive_adjustments && Object.keys(taskRoutingResult.adaptive_adjustments).length > 0) ? (
+                <div className="tag-list">
+                  {Object.entries(taskRoutingResult.adaptive_adjustments || {}).map(([key, value]) => (
+                    <span className="tag tag-emphasis" key={key}>
+                      调整 {key}: {Number(value).toFixed(2)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {(taskRoutingResult.adaptation_reasons || []).length ? (
+                <div className="logs">{(taskRoutingResult.adaptation_reasons || []).join("\n")}</div>
+              ) : null}
               <div className="relation-list">
                 {(taskRoutingResult.fused_result?.triples || []).map((item, index) => (
                   <div className="relation-item" key={`${item.subject}-${item.predicate}-${item.object}-${index + 1}`}>
@@ -2531,26 +2991,316 @@ function TaskRoutingPage({
         <article className="card detail-card">
           <SectionHeader kicker="候选明细" title="候选部署与执行明细" />
           {taskRoutingResult ? (
-            <div className="logs">
-              {JSON.stringify(
-                {
-                  selected_deployments: taskRoutingResult.selected_deployments,
-                  execution_results: taskRoutingResult.execution_results.map((item) => ({
-                    deployment_id: item.deployment_id,
-                    model_id: item.model_id,
-                    profile_name: item.profile_name,
-                    latency_ms: item.latency_ms,
-                    triple_count: item.triple_count,
-                    warnings: item.warnings,
-                  })),
-                },
-                null,
-                2,
-              )}
-            </div>
+            <>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>部署</th>
+                      <th>模型</th>
+                      <th>得分拆解</th>
+                      <th>领域匹配</th>
+                      <th>资源级别</th>
+                      <th>说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {taskRoutingResult.selected_deployments.map((item) => (
+                      <tr key={item.deployment_id}>
+                        <td>
+                          <strong>{item.deployment_id}</strong>
+                          <div className="table-note">{item.profile_name}</div>
+                        </td>
+                        <td>
+                          <div>{item.model_id}</div>
+                          <div className="table-note">score={item.selection_score ?? "-"}</div>
+                        </td>
+                        <td>
+                          <div className="table-note">acc {item.score_breakdown?.accuracy ?? "-"}</div>
+                          <div className="table-note">cov {item.score_breakdown?.coverage ?? "-"}</div>
+                          <div className="table-note">lat {item.score_breakdown?.latency ?? "-"}</div>
+                        </td>
+                        <td>{item.domain_match || "-"}</td>
+                        <td>{item.resource_cost_level || "-"}</td>
+                        <td className="limitation-cell">{item.selection_reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="logs">
+                {(taskRoutingResult.decision_trace || []).join("\n")}
+              </div>
+            </>
           ) : (
             <div className="logs">运行后这里会给出候选排序、实际选中的 deployment，以及各模型的执行结果摘要。</div>
           )}
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader
+            kicker="反馈闭环"
+            title="当前结果反馈"
+            note="这里不是重新训练底层模型，而是记录用户采用情况，逐步修正任务调度层的权重。"
+          />
+          {taskRoutingResult?.decision_id ? (
+            <>
+              <div className="metrics">
+                <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度已自动归档，可提交一次反馈" />
+                <MetricCard title="默认反馈方向" value={defaultTaskRoutingFeedbackType(taskRoutingResult.objective)} note="会根据当前目标偏好初始化" />
+                <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="可选择最终采用的模型结果" />
+                <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="反馈会关联本次融合输出" />
+              </div>
+              <div className="form-grid">
+                <label className="stack-field">
+                  <span>是否采纳</span>
+                  <select
+                    onChange={(event) =>
+                      onTaskRoutingFeedbackFormChange((current) => ({
+                        ...current,
+                        accepted: event.target.value === "yes",
+                      }))}
+                    value={taskRoutingFeedbackForm.accepted ? "yes" : "no"}
+                  >
+                    <option value="yes">采纳</option>
+                    <option value="no">未采纳</option>
+                  </select>
+                </label>
+                <label className="stack-field">
+                  <span>反馈类型</span>
+                  <select
+                    onChange={(event) =>
+                      onTaskRoutingFeedbackFormChange((current) => ({
+                        ...current,
+                        feedbackType: event.target.value,
+                      }))}
+                    value={taskRoutingFeedbackForm.feedbackType}
+                  >
+                    {feedbackTypeOptions.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  <small className="detail-note">
+                    {feedbackTypeOptions.find((item) => item.value === taskRoutingFeedbackForm.feedbackType)?.note}
+                  </small>
+                </label>
+                <label className="stack-field">
+                  <span>最终采用模型</span>
+                  <select
+                    onChange={(event) =>
+                      onTaskRoutingFeedbackFormChange((current) => ({
+                        ...current,
+                        adoptedModelId: event.target.value,
+                      }))}
+                    value={taskRoutingFeedbackForm.adoptedModelId || ""}
+                  >
+                    <option value="">采用融合结果</option>
+                    {adoptedModelOptions.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="stack-field stack-field-wide">
+                  <span>备注</span>
+                  <textarea
+                    onChange={(event) =>
+                      onTaskRoutingFeedbackFormChange((current) => ({
+                        ...current,
+                        note: event.target.value,
+                      }))}
+                    placeholder="可选，记录为什么采用或未采用本次策略。"
+                    rows="3"
+                    value={taskRoutingFeedbackForm.note}
+                  />
+                </label>
+              </div>
+              <div className="actions">
+                <button
+                  className="btn-primary"
+                  disabled={actionBusy[`task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`]}
+                  onClick={() => void onSubmitTaskRoutingFeedback()}
+                  type="button"
+                >
+                  {actionBusy[`task-routing-feedback-${taskRoutingFeedbackForm.decisionId}`] ? "提交中" : "提交反馈"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <EmptyState icon="F" title="还没有可反馈结果" note="先运行一次任务调度，系统会为该次调度生成决策编号并开放反馈入口。" />
+          )}
+        </article>
+      </section>
+
+      <section className="detail-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="闭环看板" title="反馈闭环总览" note="用来展示平台如何把历史调度、用户反馈和权重修正串成一个轻量自适应闭环。" />
+          <div className="metrics">
+            <MetricCard title="决策总数" value={feedbackOverview.total_decisions || 0} note="累计归档的任务调度记录" />
+            <MetricCard title="已收反馈" value={feedbackOverview.total_feedback || 0} note={`待反馈 ${feedbackOverview.pending_feedback_count || 0} 条`} />
+            <MetricCard title="整体采纳率" value={formatPercent(feedbackOverview.acceptance_rate)} note="已提交反馈中的采纳比例" />
+            <MetricCard title="最近更新时间" value={feedbackOverview.last_feedback_at || "-"} note="最后一次反馈写入时间" />
+          </div>
+          <div className="relation-list">
+            {(feedbackOverview.insights || []).map((item, index) => (
+              <div className="relation-item" key={`${item}-${index + 1}`}>
+                {item}
+              </div>
+            ))}
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>目标</th>
+                  <th>决策数</th>
+                  <th>反馈数</th>
+                  <th>采纳率</th>
+                  <th>最佳路径</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(feedbackOverview.objective_summaries || []).map((item) => (
+                  <tr key={item.objective}>
+                    <td>{item.objective}</td>
+                    <td>{item.decision_count}</td>
+                    <td>{item.feedback_count}</td>
+                    <td>{formatPercent(item.acceptance_rate)}</td>
+                    <td>{item.best_execution_path || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="权重更新" title="自适应权重快照" note="平台不会改底层抽取模型参数，而是根据历史 benchmark 与反馈对调度层权重做轻量修正。" />
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>目标</th>
+                  <th>有效权重</th>
+                  <th>基准修正</th>
+                  <th>反馈修正</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(feedbackOverview.weight_profiles || []).map((item) => (
+                  <tr key={item.objective}>
+                    <td>{item.objective}</td>
+                    <td className="limitation-cell">
+                      {Object.entries(item.effective_weights || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")}
+                      <div className="table-note">{(item.reasons || []).slice(0, 2).join("；") || "暂无额外说明"}</div>
+                    </td>
+                    <td className="limitation-cell">
+                      {Object.keys(item.benchmark_adjustments || {}).length
+                        ? Object.entries(item.benchmark_adjustments || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")
+                        : "无"}
+                    </td>
+                    <td className="limitation-cell">
+                      {Object.keys(item.feedback_adjustments || {}).length
+                        ? Object.entries(item.feedback_adjustments || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")
+                        : "无"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section className="detail-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="路径表现" title="执行路径采纳表现" />
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>执行路径</th>
+                  <th>决策数</th>
+                  <th>反馈数</th>
+                  <th>采纳率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(feedbackOverview.execution_path_summaries || []).map((item) => (
+                  <tr key={item.execution_path}>
+                    <td>{item.execution_path}</td>
+                    <td>{item.decision_count}</td>
+                    <td>{item.feedback_count}</td>
+                    <td>{formatPercent(item.acceptance_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="采用偏好" title="最终采用模型统计" />
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>采用次数</th>
+                  <th>采用占比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(feedbackOverview.model_adoption_summaries || []).map((item) => (
+                  <tr key={item.model_id}>
+                    <td>{item.model_id}</td>
+                    <td>{item.adoption_count}</td>
+                    <td>{formatPercent(item.adopted_share)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <SectionHeader kicker="最近决策" title="最近闭环记录" note="适合截图展示“记录策略结果并形成闭环”的工程化证据。" />
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>决策</th>
+                  <th>目标 / 领域</th>
+                  <th>执行路径</th>
+                  <th>模型</th>
+                  <th>反馈</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(feedbackOverview.recent_decisions || []).map((item) => (
+                  <tr key={item.decision_id}>
+                    <td>
+                      <strong>{item.decision_id}</strong>
+                      <div className="table-note">{item.created_at}</div>
+                    </td>
+                    <td>
+                      <div>{item.objective}</div>
+                      <div className="table-note">{item.context_domain} / {item.inferred_language}</div>
+                    </td>
+                    <td>
+                      <div>{item.execution_path || "-"}</div>
+                      <div className="table-note">triples={item.fused_triple_count || 0}</div>
+                    </td>
+                    <td className="limitation-cell">{(item.selected_model_ids || []).join("、") || "-"}</td>
+                    <td>
+                      <div>{item.feedback_status === "completed" ? (item.accepted ? "已采纳" : "未采纳") : "待反馈"}</div>
+                      <div className="table-note">{item.feedback_type || item.adopted_model_id || "-"}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </article>
       </section>
     </>
@@ -2980,7 +3730,8 @@ function ModelsPage({
   deploymentForm,
   derived,
   modelImportForm,
-  modelTransferStatus,
+  modelTransferItems,
+  onDismissModelTransfer,
   onDeleteModelPackage,
   onCreateDeployment,
   onDeploymentFormChange,
@@ -2990,7 +3741,7 @@ function ModelsPage({
 }) {
   const [search, setSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState("all");
-  const [availabilityFilter, setAvailabilityFilter] = useState("all");
+  const [originFilter, setOriginFilter] = useState("all");
   const deferredSearch = useDeferredValue(search);
   const familyOptions = data.importOptions?.families || [];
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
@@ -3011,17 +3762,12 @@ function ModelsPage({
         ),
       )
       .filter((model) => runtimeFilter === "all" || model.runtime_status === runtimeFilter)
-      .filter((model) => {
-        if (availabilityFilter === "all") {
-          return true;
-        }
-        return availabilityFilter === "predict_ready" ? model.predict_ready : !model.predict_ready;
-      })
+      .filter((model) => originFilter === "all" || model.package_origin === originFilter)
       .sort(
         (left, right) =>
           Number(right.predict_ready) - Number(left.predict_ready) || left.model_name.localeCompare(right.model_name),
       );
-  }, [availabilityFilter, deferredSearch, derived.models, runtimeFilter]);
+  }, [deferredSearch, derived.models, originFilter, runtimeFilter]);
 
   return (
     <>
@@ -3034,32 +3780,46 @@ function ModelsPage({
         <div className="detail-note upload-note">
           导入命名规则：模型家族-语言-数据集[-别名]-版本，例如 <span className="mono">casrel-zh-duie-myexp-v1</span>。
         </div>
-        {modelTransferStatus.phase !== "idle" ? (
-          <div className={`transfer-card transfer-${modelTransferStatus.phase}`}>
-            <div className="transfer-head">
-              <strong>{modelTransferStatus.direction === "download" ? "模型制品下载进度" : "模型制品上传进度"}</strong>
-              <span>
-                {modelTransferStatus.percent !== null
-                  ? `${modelTransferStatus.percent}%`
-                  : modelTransferStatus.phase === "running"
-                    ? "处理中"
-                    : ""}
-              </span>
-            </div>
-            <div className="transfer-track">
-              <div
-                className={`transfer-fill ${modelTransferStatus.percent === null ? "transfer-fill-indeterminate" : ""}`}
-                style={{ width: `${modelTransferStatus.percent ?? 35}%` }}
-              />
-            </div>
-            <div className="transfer-meta">
-              <span>{modelTransferStatus.fileName || modelTransferStatus.modelId || "-"}</span>
-              <span>
-                {formatBytes(modelTransferStatus.loadedBytes)}
-                {modelTransferStatus.totalBytes ? ` / ${formatBytes(modelTransferStatus.totalBytes)}` : ""}
-              </span>
-            </div>
-            <div className="detail-note">{modelTransferStatus.detail}</div>
+        {modelTransferItems.length ? (
+          <div className="transfer-list">
+            {modelTransferItems.map((item) => {
+              const transferRunning = item.phase === "running";
+              return (
+                <div className={`transfer-card transfer-${item.phase}`} key={item.taskId}>
+                  <div className="transfer-head">
+                    <strong>{item.direction === "download" ? "模型制品下载进度" : "模型制品上传进度"}</strong>
+                    <div className="transfer-head-actions">
+                      <span>
+                        {item.percent !== null
+                          ? `${item.percent}%`
+                          : item.phase === "running"
+                            ? "处理中"
+                            : ""}
+                      </span>
+                      {!transferRunning ? (
+                        <button className="btn-quiet" onClick={() => onDismissModelTransfer(item.taskId)} type="button">
+                          收起
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="transfer-track">
+                    <div
+                      className={`transfer-fill ${item.percent === null ? "transfer-fill-indeterminate" : ""}`}
+                      style={{ width: `${item.percent ?? 35}%` }}
+                    />
+                  </div>
+                  <div className="transfer-meta">
+                    <span>{item.fileName || item.modelId || "-"}</span>
+                    <span>
+                      {formatBytes(item.loadedBytes)}
+                      {item.totalBytes ? ` / ${formatBytes(item.totalBytes)}` : ""}
+                    </span>
+                  </div>
+                  <div className="detail-note">{item.detail}</div>
+                </div>
+              );
+            })}
           </div>
         ) : null}
         <div className="form-grid">
@@ -3170,11 +3930,11 @@ function ModelsPage({
           <div className="actions">
             <button
               className="btn-primary"
-              disabled={actionBusy["import-model"] || !modelImportForm.archive || !modelImportForm.modelFamily}
+              disabled={!modelImportForm.archive || !modelImportForm.modelFamily}
               onClick={() => void onImportModel()}
               type="button"
             >
-              {actionBusy["import-model"] ? "导入中" : "导入模型"}
+              导入模型
             </button>
           </div>
         </div>
@@ -3284,11 +4044,11 @@ function ModelsPage({
               </select>
             </label>
             <label className="stack-field">
-              <span>可用性</span>
-              <select onChange={(event) => setAvailabilityFilter(event.target.value)} value={availabilityFilter}>
-                <option value="all">全部模型</option>
-                <option value="predict_ready">仅可推理</option>
-                <option value="package_only">仅待适配</option>
+              <span>来源</span>
+              <select onChange={(event) => setOriginFilter(event.target.value)} value={originFilter}>
+                <option value="all">全部来源</option>
+                <option value="builtin">本机自带</option>
+                <option value="user_upload">用户上传</option>
               </select>
             </label>
           </div>
@@ -3300,7 +4060,7 @@ function ModelsPage({
               onClick={() => {
                 setSearch("");
                 setRuntimeFilter("all");
-                setAvailabilityFilter("all");
+                setOriginFilter("all");
               }}
               type="button"
             >
@@ -3559,14 +4319,25 @@ function ArtifactsPage({ actionBusy, data, onDeleteModelPackage, onExportModelMa
               </div>
               <StatusPill status={detail.summary?.runtime_status || "unknown"} />
             </div>
-            <div className="list-card-body">
-              package_root：<span className="mono">{detail.summary?.package_root || "-"}</span>
-              <br />
-              来源：{detail.summary?.package_origin_label || "本机自带"}
-              <br />
-              tokenizer：{detail.manifest?.tokenizer?.type || "-"}
-              <br />
-              relation_map：{detail.manifest?.labels?.relation_map || "-"}
+            <div className="list-card-body artifact-meta-body">
+              <div className="artifact-meta-list">
+                <div className="artifact-meta-row">
+                  <span className="artifact-meta-label">package_root</span>
+                  <span className="artifact-meta-value mono">{detail.summary?.package_root || "-"}</span>
+                </div>
+                <div className="artifact-meta-row">
+                  <span className="artifact-meta-label">来源</span>
+                  <span className="artifact-meta-value">{detail.summary?.package_origin_label || "本机自带"}</span>
+                </div>
+                <div className="artifact-meta-row">
+                  <span className="artifact-meta-label">tokenizer</span>
+                  <span className="artifact-meta-value">{detail.manifest?.tokenizer?.type || "-"}</span>
+                </div>
+                <div className="artifact-meta-row">
+                  <span className="artifact-meta-label">relation_map</span>
+                  <span className="artifact-meta-value">{detail.manifest?.labels?.relation_map || "-"}</span>
+                </div>
+              </div>
             </div>
             <div className="tag-list">
               <span className="tag">{detail.summary?.package_origin_label || "本机自带"}</span>

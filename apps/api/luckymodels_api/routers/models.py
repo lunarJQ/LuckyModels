@@ -5,7 +5,13 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from luckymodels_core.dataset_samples import export_dataset_eval_cases, get_dataset_eval_cases
+from luckymodels_core.dataset_samples import (
+    DEFAULT_ONLINE_SAMPLE_TEXT,
+    export_dataset_eval_cases,
+    get_dataset_eval_cases,
+    get_dataset_sample_text,
+    list_dataset_catalog,
+)
 from luckymodels_core.launcher import stop_runtime_process
 from luckymodels_core.manifest import load_profile
 from luckymodels_core.model_package_manager import (
@@ -24,7 +30,13 @@ from luckymodels_core.schemas import (
 )
 from luckymodels_core.settings import get_settings
 
-from ..dependencies import get_benchmark_store, get_deployment_store, get_prediction_store, get_registry
+from ..dependencies import (
+    get_benchmark_store,
+    get_deployment_store,
+    get_prediction_store,
+    get_registry,
+    get_task_routing_feedback_store,
+)
 
 router = APIRouter(tags=["models"])
 
@@ -37,6 +49,19 @@ def list_models() -> list[ModelSummary]:
 @router.get("/models/import-options", response_model=ModelImportOptions)
 def get_supported_model_import_options() -> ModelImportOptions:
     return get_model_import_options()
+
+
+@router.get("/datasets/catalog")
+def get_dataset_catalog() -> dict[str, object]:
+    return {
+        "datasets": list_dataset_catalog(),
+        "default_fallback_text": DEFAULT_ONLINE_SAMPLE_TEXT,
+    }
+
+
+@router.get("/datasets/sample-text")
+def get_dataset_sample_text_preview(dataset_name: str, index: int = 0) -> dict[str, object]:
+    return get_dataset_sample_text(dataset_name, index=index)
 
 
 @router.post("/models/import", response_model=ModelImportResult)
@@ -151,6 +176,7 @@ def delete_model(model_id: str) -> ModelDeleteResult:
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
     prediction_store = get_prediction_store()
+    task_routing_feedback_store = get_task_routing_feedback_store()
 
     stopped_runtime_count = 0
     deleted_log_file_count = 0
@@ -174,6 +200,10 @@ def delete_model(model_id: str) -> ModelDeleteResult:
     for archive in prediction_archives:
         prediction_store.delete(archive.archive_id)
 
+    deleted_task_routing_decision_count, deleted_task_routing_feedback_count = (
+        task_routing_feedback_store.delete_by_model(model_id)
+    )
+
     if package_root.exists():
         shutil.rmtree(package_root)
 
@@ -183,6 +213,8 @@ def delete_model(model_id: str) -> ModelDeleteResult:
         stopped_runtime_count=stopped_runtime_count,
         deleted_benchmark_count=len(benchmarks),
         deleted_prediction_archive_count=len(prediction_archives),
+        deleted_task_routing_decision_count=deleted_task_routing_decision_count,
+        deleted_task_routing_feedback_count=deleted_task_routing_feedback_count,
         deleted_log_file_count=deleted_log_file_count,
         removed_package_root=str(package_root),
     )

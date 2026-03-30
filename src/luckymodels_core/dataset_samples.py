@@ -10,11 +10,17 @@ DATASET_ALIASES = {
     "duie": "duie",
     "duie2.0": "duie",
     "duie2.0-main": "duie",
+    "equipmentmix15k": "equipmentmix15k",
+    "industrial": "equipmentmix15k",
+    "industrialequipmentmix15k": "equipmentmix15k",
+    "industrialequipmentmix15k_mfgdominant": "equipmentmix15k",
     "nyt": "nyt",
     "raw_webnlg": "webnlg",
     "scierc": "scierc",
     "webnlg": "webnlg",
 }
+
+DEFAULT_ONLINE_SAMPLE_TEXT = "LuckyModels provides a stable fallback sample for relation extraction."
 
 
 def resolve_dataset_key(dataset_name: str | None) -> str:
@@ -38,6 +44,8 @@ def get_dataset_eval_cases(
         payload = _load_scierc_cases()
     elif dataset_key == "duie":
         payload = _load_duie_cases()
+    elif dataset_key == "equipmentmix15k":
+        payload = _load_equipmentmix_cases()
     else:
         raise ValueError(f"Unsupported dataset: {dataset_name}")
 
@@ -51,6 +59,62 @@ def get_dataset_eval_cases(
         "record_count": len(records),
         "records": records,
     }
+
+
+def list_dataset_catalog() -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for dataset_key, label, dataset_name, source_path in _dataset_catalog_specs():
+        catalog.append(
+            {
+                "dataset_key": dataset_key,
+                "label": label,
+                "dataset_name": dataset_name,
+                "source_path": _display_path(source_path),
+                "available": source_path.exists(),
+                "sample_ready": source_path.exists(),
+            }
+        )
+    return catalog
+
+
+def get_dataset_sample_text(
+    dataset_name: str,
+    *,
+    index: int = 0,
+    fallback_text: str = DEFAULT_ONLINE_SAMPLE_TEXT,
+) -> dict[str, Any]:
+    dataset_key = resolve_dataset_key(dataset_name)
+    try:
+        payload = get_dataset_eval_cases(dataset_key)
+        records = payload.get("records") or []
+        if not records:
+            raise ValueError(f"No evaluation records found for dataset: {dataset_name}")
+        effective_index = max(0, int(index)) % len(records)
+        record = records[effective_index]
+        return {
+            "dataset_key": dataset_key,
+            "dataset_name": payload.get("dataset_name") or dataset_key,
+            "dataset_source": payload.get("dataset_source") or "-",
+            "record_count": len(records),
+            "effective_index": effective_index,
+            "case_id": record.get("case_id"),
+            "text": record.get("text") or fallback_text,
+            "triple_count": record.get("triple_count", 0),
+            "is_fallback": False,
+        }
+    except Exception as exc:
+        return {
+            "dataset_key": dataset_key,
+            "dataset_name": _dataset_label_for_key(dataset_key),
+            "dataset_source": "-",
+            "record_count": 0,
+            "effective_index": 0,
+            "case_id": None,
+            "text": fallback_text,
+            "triple_count": 0,
+            "is_fallback": True,
+            "detail": str(exc),
+        }
 
 
 def export_dataset_eval_cases(
@@ -272,6 +336,48 @@ def _load_duie_cases() -> dict[str, Any]:
     }
 
 
+def _load_equipmentmix_cases() -> dict[str, Any]:
+    source_path = (
+        get_settings().root_dir
+        / "datasets"
+        / "IndustrialEquipmentMix15k_mfgDominant"
+        / "test_triples.json"
+    )
+    with source_path.open("r", encoding="utf-8") as handle:
+        records = json.load(handle)
+
+    prepared: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        triple_list = record.get("triple_list") or []
+        triples = [
+            {
+                "subject": item[0],
+                "predicate": item[1],
+                "object": item[2],
+                "evidence": record.get("text", ""),
+            }
+            for item in triple_list
+            if isinstance(item, list) and len(item) == 3
+        ]
+        if not triples:
+            continue
+        prepared.append(
+            {
+                "case_id": f"equipmentmix-test-{index:05d}",
+                "dataset_index": index,
+                "dataset_split": "test",
+                "text": record.get("text", ""),
+                "triple_count": len(triples),
+                "triples": triples,
+            }
+        )
+    return {
+        "dataset_name": "IndustrialEquipmentMix15k test",
+        "dataset_source": _display_path(source_path),
+        "records": prepared,
+    }
+
+
 def _extract_duie_object_text(value: Any) -> str:
     if isinstance(value, dict):
         primary = value.get("@value")
@@ -336,6 +442,29 @@ def _normalize_scierc_relation(label: str) -> str:
 
 def _get_webnlg_root() -> Path:
     return get_settings().root_dir / "datasets" / "raw_WebNLG" / "pre_processed_data"
+
+
+def _dataset_catalog_specs() -> list[tuple[str, str, str, Path]]:
+    settings = get_settings()
+    return [
+        ("webnlg", "WebNLG", "WebNLG", settings.root_dir / "datasets" / "raw_WebNLG"),
+        ("nyt", "NYT", "NYT", settings.root_dir / "datasets" / "NYT"),
+        ("scierc", "SciERC", "SciERC", settings.root_dir / "datasets" / "sciERC_raw"),
+        ("duie", "DuIE2.0", "DuIE2.0", settings.root_dir / "datasets" / "DuIE2.0-main"),
+        (
+            "equipmentmix15k",
+            "IndustrialEquipmentMix15k",
+            "IndustrialEquipmentMix15k",
+            settings.root_dir / "datasets" / "IndustrialEquipmentMix15k_mfgDominant",
+        ),
+    ]
+
+
+def _dataset_label_for_key(dataset_key: str) -> str:
+    for item_key, label, dataset_name, _ in _dataset_catalog_specs():
+        if item_key == dataset_key:
+            return dataset_name or label
+    return dataset_key
 
 
 def _display_path(path: Path) -> str:

@@ -16,6 +16,8 @@ class Settings:
     deployments_file: Path
     benchmarks_file: Path
     prediction_archives_file: Path
+    task_routing_decisions_file: Path
+    task_routing_feedback_file: Path
     deployment_policy_automation_file: Path
     casrel_demo_report_file: Path
     webnlg_eval_cases_file: Path
@@ -39,6 +41,8 @@ def get_settings() -> Settings:
         deployments_file=state_root / "deployments.json",
         benchmarks_file=state_root / "benchmarks.json",
         prediction_archives_file=state_root / "prediction_archives.json",
+        task_routing_decisions_file=state_root / "task_routing_decisions.json",
+        task_routing_feedback_file=state_root / "task_routing_feedback.json",
         deployment_policy_automation_file=state_root / "deployment_policy_automation.json",
         casrel_demo_report_file=reports_root / "casrel_demo_report.json",
         webnlg_eval_cases_file=reports_root / "webnlg_eval_cases.json",

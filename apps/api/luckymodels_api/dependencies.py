@@ -6,6 +6,7 @@ from luckymodels_core.inference_activity_tracker import InferenceActivityTracker
 from luckymodels_core.prediction_store import PredictionStore
 from luckymodels_core.registry import ArtifactRegistry
 from luckymodels_core.settings import get_settings
+from luckymodels_core.task_routing_feedback_store import TaskRoutingFeedbackStore
 
 _inference_activity_tracker = InferenceActivityTracker()
 
@@ -33,6 +34,14 @@ def get_benchmark_store() -> BenchmarkStore:
 def get_prediction_store() -> PredictionStore:
     settings = get_settings()
     return PredictionStore(settings.prediction_archives_file)
+
+
+def get_task_routing_feedback_store() -> TaskRoutingFeedbackStore:
+    settings = get_settings()
+    return TaskRoutingFeedbackStore(
+        settings.task_routing_decisions_file,
+        settings.task_routing_feedback_file,
+    )
 
 
 def get_inference_activity_tracker() -> InferenceActivityTracker:
