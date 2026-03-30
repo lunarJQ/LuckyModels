@@ -579,15 +579,15 @@ def _build_feedback_weight_adjustments(
     reasons: list[str] = []
     acceptance_rate = accepted_count / size
     if acceptance_rate >= 0.75:
-        reasons.append(f"历史反馈中该类请求采纳率 {acceptance_rate * 100:.1f}%，保留当前主权重方向。")
+        reasons.append(f"历史校准标注中该类请求可接受率 {acceptance_rate * 100:.1f}%，保留当前主权重方向。")
     elif acceptance_rate <= 0.45:
-        reasons.append(f"历史反馈中该类请求采纳率仅 {acceptance_rate * 100:.1f}%，系统上调准确与稳定维度。")
+        reasons.append(f"历史校准标注中该类请求可接受率仅 {acceptance_rate * 100:.1f}%，系统上调准确与稳定维度。")
     dominant_path = path_counter.most_common(1)[0][0] if path_counter else ""
     if dominant_path:
-        reasons.append(f"最近同类请求更常采纳 {dominant_path} 路径。")
+        reasons.append(f"最近同类请求更常被标注为接受 {dominant_path} 路径。")
     dominant_model = adopted_counter.most_common(1)[0][0] if adopted_counter else ""
     if dominant_model:
-        reasons.append(f"用户反馈中最终采用 {dominant_model} 的频次更高。")
+        reasons.append(f"少量人工偏好记录显示 {dominant_model} 被显式标注的频次更高。")
     return adjustments, reasons
 
 
@@ -624,9 +624,9 @@ def _merge_adaptation_reasons(
     if benchmark_adjustments.get("stability", 0.0) >= 0.03:
         reasons.append("当前可参考基准较少或成功率偏低，系统适度提升稳定性权重。")
     if feedback_adjustments.get("coverage", 0.0) >= 0.04:
-        reasons.append("历史反馈更偏向覆盖型结果，系统适度提升召回相关权重。")
+        reasons.append("历史校准标注更偏向覆盖型结果，系统适度提升召回相关权重。")
     if feedback_adjustments.get("accuracy", 0.0) >= 0.04:
-        reasons.append("历史反馈更偏向准确与一致性，系统适度提升准确率权重。")
+        reasons.append("历史校准标注更偏向准确与一致性，系统适度提升准确率权重。")
     reasons.extend(feedback_reasons)
     return reasons[:5]
 
@@ -1321,8 +1321,6 @@ def build_task_routing_feedback_overview(
     adopted_counter: Counter[str] = Counter()
     for item in feedback_records:
         adopted_model_id = item.adopted_model_id
-        if not adopted_model_id and item.accepted and item.selected_model_ids:
-            adopted_model_id = item.selected_model_ids[0]
         if adopted_model_id:
             adopted_counter[adopted_model_id] += 1
     model_adoption_summaries = [
@@ -1428,11 +1426,11 @@ def _build_feedback_insights(
 ) -> list[str]:
     insights: list[str] = []
     if total_decisions <= 0:
-        return ["当前还没有任务调度历史，先运行一轮策略并提交反馈后，这里会显示闭环结论。"]
+        return ["当前还没有任务调度历史，先运行一轮策略或补一组 benchmark 后，这里会显示自校准结论。"]
     if total_feedback <= 0:
-        return ["平台已开始记录调度决策，但还没有用户反馈，当前闭环仍处于冷启动阶段。"]
+        return ["平台已开始记录调度决策，但人工校准标注仍较少，当前主要依据 benchmark 与运行证据进行自校准。"]
     if acceptance_rate is not None:
-        insights.append(f"当前反馈闭环已累计 {total_feedback} 条反馈，整体采纳率为 {acceptance_rate * 100:.1f}%。")
+        insights.append(f"当前策略校准已累计 {total_feedback} 条人工标注，可接受率为 {acceptance_rate * 100:.1f}%。")
     if objective_summaries:
         best_objective = sorted(
             objective_summaries,
@@ -1444,17 +1442,17 @@ def _build_feedback_insights(
         )[0]
         if best_objective.acceptance_rate is not None:
             insights.append(
-                f"在已收集反馈中，{best_objective.objective} 目标的采纳表现最好，采纳率为 {best_objective.acceptance_rate * 100:.1f}%。"
+                f"在已收集的校准标注中，{best_objective.objective} 目标的可接受表现最好，可接受率为 {best_objective.acceptance_rate * 100:.1f}%。"
             )
     if execution_path_summaries:
         best_path = execution_path_summaries[0]
         if best_path.acceptance_rate is not None:
             insights.append(
-                f"{best_path.execution_path} 是当前更稳定的执行路径之一，已反馈采纳率为 {best_path.acceptance_rate * 100:.1f}%。"
+                f"{best_path.execution_path} 是当前更稳定的执行路径之一，已有校准标注可接受率为 {best_path.acceptance_rate * 100:.1f}%。"
             )
     if model_adoption_summaries:
         leading_model = model_adoption_summaries[0]
-        insights.append(f"最近反馈中最终采用频次最高的模型是 {leading_model.model_id}。")
+        insights.append(f"少量人工偏好记录显示，{leading_model.model_id} 是最近被显式标注最多的模型。")
     return insights[:4]
 
 
