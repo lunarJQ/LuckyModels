@@ -155,6 +155,11 @@ FAMILY_SPECS: dict[str, _FamilySpec] = {
                 ("relation_label_list.json", "*relation*label*.json", "label_list.json", "*label_list*.json"),
             ),
             "schema_path": _PathRule("labels/entity_config.json", ("entity_config.json", "*entity*config*.json", "*config*.json")),
+            "relation_vocab": _PathRule("labels/vocab.txt", ("relation_assets/vocab.txt", "*relation*/*vocab*.txt", "vocab.txt")),
+            "special_tokens": _PathRule(
+                "labels/special_tokens.json",
+                ("relation_assets/special_tokens.json", "*relation*/*special_tokens*.json", "special_tokens.json"),
+            ),
         },
         default_model_name="PURE",
         default_backbones={"en": "bert-base-cased", "zh": "bert-base-chinese"},
