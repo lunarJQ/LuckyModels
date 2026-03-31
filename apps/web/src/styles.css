@@ -1,3 +1,42 @@
+@font-face {
+  font-family: "Thesis UI SC";
+  src:
+    local("Noto Sans SC"),
+    local("Source Han Sans SC"),
+    local("Microsoft YaHei"),
+    local("PingFang SC"),
+    url("/static/fonts/NotoSansSC-Regular.otf") format("opentype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Thesis UI SC";
+  src:
+    local("Noto Sans SC Medium"),
+    local("Source Han Sans SC Medium"),
+    local("Microsoft YaHei"),
+    local("PingFang SC"),
+    url("/static/fonts/NotoSansSC-Medium.otf") format("opentype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Thesis UI SC";
+  src:
+    local("Noto Sans SC Bold"),
+    local("Source Han Sans SC Bold"),
+    local("Microsoft YaHei Bold"),
+    local("PingFang SC Semibold"),
+    url("/static/fonts/NotoSansSC-Bold.otf") format("opentype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   --bg: #f3eee6;
   --bg-soft: #fbf8f3;
@@ -38,7 +77,7 @@ html {
 body {
   margin: 0;
   color: var(--ink);
-  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Thesis UI SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   background:
     radial-gradient(circle at top left, rgba(199, 122, 42, 0.16), transparent 26%),
     radial-gradient(circle at top right, rgba(32, 94, 215, 0.12), transparent 22%),
@@ -1282,7 +1321,7 @@ tbody tr:hover {
 }
 
 body {
-  font-family: "Avenir Next", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Thesis UI SC", "Avenir Next", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   background:
     radial-gradient(circle at 0% 0%, rgba(197, 121, 45, 0.16), transparent 22%),
     radial-gradient(circle at 100% 0%, rgba(31, 93, 191, 0.14), transparent 24%),

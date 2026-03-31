@@ -12,6 +12,8 @@ data/logs/
 *.tgz
 pages/
 paper/
+paper-v2.0/
+feishudoc/
 apps/web/node_modules/
 apps/api/luckymodels_api/ui/dist/
 datasets/sciERC_raw/
