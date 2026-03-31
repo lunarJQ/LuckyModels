@@ -37,6 +37,15 @@ class _SchedulerContext:
 
 
 @dataclass
+class _GpuMemoryHotspot:
+    deployment_id: str
+    model_id: str
+    pid: int
+    used_gpu_memory_mb: float
+    gpu_ids: list[int]
+
+
+@dataclass
 class _ModelProtectionStatus:
     protected: bool
     state: str
@@ -83,12 +92,21 @@ class DeploymentPolicyScheduler:
     def get_state(self) -> DeploymentPolicyAutomationState:
         return self.get_policy_store().get()
 
-    def update_state(self, enabled: bool, interval_seconds: int, protect_active_window_seconds: int) -> DeploymentPolicyAutomationState:
+    def update_state(
+        self,
+        enabled: bool,
+        interval_seconds: int,
+        protect_active_window_seconds: int,
+        gpu_memory_restart_enabled: bool,
+        gpu_memory_restart_threshold_mb: int,
+    ) -> DeploymentPolicyAutomationState:
         store = self.get_policy_store()
         request = store.get()
         request.enabled = bool(enabled)
         request.interval_seconds = max(60, int(interval_seconds or 900))
         request.protect_active_window_seconds = max(30, int(protect_active_window_seconds or 120))
+        request.gpu_memory_restart_enabled = bool(gpu_memory_restart_enabled)
+        request.gpu_memory_restart_threshold_mb = max(1024, int(gpu_memory_restart_threshold_mb or 5120))
         return store.save(request)
 
     def run_once(self, *, force: bool = False) -> DeploymentPolicyAutomationState:
@@ -105,16 +123,31 @@ class DeploymentPolicyScheduler:
             deployments = deployment_store.list()
             benchmarks: list[BenchmarkRecord] = benchmark_store.list()
             prediction_archives: list[PredictionArchiveRecord] = prediction_store.list()
+            gpu_snapshot = self.get_gpu_snapshot()
             policy = build_deployment_policy(
                 models=registry.list_models(),
                 deployments=deployments,
                 benchmarks=benchmarks,
                 prediction_archives=prediction_archives,
-                gpu_snapshot=self.get_gpu_snapshot(),
+                gpu_snapshot=gpu_snapshot,
             )
 
             actions: list[DeploymentPolicyAutomationAction] = []
             status = "idle"
+            restarted_model_ids: set[str] = set()
+            memory_restart_actions = self._restart_gpu_memory_hotspots(
+                deployments=deployments,
+                prediction_archives=prediction_archives,
+                gpu_snapshot=gpu_snapshot,
+                protect_active_window_seconds=state.protect_active_window_seconds,
+                gpu_memory_restart_enabled=state.gpu_memory_restart_enabled,
+                gpu_memory_restart_threshold_mb=state.gpu_memory_restart_threshold_mb,
+            )
+            actions.extend(memory_restart_actions)
+            restarted_model_ids.update(
+                item.model_id for item in memory_restart_actions if item.status == "restarted"
+            )
+
             if _gpu_under_pressure(policy.gpu_snapshot):
                 status = "applied"
                 cluster_overloaded = _gpu_cluster_overloaded(policy.gpu_snapshot)
@@ -128,6 +161,8 @@ class DeploymentPolicyScheduler:
                 )
                 rebalance_applied = 0
                 for recommendation in policy.recommendations:
+                    if recommendation.model_id in restarted_model_ids:
+                        continue
                     if rebalance_applied < 3:
                         action = self._apply_gpu_rebalance(recommendation, context=context)
                         if action is not None:
@@ -145,6 +180,8 @@ class DeploymentPolicyScheduler:
                         ),
                     )
                     for recommendation in pressure_relief_candidates:
+                        if recommendation.model_id in restarted_model_ids:
+                            continue
                         if cpu_relief_applied >= 3:
                             break
                         action = self._apply_safe_fallback(recommendation, context=context)
@@ -161,7 +198,7 @@ class DeploymentPolicyScheduler:
                             detail="检测到局部 GPU 压力，当前优先执行 GPU 内部换卡与重平衡，不触发 CPU 迁移。",
                         )
                     )
-            else:
+            elif not memory_restart_actions:
                 actions.append(
                     DeploymentPolicyAutomationAction(
                         action_type="scan_only",
@@ -170,6 +207,9 @@ class DeploymentPolicyScheduler:
                         detail="当前 GPU 压力未达到阈值，自动优化本轮仅完成策略扫描，不执行迁移。",
                     )
                 )
+
+            if any(item.status in {"restarted", "migrated", "applied"} for item in actions):
+                status = "applied"
 
             return store.record_run(
                 state=state,
@@ -188,6 +228,158 @@ class DeploymentPolicyScheduler:
             if not _is_due(state.last_run_at, state.interval_seconds):
                 continue
             self.run_once(force=True)
+
+    def _restart_gpu_memory_hotspots(
+        self,
+        *,
+        deployments: list[DeploymentRecord],
+        prediction_archives: list[PredictionArchiveRecord],
+        gpu_snapshot: dict[str, Any],
+        protect_active_window_seconds: int,
+        gpu_memory_restart_enabled: bool,
+        gpu_memory_restart_threshold_mb: int,
+    ) -> list[DeploymentPolicyAutomationAction]:
+        if not gpu_memory_restart_enabled:
+            return []
+
+        hotspots = _collect_gpu_memory_hotspots(
+            deployments=deployments,
+            gpu_snapshot=gpu_snapshot,
+            threshold_mb=float(gpu_memory_restart_threshold_mb),
+        )
+        if not hotspots:
+            return []
+
+        inference_activity_tracker = self.get_inference_activity_tracker()
+        actions: list[DeploymentPolicyAutomationAction] = []
+        for hotspot in hotspots[:5]:
+            protection = _get_model_protection_status(
+                hotspot.model_id,
+                inference_activity_tracker=inference_activity_tracker,
+                prediction_archives=prediction_archives,
+                protect_active_window_seconds=protect_active_window_seconds,
+            )
+            if protection.protected:
+                actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="restart_high_gpu_memory",
+                        model_id=hotspot.model_id,
+                        deployment_id=hotspot.deployment_id,
+                        status="busy",
+                        detail=(
+                            f"deployment {hotspot.deployment_id} 当前显存占用约 "
+                            f"{hotspot.used_gpu_memory_mb:.0f} MB，已超过阈值 "
+                            f"{gpu_memory_restart_threshold_mb} MB，但{protection.detail}"
+                        ),
+                    )
+                )
+                continue
+
+            action = self._restart_deployment_for_gpu_memory_hotspot(
+                hotspot=hotspot,
+                threshold_mb=gpu_memory_restart_threshold_mb,
+            )
+            actions.append(action)
+        return actions
+
+    def _restart_deployment_for_gpu_memory_hotspot(
+        self,
+        *,
+        hotspot: _GpuMemoryHotspot,
+        threshold_mb: int,
+    ) -> DeploymentPolicyAutomationAction:
+        deployment_store = self.get_deployment_store()
+        current = next(
+            (item for item in deployment_store.list() if item.deployment_id == hotspot.deployment_id),
+            None,
+        )
+        if current is None:
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=hotspot.model_id,
+                deployment_id=hotspot.deployment_id,
+                status="failed",
+                detail="显存巡检命中该 deployment，但执行重启前已找不到对应部署记录。",
+            )
+        if not current.use_gpu:
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=current.model_id,
+                deployment_id=current.deployment_id,
+                status="skipped",
+                detail="该 deployment 当前已不在 GPU 上运行，跳过显存超阈值重启。",
+            )
+        if not current.manifest_path or not Path(current.manifest_path).exists():
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=current.model_id,
+                deployment_id=current.deployment_id,
+                status="failed",
+                detail="deployment 缺少有效 manifest_path，无法执行显存超阈值重启。",
+            )
+        if not current.profile_path or not Path(current.profile_path).exists():
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=current.model_id,
+                deployment_id=current.deployment_id,
+                status="failed",
+                detail="deployment 缺少有效 profile_path，无法执行显存超阈值重启。",
+            )
+
+        previous_pid = current.pid
+        previous_status = current.status
+        service_url = current.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+        current.log_path = current.log_path or str(self.settings.logs_root / "deployments" / f"{current.deployment_id}.log")
+        port = int(service_url.rsplit(":", maxsplit=1)[-1])
+
+        try:
+            if current.pid:
+                stop_runtime_process(current.pid)
+
+            pid, service_url = launch_runtime_process(
+                root_dir=self.settings.root_dir,
+                manifest_path=current.manifest_path,
+                profile_path=current.profile_path,
+                port=port,
+                log_path=current.log_path,
+                gpu_ids=current.gpu_ids,
+                use_gpu=current.use_gpu,
+            )
+            current.pid = pid
+            current.service_url = service_url
+            current.status = "running" if wait_for_runtime(service_url) else "starting"
+            current.notes = " | ".join(
+                item
+                for item in [
+                    current.notes,
+                    f"auto_restart_gpu_memory_over_{threshold_mb}mb",
+                ]
+                if item
+            )
+            deployment_store.update(current)
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=current.model_id,
+                deployment_id=current.deployment_id,
+                status="restarted",
+                detail=(
+                    f"检测到 deployment {current.deployment_id} 在 GPU "
+                    f"{','.join(str(item) for item in hotspot.gpu_ids) or '-'} 上的显存占用约 "
+                    f"{hotspot.used_gpu_memory_mb:.0f} MB，超过阈值 {threshold_mb} MB，"
+                    "已自动重启该部署服务。"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            current.pid = previous_pid
+            current.status = previous_status
+            deployment_store.update(current)
+            return DeploymentPolicyAutomationAction(
+                action_type="restart_high_gpu_memory",
+                model_id=current.model_id,
+                deployment_id=current.deployment_id,
+                status="failed",
+                detail=f"显存超阈值自动重启失败：{type(exc).__name__}: {exc}",
+            )
 
     def _apply_safe_fallback(
         self,
@@ -525,3 +717,52 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return parsed.astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+def _collect_gpu_memory_hotspots(
+    *,
+    deployments: list[DeploymentRecord],
+    gpu_snapshot: dict[str, Any],
+    threshold_mb: float,
+) -> list[_GpuMemoryHotspot]:
+    if not gpu_snapshot.get("available"):
+        return []
+
+    deployment_map = {
+        item.deployment_id: item
+        for item in deployments
+        if item.deployment_id and item.use_gpu and item.status in {"running", "starting"}
+    }
+    aggregated: dict[str, _GpuMemoryHotspot] = {}
+    for device in gpu_snapshot.get("devices") or []:
+        gpu_index = int(device.get("index") or 0)
+        for process in device.get("active_processes") or []:
+            deployment_id = str(process.get("deployment_id") or "").strip()
+            if not deployment_id:
+                continue
+            deployment = deployment_map.get(deployment_id)
+            if deployment is None:
+                continue
+            used_mb = float(process.get("used_gpu_memory_mb") or 0.0)
+            if deployment_id not in aggregated:
+                aggregated[deployment_id] = _GpuMemoryHotspot(
+                    deployment_id=deployment_id,
+                    model_id=deployment.model_id,
+                    pid=int(process.get("pid") or deployment.pid or 0),
+                    used_gpu_memory_mb=used_mb,
+                    gpu_ids=[gpu_index],
+                )
+            else:
+                aggregated[deployment_id].used_gpu_memory_mb += used_mb
+                if gpu_index not in aggregated[deployment_id].gpu_ids:
+                    aggregated[deployment_id].gpu_ids.append(gpu_index)
+
+    return sorted(
+        [
+            item
+            for item in aggregated.values()
+            if item.used_gpu_memory_mb > threshold_mb
+        ],
+        key=lambda item: item.used_gpu_memory_mb,
+        reverse=True,
+    )

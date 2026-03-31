@@ -27,6 +27,8 @@ class DeploymentPolicyAutomationStore:
         state.enabled = bool(request.enabled)
         state.interval_seconds = max(60, int(request.interval_seconds or 900))
         state.protect_active_window_seconds = max(30, int(request.protect_active_window_seconds or 120))
+        state.gpu_memory_restart_enabled = bool(request.gpu_memory_restart_enabled)
+        state.gpu_memory_restart_threshold_mb = max(1024, int(request.gpu_memory_restart_threshold_mb or 5120))
         self._write(state)
         return state
 

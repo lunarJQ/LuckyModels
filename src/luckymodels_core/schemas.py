@@ -497,6 +497,8 @@ class DeploymentPolicyAutomationState(BaseModel):
     enabled: bool = False
     interval_seconds: int = 900
     protect_active_window_seconds: int = 120
+    gpu_memory_restart_enabled: bool = True
+    gpu_memory_restart_threshold_mb: int = 5120
     last_run_at: str | None = None
     last_policy_generated_at: str | None = None
     last_status: str = "idle"
@@ -509,6 +511,8 @@ class DeploymentPolicyAutomationUpdateRequest(BaseModel):
     enabled: bool
     interval_seconds: int = 900
     protect_active_window_seconds: int = 120
+    gpu_memory_restart_enabled: bool = True
+    gpu_memory_restart_threshold_mb: int = 5120
 
 
 class DeploymentPolicyResponse(BaseModel):

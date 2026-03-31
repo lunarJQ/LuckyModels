@@ -458,6 +458,8 @@ function buildInitialDeploymentPolicyAutomationForm() {
     enabled: false,
     intervalSeconds: 900,
     protectActiveWindowSeconds: 120,
+    gpuMemoryRestartEnabled: true,
+    gpuMemoryRestartThresholdMb: 5120,
   };
 }
 
@@ -1112,6 +1114,8 @@ export default function App() {
         enabled: Boolean(automationResult.enabled),
         intervalSeconds: automationResult.interval_seconds || 900,
         protectActiveWindowSeconds: automationResult.protect_active_window_seconds || 120,
+        gpuMemoryRestartEnabled: automationResult.gpu_memory_restart_enabled ?? true,
+        gpuMemoryRestartThresholdMb: automationResult.gpu_memory_restart_threshold_mb || 5120,
       });
       setNotice({ type: "ok", text: "部署策略建议已刷新。" });
     } catch (error) {
@@ -1132,6 +1136,11 @@ export default function App() {
         protect_active_window_seconds: Number(
           payloadOverride?.protect_active_window_seconds ?? deploymentPolicyAutomationForm.protectActiveWindowSeconds,
         ),
+        gpu_memory_restart_enabled:
+          payloadOverride?.gpu_memory_restart_enabled ?? deploymentPolicyAutomationForm.gpuMemoryRestartEnabled,
+        gpu_memory_restart_threshold_mb: Number(
+          payloadOverride?.gpu_memory_restart_threshold_mb ?? deploymentPolicyAutomationForm.gpuMemoryRestartThresholdMb,
+        ),
       };
       const result = await updateDeploymentPolicyAutomation(payload);
       setDeploymentPolicyAutomation(result);
@@ -1139,6 +1148,8 @@ export default function App() {
         enabled: Boolean(result.enabled),
         intervalSeconds: result.interval_seconds || payload.interval_seconds,
         protectActiveWindowSeconds: result.protect_active_window_seconds || payload.protect_active_window_seconds,
+        gpuMemoryRestartEnabled: result.gpu_memory_restart_enabled ?? payload.gpu_memory_restart_enabled,
+        gpuMemoryRestartThresholdMb: result.gpu_memory_restart_threshold_mb || payload.gpu_memory_restart_threshold_mb,
       });
       setNotice({ type: "ok", text: result.enabled ? "自动优化已开启。" : "自动优化已关闭。" });
     } catch (error) {
@@ -3506,6 +3517,35 @@ function DeploymentPolicyPage({
               value={deploymentPolicyAutomationForm.protectActiveWindowSeconds}
             />
           </label>
+          <label className="stack-field">
+            <span>显存超阈值自动重启</span>
+            <select
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  gpuMemoryRestartEnabled: event.target.value === "true",
+                }))
+              }
+              value={String(deploymentPolicyAutomationForm.gpuMemoryRestartEnabled)}
+            >
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>显存重启阈值（MB）</span>
+            <input
+              min="1024"
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  gpuMemoryRestartThresholdMb: event.target.value,
+                }))
+              }
+              type="number"
+              value={deploymentPolicyAutomationForm.gpuMemoryRestartThresholdMb}
+            />
+          </label>
           <div className="actions">
             <button
               className="btn-primary"
@@ -3525,10 +3565,15 @@ function DeploymentPolicyPage({
             value={`${deploymentPolicyAutomation?.protect_active_window_seconds || 120} s`}
             note="该窗口内有推理请求的模型不会被自动优化"
           />
+          <MetricCard
+            title="显存巡检"
+            value={deploymentPolicyAutomation?.gpu_memory_restart_enabled ? "已开启" : "已关闭"}
+            note={`单个 GPU deployment 超过 ${deploymentPolicyAutomation?.gpu_memory_restart_threshold_mb || 5120} MB 时自动重启`}
+          />
           <MetricCard title="最近执行" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
         </div>
         <div className="detail-note">
-          自动优化遵循两阶段规则：先检查是否可以通过 GPU 内部换卡解决局部拥塞；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
+          自动优化遵循两阶段规则：先做显存巡检，单个 GPU deployment 显存占用超过阈值时触发自动重启；随后再检查是否可以通过 GPU 内部换卡解决局部拥塞；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
         </div>
         {deploymentPolicyAutomation?.recent_actions?.length ? (
           <div className="table-wrap">
