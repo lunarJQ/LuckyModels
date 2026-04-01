@@ -263,6 +263,38 @@ function formatWeightSnapshot(snapshot) {
     .join(" / ");
 }
 
+const executionPathLabels = {
+  none: "未执行",
+  single_low_latency: "单模型低时延直出",
+  parallel_multi_union: "多模型并行补全",
+  single_low_cost: "单模型低成本直出",
+  cost_aware_primary_plus_reviewer: "低成本主模型 + 复核模型",
+  domain_priority_single: "领域优先单模型",
+  domain_priority_crosscheck: "领域优先交叉校验",
+  single_balanced: "单模型综合平衡",
+  consensus_with_backfill: "共识优先并补全",
+  single_high_confidence: "单模型高置信直出",
+  multi_consensus_vote: "多模型共识投票",
+};
+
+const fusionPolicyLabels = {
+  empty: "无",
+  single_primary: "主模型直出",
+  union_all: "并集融合",
+  primary_with_fallback: "主模型 + 补充结果",
+  domain_priority: "领域优先融合",
+  consensus_backfill: "共识补全",
+  majority_vote: "多数投票",
+};
+
+function formatExecutionPathLabel(value) {
+  return executionPathLabels[String(value || "").trim()] || value || "-";
+}
+
+function formatFusionPolicyLabel(value) {
+  return fusionPolicyLabels[String(value || "").trim()] || value || "-";
+}
+
 function buildPaginationItems(currentPage, totalPages) {
   const safeCurrentPage = Math.max(1, Math.min(currentPage, totalPages));
   const start = Math.max(1, safeCurrentPage - 2);
@@ -2994,38 +3026,10 @@ function TaskRoutingPage({
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
-  const executionPathLabels = {
-    none: "未执行",
-    single_low_latency: "单模型低时延直出",
-    parallel_multi_union: "多模型并行补全",
-    single_low_cost: "单模型低成本直出",
-    cost_aware_primary_plus_reviewer: "低成本主模型 + 复核模型",
-    domain_priority_single: "领域优先单模型",
-    domain_priority_crosscheck: "领域优先交叉校验",
-    single_balanced: "单模型综合平衡",
-    consensus_with_backfill: "共识优先并补全",
-    single_high_confidence: "单模型高置信直出",
-    multi_consensus_vote: "多模型共识投票",
-  };
-  const fusionPolicyLabels = {
-    empty: "无",
-    single_primary: "主模型直出",
-    union_all: "并集融合",
-    primary_with_fallback: "主模型 + 补充结果",
-    domain_priority: "领域优先融合",
-    consensus_backfill: "共识补全",
-    majority_vote: "多数投票",
-  };
   const strategyModeLabels = {
     none: "未执行",
     "multi-objective-adaptive": "多目标自适应",
   };
-  function formatExecutionPathLabel(value) {
-    return executionPathLabels[String(value || "").trim()] || value || "-";
-  }
-  function formatFusionPolicyLabel(value) {
-    return fusionPolicyLabels[String(value || "").trim()] || value || "-";
-  }
   function formatStrategyModeLabel(value) {
     return strategyModeLabels[String(value || "").trim()] || value || "-";
   }
@@ -4077,7 +4081,6 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
   );
   const archiveSatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "satisfied").length;
   const archiveUnsatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "unsatisfied").length;
-  const archivePendingCount = Math.max(allArchives.length - archiveSatisfiedCount - archiveUnsatisfiedCount, 0);
   return (
     <>
       <section className="page-shell card section-shell">
@@ -4089,7 +4092,6 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
           <MetricCard title="任务调度归档" value={taskRoutingArchives.length} note="以 trd 开头，保留调度权重快照与决策证据" />
           <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
           <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
-          <MetricCard title="暂定结果" value={archivePendingCount} note="默认状态，可理解为用户无反馈" />
         </div>
       </section>
 
