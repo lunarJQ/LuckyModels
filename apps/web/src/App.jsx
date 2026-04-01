@@ -4253,91 +4253,6 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="推理实验归档" title="推理实验记录归档列表" note="这一表只放以 pred 开头的归档，主要回看单次在线推理或推理实验结果，也支持直接补反馈。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次推理实验记录。它保留输入文本、延迟和三元组数量，补上的满意 / 不满意 / 暂定反馈会继续影响任务调度学习过程。</div>
-        {predictionArchives.length ? (
-          <div className="table-wrap">
-            <table className="archive-table">
-              <thead>
-                <tr>
-                  <th>归档信息</th>
-                  <th>模型与场景</th>
-                  <th>输入文本</th>
-                  <th>结果摘要</th>
-                  <th>反馈</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pagedPredictionArchives
-                  .map((item) => {
-                    return (
-                    <tr key={item.archive_id}>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <strong className="archive-main">{item.archive_id}</strong>
-                          <div className="table-note">创建时间：{item.created_at}</div>
-                          <div className="table-note">来源：推理实验</div>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <div className="archive-main">{item.model_id}</div>
-                          <div className="table-note">Profile：{item.profile_name || "-"}</div>
-                          <div className="table-note">场景：{item.scene || "-"}</div>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="archive-input">{item.request_text || item.request_texts?.[0] || "-"}</div>
-                      </td>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <div className="archive-result-grid">
-                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
-                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
-                          </div>
-                          <div className="table-note">推理实验归档用于回放预测输出、导出 JSON 和补充反馈。</div>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
-                          <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
-                        </div>
-                        <PredictionArchiveFeedbackControls
-                          actionBusy={actionBusy}
-                          archive={item}
-                          onUpdate={onUpdatePredictionArchiveFeedback}
-                        />
-                      </td>
-                      <td>
-                        <div className="actions row-actions">
-                          {canExportArchives ? (
-                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出</button>
-                          ) : null}
-                          {canManageArchives ? (
-                            <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  )})}
-              </tbody>
-            </table>
-            <PaginationBar
-              currentPage={safePredictionArchivePage}
-              totalPages={predictionArchiveTotalPages}
-              pageSize={archivePageSize}
-              totalItems={predictionArchives.length}
-              onChange={setPredictionArchivePage}
-            />
-          </div>
-        ) : (
-          <EmptyState icon="A" title="暂无推理实验归档" note="先执行一次在线推理或推理实验，这里就会出现以 pred 开头的归档结果。" />
-        )}
-      </section>
-
-      <section className="page-shell card section-shell">
         <SectionHeader kicker="任务调度归档" title="任务调度归档列表" note="这一表只放以 trd 开头的任务调度归档，专门保留调度评分权重快照、执行路径与参与模型，并支持直接补反馈。" />
         <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。它不仅保存融合结果，还保留当时的调度评分权重快照；你在这里补的满意 / 不满意 / 暂定反馈，也会进入任务调度学习过程。</div>
         {taskRoutingArchives.length ? (
@@ -4427,6 +4342,91 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
           </div>
         ) : (
           <EmptyState icon="T" title="暂无任务调度归档" note="先运行一次任务调度，这里就会出现以 trd 开头的归档结果。" />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="推理实验归档" title="推理实验记录归档列表" note="这一表只放以 pred 开头的归档，主要回看单次在线推理或推理实验结果，也支持直接补反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次推理实验记录。它保留输入文本、延迟和三元组数量，补上的满意 / 不满意 / 暂定反馈会继续影响任务调度学习过程。</div>
+        {predictionArchives.length ? (
+          <div className="table-wrap">
+            <table className="archive-table">
+              <thead>
+                <tr>
+                  <th>归档信息</th>
+                  <th>模型与场景</th>
+                  <th>输入文本</th>
+                  <th>结果摘要</th>
+                  <th>反馈</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedPredictionArchives
+                  .map((item) => {
+                    return (
+                    <tr key={item.archive_id}>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <strong className="archive-main">{item.archive_id}</strong>
+                          <div className="table-note">创建时间：{item.created_at}</div>
+                          <div className="table-note">来源：推理实验</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{item.model_id}</div>
+                          <div className="table-note">Profile：{item.profile_name || "-"}</div>
+                          <div className="table-note">场景：{item.scene || "-"}</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-input">{item.request_text || item.request_texts?.[0] || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-result-grid">
+                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
+                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
+                          </div>
+                          <div className="table-note">推理实验归档用于回放预测输出、导出 JSON 和补充反馈。</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                          <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
+                        </div>
+                        <PredictionArchiveFeedbackControls
+                          actionBusy={actionBusy}
+                          archive={item}
+                          onUpdate={onUpdatePredictionArchiveFeedback}
+                        />
+                      </td>
+                      <td>
+                        <div className="actions row-actions">
+                          {canExportArchives ? (
+                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出</button>
+                          ) : null}
+                          {canManageArchives ? (
+                            <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  )})}
+              </tbody>
+            </table>
+            <PaginationBar
+              currentPage={safePredictionArchivePage}
+              totalPages={predictionArchiveTotalPages}
+              pageSize={archivePageSize}
+              totalItems={predictionArchives.length}
+              onChange={setPredictionArchivePage}
+            />
+          </div>
+        ) : (
+          <EmptyState icon="A" title="暂无推理实验归档" note="先执行一次在线推理或推理实验，这里就会出现以 pred 开头的归档结果。" />
         )}
       </section>
     </>
