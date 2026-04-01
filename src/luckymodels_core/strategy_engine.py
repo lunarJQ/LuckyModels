@@ -622,6 +622,24 @@ def _build_archive_weight_adjustments(
     satisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "satisfied")
     unsatisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
     effective_feedback_count = satisfied_count + unsatisfied_count
+    missing_too_many_count = sum(
+        1
+        for item in matched_archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "missing_too_many" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    false_positive_too_many_count = sum(
+        1
+        for item in matched_archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "false_positive_too_many" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    latency_high_count = sum(
+        1
+        for item in matched_archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "latency_high" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
 
     if empty_rate >= 0.45:
         adjustments["accuracy"] += 0.05
@@ -656,6 +674,36 @@ def _build_archive_weight_adjustments(
             reasons.append(
                 f"近期同类在线归档中不满意反馈占比较高（{unsatisfied_count}/{effective_feedback_count}），系统提升准确与稳定权重。"
             )
+
+    if unsatisfied_count >= 1 and missing_too_many_count:
+        missing_ratio = missing_too_many_count / unsatisfied_count
+        adjustments["coverage"] += 0.02 + 0.03 * missing_ratio
+        adjustments["domain"] += 0.01 * missing_ratio
+        reasons.append(
+            f"不满意反馈中有 {missing_too_many_count} 条指出“漏抽多”，系统提升覆盖与领域权重。"
+        )
+
+    if unsatisfied_count >= 1 and false_positive_too_many_count:
+        false_positive_ratio = false_positive_too_many_count / unsatisfied_count
+        adjustments["accuracy"] += 0.02 + 0.03 * false_positive_ratio
+        adjustments["stability"] += 0.02 + 0.02 * false_positive_ratio
+        adjustments["coverage"] -= 0.01 * false_positive_ratio
+        reasons.append(
+            f"不满意反馈中有 {false_positive_too_many_count} 条指出“误抽多”，系统提升准确与稳定权重。"
+        )
+
+    if unsatisfied_count >= 1 and latency_high_count:
+        latency_high_ratio = latency_high_count / unsatisfied_count
+        adjustments["latency"] += 0.03 + 0.03 * latency_high_ratio
+        adjustments["resource"] += 0.01 + 0.02 * latency_high_ratio
+        reasons.append(
+            f"不满意反馈中有 {latency_high_count} 条指出“延迟高”，系统提升时延与资源权重。"
+        )
+
+    if request_domain != "general" and unsatisfied_count >= 1 and (missing_too_many_count or false_positive_too_many_count):
+        domain_mismatch_ratio = min(1.0, (missing_too_many_count + false_positive_too_many_count) / unsatisfied_count)
+        adjustments["domain"] += 0.02 + 0.02 * domain_mismatch_ratio
+        reasons.append("在当前领域场景下，漏抽或误抽反馈偏多，系统进一步提升领域权重并优先考虑领域专用模型。")
 
     if archive_count < 5:
         adjustments["stability"] += 0.02
@@ -1110,6 +1158,9 @@ def _selection_score_breakdown(
         satisfied_rate = archive_feedback_summary.get("satisfied_rate")
         empty_rate = float(archive_feedback_summary.get("empty_rate") or 0.0)
         archive_avg_latency = archive_feedback_summary.get("avg_latency_ms")
+        missing_too_many_count = int(archive_feedback_summary.get("missing_too_many_count") or 0)
+        false_positive_too_many_count = int(archive_feedback_summary.get("false_positive_too_many_count") or 0)
+        latency_high_count = int(archive_feedback_summary.get("latency_high_count") or 0)
         evidence_scale = min(0.18, 0.05 * effective_feedback_count) if effective_feedback_count else 0.0
         if satisfied_rate is not None and effective_feedback_count:
             centered_rate = float(satisfied_rate) - 0.5
@@ -1122,6 +1173,18 @@ def _selection_score_breakdown(
         if empty_rate >= 0.4:
             coverage_score = max(0.0, coverage_score - min(0.16, empty_rate * 0.18))
             stability_score = max(0.0, stability_score - min(0.12, empty_rate * 0.12))
+        if effective_feedback_count and missing_too_many_count:
+            missing_ratio = missing_too_many_count / effective_feedback_count
+            coverage_score = max(0.0, coverage_score - min(0.2, 0.06 + missing_ratio * 0.12))
+        if effective_feedback_count and false_positive_too_many_count:
+            false_positive_ratio = false_positive_too_many_count / effective_feedback_count
+            accuracy_score = max(0.0, accuracy_score - min(0.22, 0.08 + false_positive_ratio * 0.12))
+            stability_score = max(0.0, stability_score - min(0.18, 0.05 + false_positive_ratio * 0.10))
+            coverage_score = max(0.0, coverage_score - min(0.08, false_positive_ratio * 0.06))
+        if effective_feedback_count and latency_high_count:
+            latency_high_ratio = latency_high_count / effective_feedback_count
+            latency_score = max(0.0, latency_score - min(0.24, 0.08 + latency_high_ratio * 0.14))
+            resource_score = max(0.0, resource_score - min(0.12, 0.04 + latency_high_ratio * 0.08))
         if p95_latency_ms is None and archive_avg_latency is not None:
             latency_score = max(0.0, 1.0 - min(float(archive_avg_latency), 1500.0) / 1500.0)
     return {
@@ -1229,6 +1292,9 @@ def _build_candidate_archive_feedback_summary(
             "effective_feedback_count": 0,
             "satisfied_count": 0,
             "unsatisfied_count": 0,
+            "missing_too_many_count": 0,
+            "false_positive_too_many_count": 0,
+            "latency_high_count": 0,
             "satisfied_rate": None,
             "avg_latency_ms": None,
             "avg_triple_count": None,
@@ -1238,11 +1304,32 @@ def _build_candidate_archive_feedback_summary(
     unsatisfied_count = sum(1 for item in archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
     effective_feedback_count = satisfied_count + unsatisfied_count
     empty_count = sum(1 for item in archives if not int(item.triple_count or 0))
+    missing_too_many_count = sum(
+        1
+        for item in archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "missing_too_many" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    false_positive_too_many_count = sum(
+        1
+        for item in archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "false_positive_too_many" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    latency_high_count = sum(
+        1
+        for item in archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and "latency_high" in _parse_archive_feedback_reasons(item.feedback_note)
+    )
     return {
         "archive_count": len(archives),
         "effective_feedback_count": effective_feedback_count,
         "satisfied_count": satisfied_count,
         "unsatisfied_count": unsatisfied_count,
+        "missing_too_many_count": missing_too_many_count,
+        "false_positive_too_many_count": false_positive_too_many_count,
+        "latency_high_count": latency_high_count,
         "satisfied_rate": (satisfied_count / effective_feedback_count) if effective_feedback_count else None,
         "avg_latency_ms": _mean_numeric(item.latency_ms for item in archives),
         "avg_triple_count": _mean_numeric(item.triple_count for item in archives),
@@ -1259,14 +1346,34 @@ def _build_archive_feedback_reason_text(
     effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
     satisfied_count = int(archive_feedback_summary.get("satisfied_count") or 0)
     unsatisfied_count = int(archive_feedback_summary.get("unsatisfied_count") or 0)
+    missing_too_many_count = int(archive_feedback_summary.get("missing_too_many_count") or 0)
+    false_positive_too_many_count = int(archive_feedback_summary.get("false_positive_too_many_count") or 0)
+    latency_high_count = int(archive_feedback_summary.get("latency_high_count") or 0)
     if not archive_count:
         return "当前暂无同类在线归档反馈。"
     if effective_feedback_count:
+        detail_parts = []
+        if missing_too_many_count:
+            detail_parts.append(f"漏抽偏多 {missing_too_many_count} 条")
+        if false_positive_too_many_count:
+            detail_parts.append(f"误抽偏多 {false_positive_too_many_count} 条")
+        if latency_high_count:
+            detail_parts.append(f"延迟偏高 {latency_high_count} 条")
+        detail_text = f"；其中{'，'.join(detail_parts)}" if detail_parts else ""
         return (
             f"同类在线归档 {archive_count} 条，其中满意 {satisfied_count} 条、不满意 {unsatisfied_count} 条，"
-            "这些记录会直接参与本次候选评分。"
+            f"{detail_text}，这些记录会直接参与本次候选评分。"
         )
     return f"当前已有同类在线归档 {archive_count} 条，但尚无明确满意度反馈，平台暂以运行结果作为辅助证据。"
+
+
+def _parse_archive_feedback_reasons(feedback_note: str | None) -> set[str]:
+    supported = {"missing_too_many", "false_positive_too_many", "latency_high"}
+    return {
+        item.strip().lower()
+        for item in str(feedback_note or "").split(",")
+        if item.strip().lower() in supported
+    }
 
 
 def _select_task_candidates(

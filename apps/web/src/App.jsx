@@ -248,8 +248,118 @@ function formatPredictionFeedbackLabel(value) {
   return "暂定";
 }
 
+function normalizePredictionFeedbackReason(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "missing_too_many" || normalized === "false_positive_too_many" || normalized === "latency_high") {
+    return normalized;
+  }
+  return "";
+}
+
+function parsePredictionFeedbackReasons(value) {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(value.map((item) => normalizePredictionFeedbackReason(item)).filter(Boolean)),
+    );
+  }
+  return Array.from(
+    new Set(
+      String(value || "")
+        .split(",")
+        .map((item) => normalizePredictionFeedbackReason(item))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function serializePredictionFeedbackReasons(value) {
+  const order = ["missing_too_many", "false_positive_too_many", "latency_high"];
+  const reasonSet = new Set(parsePredictionFeedbackReasons(value));
+  return order.filter((item) => reasonSet.has(item)).join(",");
+}
+
+function formatPredictionFeedbackReasonLabel(value) {
+  const normalized = normalizePredictionFeedbackReason(value);
+  if (normalized === "missing_too_many") {
+    return "漏抽多";
+  }
+  if (normalized === "false_positive_too_many") {
+    return "误抽多";
+  }
+  if (normalized === "latency_high") {
+    return "延迟高";
+  }
+  return value ? String(value) : "";
+}
+
+function formatPredictionFeedbackReasonSummary(value) {
+  const labels = parsePredictionFeedbackReasons(value).map((item) => formatPredictionFeedbackReasonLabel(item));
+  return labels.join("、");
+}
+
+function formatPredictionFeedbackSummary(status, note) {
+  const statusLabel = formatPredictionFeedbackLabel(status);
+  const reasonLabel = formatPredictionFeedbackReasonSummary(note);
+  if (normalizePredictionFeedbackStatus(status) === "unsatisfied" && reasonLabel) {
+    return `${statusLabel} · ${reasonLabel}`;
+  }
+  return statusLabel;
+}
+
 function formatArchiveSourceLabel(value) {
   return String(value || "").trim().toLowerCase() === "task_routing" ? "任务调度" : "在线推理";
+}
+
+function collectArchiveModelHints(archive) {
+  const values = [
+    archive?.model_id,
+    archive?.response_payload?.model_id,
+    ...(archive?.task_routing_selected_model_ids || []),
+    ...(archive?.response_payload?.selected_model_ids || []),
+  ];
+  return values.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean);
+}
+
+function inferArchiveLanguage(archive) {
+  const payloadLanguage = String(archive?.response_payload?.language || "").trim().toLowerCase();
+  if (payloadLanguage === "en" || payloadLanguage === "zh") {
+    return payloadLanguage;
+  }
+  const hints = collectArchiveModelHints(archive);
+  if (hints.some((item) => item.includes("-en-"))) {
+    return "en";
+  }
+  if (hints.some((item) => item.includes("-zh-"))) {
+    return "zh";
+  }
+  return "";
+}
+
+function inferArchiveDomain(archive) {
+  const hints = [
+    ...collectArchiveModelHints(archive),
+    String(archive?.scene || "").trim().toLowerCase(),
+    String(archive?.task_routing_objective || "").trim().toLowerCase(),
+  ];
+  if (hints.some((item) => item.includes("equipmentmix15k") || item.includes("industrial"))) {
+    return "industrial";
+  }
+  return "general";
+}
+
+function archiveMatchesTaskRoutingScene(archive, sceneValue) {
+  const language = inferArchiveLanguage(archive);
+  const domain = inferArchiveDomain(archive);
+  if (sceneValue === "en_general") {
+    return language === "en";
+  }
+  if (sceneValue === "zh_general") {
+    return language === "zh" && domain !== "industrial";
+  }
+  if (sceneValue === "zh_industrial") {
+    return language === "zh" && domain === "industrial";
+  }
+  return true;
 }
 
 function formatWeightSnapshot(snapshot) {
@@ -378,7 +488,7 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalItems, onChange
   );
 }
 
-function useTablePagination(items, pageSize = 10) {
+function useTablePagination(items, pageSize = 5) {
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -1215,16 +1325,19 @@ export default function App() {
     setPredictResult((current) => (current?.archive_id === archiveId ? null : current));
   }
 
-  async function handleUpdatePredictionArchiveFeedback(archiveId, feedbackStatus) {
+  async function handleUpdatePredictionArchiveFeedback(archiveId, feedbackStatus, feedbackNote = null) {
     const nextStatus = normalizePredictionFeedbackStatus(feedbackStatus);
     const statusLabel = formatPredictionFeedbackLabel(nextStatus);
+    const nextFeedbackNote = nextStatus === "unsatisfied" ? serializePredictionFeedbackReasons(feedbackNote) || null : null;
+    const detailLabel = nextFeedbackNote ? `（${formatPredictionFeedbackReasonSummary(nextFeedbackNote)}）` : "";
     const result = await runAction(
       `prediction-feedback-${archiveId}`,
       () =>
         updatePredictionArchiveFeedback(archiveId, {
           feedback_status: nextStatus,
+          feedback_note: nextFeedbackNote,
         }),
-      `预测归档反馈已更新为“${statusLabel}”。`,
+      `预测归档反馈已更新为“${statusLabel}${detailLabel}”。`,
     );
     setPredictResult((current) => {
       if (!current || current.archive_id !== archiveId) {
@@ -2393,25 +2506,62 @@ function PredictionGraphCard({ predictResult }) {
 
 function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
   const currentStatus = normalizePredictionFeedbackStatus(archive?.feedback_status);
+  const currentReasons = parsePredictionFeedbackReasons(archive?.feedback_note);
   const options = [
     { value: "satisfied", label: "满意" },
     { value: "unsatisfied", label: "不满意" },
     { value: "pending", label: "暂定" },
   ];
+  const unsatisfiedReasonOptions = [
+    { value: "missing_too_many", label: "漏抽多" },
+    { value: "false_positive_too_many", label: "误抽多" },
+    { value: "latency_high", label: "延迟高" },
+  ];
 
   return (
-    <div className="actions archive-feedback-actions">
-      {options.map((item) => (
-        <button
-          key={item.value}
-          className={currentStatus === item.value ? "button-active" : ""}
-          disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
-          onClick={() => void onUpdate(archive.archive_id, item.value)}
-          type="button"
-        >
-          {item.label}
-        </button>
-      ))}
+    <div className="archive-feedback-panel">
+      <div className="actions archive-feedback-actions">
+        {options.map((item) => (
+          <button
+            key={item.value}
+            className={currentStatus === item.value ? "button-active" : ""}
+            disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
+            onClick={() =>
+              void onUpdate(
+                archive.archive_id,
+                item.value,
+                item.value === "unsatisfied" ? currentReasons : null,
+              )
+            }
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      {currentStatus === "unsatisfied" ? (
+        <div className="archive-feedback-reason-shell">
+          <div className="table-note">不满意原因：</div>
+          <div className="actions archive-feedback-reason-actions">
+            {unsatisfiedReasonOptions.map((item) => (
+              <button
+                key={item.value}
+                className={currentReasons.includes(item.value) ? "button-active" : ""}
+                disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
+                onClick={() => {
+                  const nextReasons = currentReasons.includes(item.value)
+                    ? currentReasons.filter((reason) => reason !== item.value)
+                    : [...currentReasons, item.value];
+                  void onUpdate(archive.archive_id, "unsatisfied", nextReasons);
+                }}
+                type="button"
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2437,7 +2587,7 @@ function ExperimentsPage({
     : DEFAULT_PREDICT_DATASETS;
   const activeScene = resolvePredictDatasetKey(predictForm.scene);
   const sampleBusy = actionBusy[`predict-sample-${activeScene}`];
-  const predictArchivePagination = useTablePagination(sortByCreatedDesc(derived.predictArchives), 10);
+  const predictArchivePagination = useTablePagination(sortByCreatedDesc(derived.predictArchives), 5);
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
@@ -2553,13 +2703,13 @@ function ExperimentsPage({
                 <MetricCard title="归档编号" value={predictResult.archive_id || "-"} note="预测结果已自动归档" />
                 <MetricCard
                   title="当前反馈"
-                  value={formatPredictionFeedbackLabel(currentArchive?.feedback_status)}
+                  value={formatPredictionFeedbackSummary(currentArchive?.feedback_status, currentArchive?.feedback_note)}
                   note={currentArchive?.feedback_updated_at || "默认暂定，可在下方结果归档中修改"}
                 />
               </div>
               {currentArchive ? (
                 <div className="banner banner-muted">
-                  当前预测归档反馈：{formatPredictionFeedbackLabel(currentArchive.feedback_status)}。如果这次结果符合预期，可直接标记“满意”；明显不符合预期则标记“不满意”；暂时不判断就保留“暂定”。
+                  当前预测归档反馈：{formatPredictionFeedbackSummary(currentArchive.feedback_status, currentArchive.feedback_note)}。如果这次结果已经可直接用于业务，可标记“满意”；如果结果明显不符合预期，可先标记“不满意”，再补充“漏抽多”、“误抽多”和/或“延迟高”；暂时不判断就保留“暂定”。
                 </div>
               ) : null}
               <div className="relation-list">
@@ -2623,8 +2773,9 @@ function ExperimentsPage({
                         <div className="table-note">样本数：{escapeValue(item.item_count)}</div>
                       </td>
                       <td>
-                        <div>{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                        <div>{formatPredictionFeedbackSummary(item.feedback_status, item.feedback_note)}</div>
                         <div className="table-note">{item.feedback_updated_at || "未补充反馈"}</div>
+                        {item.feedback_note ? <div className="table-note">原因：{formatPredictionFeedbackReasonSummary(item.feedback_note)}</div> : null}
                         <PredictionArchiveFeedbackControls
                           actionBusy={actionBusy}
                           archive={item}
@@ -2675,8 +2826,8 @@ function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageUsers = currentPermissions.includes("users.manage");
   const [selectedUserId, setSelectedUserId] = useState(currentUser?.user_id || "");
-  const userMatrixPagination = useTablePagination(users, 10);
-  const governancePagination = useTablePagination(users, 10);
+  const userMatrixPagination = useTablePagination(users, 5);
+  const governancePagination = useTablePagination(users, 5);
 
   useEffect(() => {
     setSelectedUserId(currentUser?.user_id || "");
@@ -3119,12 +3270,79 @@ function TaskRoutingPage({
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
-  const candidatePagination = useTablePagination(selectedDeployments, 10);
-  const benchmarkEvidencePagination = useTablePagination(completedBenchmarks, 10);
-  const objectiveSummaryPagination = useTablePagination(feedbackOverview.objective_summaries || [], 10);
-  const weightProfilePagination = useTablePagination(feedbackOverview.weight_profiles || [], 10);
-  const executionPathPagination = useTablePagination(feedbackOverview.execution_path_summaries || [], 10);
-  const recentDecisionPagination = useTablePagination(feedbackOverview.recent_decisions || [], 10);
+  const currentWeightProfile = useMemo(
+    () => (feedbackOverview.weight_profiles || []).find((item) => item.objective === taskRoutingForm.objective) || null,
+    [feedbackOverview.weight_profiles, taskRoutingForm.objective],
+  );
+  const sceneMatchedArchives = useMemo(
+    () => sortByCreatedDesc(derived.predictArchives).filter((item) => archiveMatchesTaskRoutingScene(item, selectedScene.value)),
+    [derived.predictArchives, selectedScene.value],
+  );
+  const sceneFeedbackSummary = useMemo(() => {
+    const summary = {
+      archiveCount: sceneMatchedArchives.length,
+      satisfiedCount: 0,
+      unsatisfiedCount: 0,
+      missingTooManyCount: 0,
+      falsePositiveTooManyCount: 0,
+      latencyHighCount: 0,
+    };
+    sceneMatchedArchives.forEach((item) => {
+      const status = normalizePredictionFeedbackStatus(item.feedback_status);
+      if (status === "satisfied") {
+        summary.satisfiedCount += 1;
+      }
+      if (status === "unsatisfied") {
+        summary.unsatisfiedCount += 1;
+      }
+      const reasons = parsePredictionFeedbackReasons(item.feedback_note);
+      if (reasons.includes("missing_too_many")) {
+        summary.missingTooManyCount += 1;
+      }
+      if (reasons.includes("false_positive_too_many")) {
+        summary.falsePositiveTooManyCount += 1;
+      }
+      if (reasons.includes("latency_high")) {
+        summary.latencyHighCount += 1;
+      }
+    });
+    return summary;
+  }, [sceneMatchedArchives]);
+  const sceneCalibrationNarratives = useMemo(() => {
+    const narratives = [];
+    if (!sceneFeedbackSummary.archiveCount) {
+      return ["当前场景还没有可直接引用的在线归档反馈，调度层暂以 benchmark 和基础权重为主。"];
+    }
+    if (selectedScene.value === "zh_industrial" && (sceneFeedbackSummary.missingTooManyCount || sceneFeedbackSummary.falsePositiveTooManyCount)) {
+      narratives.push(
+        `中文工业设备场景近期出现 ${sceneFeedbackSummary.missingTooManyCount} 条“漏抽多”和 ${sceneFeedbackSummary.falsePositiveTooManyCount} 条“误抽多”反馈，系统会进一步提高领域权重，并优先考虑 equipmentmix15k 路线模型。`,
+      );
+    }
+    if (sceneFeedbackSummary.missingTooManyCount) {
+      narratives.push("“漏抽多”反馈会推动覆盖权重上调，让高召回模型或多模型融合路径更容易获得更高优先级。");
+    }
+    if (sceneFeedbackSummary.falsePositiveTooManyCount) {
+      narratives.push("“误抽多”反馈会推动准确率与稳定性权重上调，系统会压低误报偏多候选的排序分数。");
+    }
+    if (sceneFeedbackSummary.latencyHighCount) {
+      narratives.push("“延迟高”反馈会推动时延与资源权重上调，系统会更偏向低 P95 的 deployment 或更轻量的 profile。");
+    }
+    if (currentWeightProfile && Object.keys(currentWeightProfile.archive_adjustments || {}).length) {
+      narratives.push(
+        `当前“${selectedObjective.label}”目标已吸收归档校准信号：${Object.entries(currentWeightProfile.archive_adjustments || {}).map(([key, value]) => `${key}=${Number(value).toFixed(2)}`).join(" / ")}。`,
+      );
+    }
+    if (!narratives.length) {
+      narratives.push("当前场景已有在线归档样本，但还没有形成明显的反馈驱动偏置，调度层暂以运行结果与 benchmark 作为主要证据。");
+    }
+    return narratives;
+  }, [currentWeightProfile, sceneFeedbackSummary, selectedObjective.label, selectedScene.value]);
+  const candidatePagination = useTablePagination(selectedDeployments, 5);
+  const benchmarkEvidencePagination = useTablePagination(completedBenchmarks, 5);
+  const objectiveSummaryPagination = useTablePagination(feedbackOverview.objective_summaries || [], 5);
+  const weightProfilePagination = useTablePagination(feedbackOverview.weight_profiles || [], 5);
+  const executionPathPagination = useTablePagination(feedbackOverview.execution_path_summaries || [], 5);
+  const recentDecisionPagination = useTablePagination(feedbackOverview.recent_decisions || [], 5);
   const strategyModeLabels = {
     none: "未执行",
     "multi-objective-adaptive": "多目标自适应",
@@ -3580,8 +3798,21 @@ function TaskRoutingPage({
 
         <article className="card detail-card">
           <SectionHeader kicker="分析区" title="调度评分权重快照" note="这张表不是模型训练权重，而是调度层评分权重。它说明不同目标下，平台更看重准确、覆盖、时延、领域还是资源成本。" />
+          <div className="metrics">
+            <MetricCard title="场景归档样本" value={sceneFeedbackSummary.archiveCount} note={selectedScene.label} />
+            <MetricCard title="漏抽多" value={sceneFeedbackSummary.missingTooManyCount} note="会推动覆盖与领域权重上调" />
+            <MetricCard title="误抽多" value={sceneFeedbackSummary.falsePositiveTooManyCount} note="会推动准确率与稳定性权重上调" />
+            <MetricCard title="延迟高" value={sceneFeedbackSummary.latencyHighCount} note="会推动时延与资源权重上调" />
+          </div>
+          <div className="relation-list">
+            {sceneCalibrationNarratives.map((item, index) => (
+              <div className="relation-item" key={`${item}-${index + 1}`}>
+                {item}
+              </div>
+            ))}
+          </div>
           <div className="banner banner-muted">这张表看什么：看调度层“现在按什么规则打分”。如果某一列权重大，说明当前目标下平台更重视这一项。</div>
-          <div className="banner banner-muted">术语提示：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`校准修正` 来自历史在线归档。</div>
+          <div className="banner banner-muted">术语提示：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`校准修正` 来自历史在线归档。工业场景下“漏抽多 / 误抽多”通常也会被系统解释为领域匹配不足，从而进一步提升领域权重。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3804,8 +4035,8 @@ function DeploymentPolicyPage({
       };
     })
     .filter(Boolean);
-  const policyActionPagination = useTablePagination(deploymentPolicyAutomation?.recent_actions || [], 10);
-  const deploymentPlanPagination = useTablePagination(deploymentPlanRows, 10);
+  const policyActionPagination = useTablePagination(deploymentPolicyAutomation?.recent_actions || [], 5);
+  const deploymentPlanPagination = useTablePagination(deploymentPlanRows, 5);
 
   return (
     <>
@@ -4208,7 +4439,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
-  const archivePageSize = 10;
+  const archivePageSize = 5;
   const [predictionArchivePage, setPredictionArchivePage] = useState(1);
   const [taskRoutingArchivePage, setTaskRoutingArchivePage] = useState(1);
   const allArchives = sortByCreatedDesc(derived.predictArchives);
@@ -4356,10 +4587,11 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           </div>
                         </div>
                       </td>
-                      <td>
+                      <td className="archive-feedback-cell">
                         <div className="archive-cell-stack">
-                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                          <div className="archive-main">{formatPredictionFeedbackSummary(item.feedback_status, item.feedback_note)}</div>
                           <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
+                          {item.feedback_note ? <div className="table-note">原因：{formatPredictionFeedbackReasonSummary(item.feedback_note)}</div> : null}
                         </div>
                         {!isSupplementalDecision ? (
                           <PredictionArchiveFeedbackControls
@@ -4446,10 +4678,11 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           <div className="table-note">推理实验归档用于回放预测输出、导出 JSON 和补充反馈。</div>
                         </div>
                       </td>
-                      <td>
+                      <td className="archive-feedback-cell">
                         <div className="archive-cell-stack">
-                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                          <div className="archive-main">{formatPredictionFeedbackSummary(item.feedback_status, item.feedback_note)}</div>
                           <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
+                          {item.feedback_note ? <div className="table-note">原因：{formatPredictionFeedbackReasonSummary(item.feedback_note)}</div> : null}
                         </div>
                         <PredictionArchiveFeedbackControls
                           actionBusy={actionBusy}
@@ -4971,7 +5204,7 @@ function CapabilityMatrixPage({ derived }) {
       );
     });
   }, [deferredSearch, derived.capabilityMatrix, statusFilter]);
-  const capabilityPagination = useTablePagination(filteredRows, 10);
+  const capabilityPagination = useTablePagination(filteredRows, 5);
 
   function handleExportCapabilityMatrix() {
     if (!filteredRows.length) {
@@ -5212,7 +5445,7 @@ function DeploymentsPage({
 
     return next;
   }, [deferredSearch, derived.deployments, modelFilter, statusFilter]);
-  const deploymentPagination = useTablePagination(filteredDeployments, 10);
+  const deploymentPagination = useTablePagination(filteredDeployments, 5);
 
   function exportableRows() {
     return filteredDeployments.map((item) => ({
@@ -5556,7 +5789,7 @@ function BenchmarksPage({
 
     return next;
   }, [deferredSearch, derived.benchmarks, scopeFilter, statusFilter]);
-  const benchmarkRecordPagination = useTablePagination(filteredBenchmarks, 10);
+  const benchmarkRecordPagination = useTablePagination(filteredBenchmarks, 5);
 
   const compareRows = useMemo(() => {
     const deploymentMap = new Map(derived.deployments.map((item) => [item.deployment_id, item]));
@@ -5608,7 +5841,7 @@ function BenchmarksPage({
         return left.profile_name.localeCompare(right.profile_name);
       });
   }, [compareModelId, completedBenchmarks, derived.deployments]);
-  const compareRowPagination = useTablePagination(compareRows, 10);
+  const compareRowPagination = useTablePagination(compareRows, 5);
 
   const bestLatencyRow = useMemo(() => {
     return [...compareRows]
@@ -5631,7 +5864,7 @@ function BenchmarksPage({
       return left.profile_name.localeCompare(right.profile_name);
     });
   }, [compareRows, paperModelId]);
-  const thesisRowPagination = useTablePagination(thesisRows, 10);
+  const thesisRowPagination = useTablePagination(thesisRows, 5);
 
   const selectedPaperModelRows = useMemo(() => {
     if (paperModelId === "all") {
@@ -6297,7 +6530,7 @@ function ResourcesPage({ derived }) {
     0,
   );
   const explicitGpuBindings = derived.deployments.filter((item) => Array.isArray(item.gpu_ids) && item.gpu_ids.length);
-  const gpuDevicePagination = useTablePagination(gpuStatus.devices || [], 10);
+  const gpuDevicePagination = useTablePagination(gpuStatus.devices || [], 5);
 
   return (
     <>
