@@ -29,6 +29,7 @@ import {
   switchCurrentAccessUser,
   stopDeployment,
   toggleAccessUser,
+  updatePredictionArchiveFeedback,
   updateDeploymentPolicyAutomation,
   updateAccessUser,
 } from "./api";
@@ -226,6 +227,25 @@ function matchesKeyword(values, keyword) {
 
 function sortByCreatedDesc(items) {
   return [...items].sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")));
+}
+
+function normalizePredictionFeedbackStatus(value) {
+  const normalized = String(value || "pending").trim().toLowerCase();
+  if (normalized === "satisfied" || normalized === "unsatisfied") {
+    return normalized;
+  }
+  return "pending";
+}
+
+function formatPredictionFeedbackLabel(value) {
+  const normalized = normalizePredictionFeedbackStatus(value);
+  if (normalized === "satisfied") {
+    return "满意";
+  }
+  if (normalized === "unsatisfied") {
+    return "不满意";
+  }
+  return "暂定";
 }
 
 function getDeploymentHealthPayload(deployment) {
@@ -455,10 +475,11 @@ function buildInitialTaskRoutingForm(report) {
 
 function buildInitialDeploymentPolicyAutomationForm() {
   return {
-    enabled: false,
+    enabled: true,
     intervalSeconds: 900,
     protectActiveWindowSeconds: 120,
     gpuMemoryRestartEnabled: true,
+    gpuMemoryRestartIntervalSeconds: 60,
     gpuMemoryRestartThresholdMb: 5120,
   };
 }
@@ -1038,6 +1059,30 @@ export default function App() {
     setPredictResult((current) => (current?.archive_id === archiveId ? null : current));
   }
 
+  async function handleUpdatePredictionArchiveFeedback(archiveId, feedbackStatus) {
+    const nextStatus = normalizePredictionFeedbackStatus(feedbackStatus);
+    const statusLabel = formatPredictionFeedbackLabel(nextStatus);
+    const result = await runAction(
+      `prediction-feedback-${archiveId}`,
+      () =>
+        updatePredictionArchiveFeedback(archiveId, {
+          feedback_status: nextStatus,
+        }),
+      `预测归档反馈已更新为“${statusLabel}”。`,
+    );
+    setPredictResult((current) => {
+      if (!current || current.archive_id !== archiveId) {
+        return current;
+      }
+      return {
+        ...current,
+        feedback_status: result.feedback_status,
+        feedback_note: result.feedback_note,
+        feedback_updated_at: result.feedback_updated_at,
+      };
+    });
+  }
+
   async function handlePredict() {
     const options = predictForm.optionsJson.trim() ? safeJsonParse(predictForm.optionsJson) : {};
     const result = await runAction(
@@ -1115,6 +1160,7 @@ export default function App() {
         intervalSeconds: automationResult.interval_seconds || 900,
         protectActiveWindowSeconds: automationResult.protect_active_window_seconds || 120,
         gpuMemoryRestartEnabled: automationResult.gpu_memory_restart_enabled ?? true,
+        gpuMemoryRestartIntervalSeconds: automationResult.gpu_memory_restart_interval_seconds || 60,
         gpuMemoryRestartThresholdMb: automationResult.gpu_memory_restart_threshold_mb || 5120,
       });
       setNotice({ type: "ok", text: "部署策略建议已刷新。" });
@@ -1138,6 +1184,9 @@ export default function App() {
         ),
         gpu_memory_restart_enabled:
           payloadOverride?.gpu_memory_restart_enabled ?? deploymentPolicyAutomationForm.gpuMemoryRestartEnabled,
+        gpu_memory_restart_interval_seconds: Number(
+          payloadOverride?.gpu_memory_restart_interval_seconds ?? deploymentPolicyAutomationForm.gpuMemoryRestartIntervalSeconds,
+        ),
         gpu_memory_restart_threshold_mb: Number(
           payloadOverride?.gpu_memory_restart_threshold_mb ?? deploymentPolicyAutomationForm.gpuMemoryRestartThresholdMb,
         ),
@@ -1149,6 +1198,8 @@ export default function App() {
         intervalSeconds: result.interval_seconds || payload.interval_seconds,
         protectActiveWindowSeconds: result.protect_active_window_seconds || payload.protect_active_window_seconds,
         gpuMemoryRestartEnabled: result.gpu_memory_restart_enabled ?? payload.gpu_memory_restart_enabled,
+        gpuMemoryRestartIntervalSeconds:
+          result.gpu_memory_restart_interval_seconds || payload.gpu_memory_restart_interval_seconds,
         gpuMemoryRestartThresholdMb: result.gpu_memory_restart_threshold_mb || payload.gpu_memory_restart_threshold_mb,
       });
       setNotice({ type: "ok", text: result.enabled ? "自动优化已开启。" : "自动优化已关闭。" });
@@ -1358,6 +1409,10 @@ export default function App() {
       acceptance_rate: null,
       pending_feedback_count: 0,
       last_feedback_at: null,
+      archive_feedback_total: 0,
+      archive_satisfied_count: 0,
+      archive_unsatisfied_count: 0,
+      archive_pending_count: 0,
       objective_summaries: [],
       execution_path_summaries: [],
       model_adoption_summaries: [],
@@ -1425,6 +1480,7 @@ export default function App() {
       onCreateDeployment={handleCreateDeployment}
       onDeleteBenchmark={handleDeleteBenchmark}
       onDeletePredictionArchive={handleDeletePredictionArchive}
+      onUpdatePredictionArchiveFeedback={handleUpdatePredictionArchiveFeedback}
       onDeploymentAction={handleDeploymentAction}
       onDeploymentFormChange={setDeploymentForm}
       onExportDeploymentRows={(rows, format) => {
@@ -1634,6 +1690,7 @@ function Shell(props) {
     onCreateDeployment,
     onDeleteBenchmark,
     onDeletePredictionArchive,
+    onUpdatePredictionArchiveFeedback,
     onDeploymentAction,
     onDeploymentFormChange,
     onExportDeploymentRows,
@@ -1797,6 +1854,7 @@ function Shell(props) {
                 derived={derived}
                 onDeletePredictionArchive={onDeletePredictionArchive}
                 onExportPredictResult={onExportPredictResult}
+                onUpdatePredictionArchiveFeedback={onUpdatePredictionArchiveFeedback}
                 onPredict={onPredict}
                 onRefreshPredictSample={onRefreshPredictSample}
                 onSelectPredictDeployment={onSelectPredictDeployment}
@@ -1868,6 +1926,8 @@ function Shell(props) {
                 derived={derived}
                 onDeletePredictionArchive={onDeletePredictionArchive}
                 onExportPredictionArchive={(archive) => onExportPredictResult(archive)}
+                onUpdatePredictionArchiveFeedback={onUpdatePredictionArchiveFeedback}
+                actionBusy={actionBusy}
               />,
             )}
             {renderGuardedRoute("/capability-matrix", <CapabilityMatrixPage derived={derived} />)}
@@ -2170,11 +2230,37 @@ function PredictionGraphCard({ predictResult }) {
   );
 }
 
+function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
+  const currentStatus = normalizePredictionFeedbackStatus(archive?.feedback_status);
+  const options = [
+    { value: "satisfied", label: "满意" },
+    { value: "unsatisfied", label: "不满意" },
+    { value: "pending", label: "暂定" },
+  ];
+
+  return (
+    <div className="actions archive-feedback-actions">
+      {options.map((item) => (
+        <button
+          key={item.value}
+          className={currentStatus === item.value ? "button-active" : ""}
+          disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
+          onClick={() => void onUpdate(archive.archive_id, item.value)}
+          type="button"
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ExperimentsPage({
   actionBusy,
   derived,
   onDeletePredictionArchive,
   onExportPredictResult,
+  onUpdatePredictionArchiveFeedback,
   onPredict,
   onRefreshPredictSample,
   onSelectPredictDeployment,
@@ -2193,6 +2279,9 @@ function ExperimentsPage({
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
+  const currentArchive = predictResult?.archive_id
+    ? derived.predictArchives.find((item) => item.archive_id === predictResult.archive_id) || null
+    : null;
 
   return (
     <>
@@ -2300,7 +2389,17 @@ function ExperimentsPage({
                 <MetricCard title="三元组" value={predictResult.triple_count} note={formatLanguageLabel(predictResult.language)} />
                 <MetricCard title="版本" value={predictResult.version} note="运行时输出" />
                 <MetricCard title="归档编号" value={predictResult.archive_id || "-"} note="预测结果已自动归档" />
+                <MetricCard
+                  title="当前反馈"
+                  value={formatPredictionFeedbackLabel(currentArchive?.feedback_status)}
+                  note={currentArchive?.feedback_updated_at || "默认暂定，可在下方结果归档中修改"}
+                />
               </div>
+              {currentArchive ? (
+                <div className="banner banner-muted">
+                  当前预测归档反馈：{formatPredictionFeedbackLabel(currentArchive.feedback_status)}。如果这次结果符合预期，可直接标记“满意”；明显不符合预期则标记“不满意”；暂时不判断就保留“暂定”。
+                </div>
+              ) : null}
               <div className="relation-list">
                 {(predictResult.triples || []).map((item, index) => (
                   <div className="relation-item" key={`${item.subject}-${item.predicate}-${item.object}-${index + 1}`}>
@@ -2327,7 +2426,7 @@ function ExperimentsPage({
         <SectionHeader
           kicker="预测归档"
           title="单次预测归档"
-          note="每次在线推理成功后，平台会自动写入归档，方便后续导出 JSON、截图和回填论文案例。"
+          note="每次在线推理成功后，平台会自动写入归档，方便后续导出 JSON、截图、回填论文案例，并补充满意度反馈。"
         />
         {derived.predictArchives.length ? (
           <div className="table-wrap">
@@ -2339,6 +2438,7 @@ function ExperimentsPage({
                   <th>配置模板</th>
                   <th>输入摘要</th>
                   <th>结果摘要</th>
+                  <th>反馈</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2361,6 +2461,15 @@ function ExperimentsPage({
                         <div className="table-note">延迟：{escapeValue(item.latency_ms)}</div>
                         <div className="table-note">三元组：{escapeValue(item.triple_count)}</div>
                         <div className="table-note">样本数：{escapeValue(item.item_count)}</div>
+                      </td>
+                      <td>
+                        <div>{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                        <div className="table-note">{item.feedback_updated_at || "未补充反馈"}</div>
+                        <PredictionArchiveFeedbackControls
+                          actionBusy={actionBusy}
+                          archive={item}
+                          onUpdate={onUpdatePredictionArchiveFeedback}
+                        />
                       </td>
                       <td>
                         <div className="actions row-actions">
@@ -2803,6 +2912,10 @@ function TaskRoutingPage({
     acceptance_rate: null,
     pending_feedback_count: 0,
     last_feedback_at: null,
+    archive_feedback_total: 0,
+    archive_satisfied_count: 0,
+    archive_unsatisfied_count: 0,
+    archive_pending_count: 0,
     objective_summaries: [],
     execution_path_summaries: [],
     model_adoption_summaries: [],
@@ -2824,30 +2937,65 @@ function TaskRoutingPage({
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
+  const executionPathLabels = {
+    none: "未执行",
+    single_low_latency: "单模型低时延直出",
+    parallel_multi_union: "多模型并行补全",
+    single_low_cost: "单模型低成本直出",
+    cost_aware_primary_plus_reviewer: "低成本主模型 + 复核模型",
+    domain_priority_single: "领域优先单模型",
+    domain_priority_crosscheck: "领域优先交叉校验",
+    single_balanced: "单模型综合平衡",
+    consensus_with_backfill: "共识优先并补全",
+    single_high_confidence: "单模型高置信直出",
+    multi_consensus_vote: "多模型共识投票",
+  };
+  const fusionPolicyLabels = {
+    empty: "无",
+    single_primary: "主模型直出",
+    union_all: "并集融合",
+    primary_with_fallback: "主模型 + 补充结果",
+    domain_priority: "领域优先融合",
+    consensus_backfill: "共识补全",
+    majority_vote: "多数投票",
+  };
+  const strategyModeLabels = {
+    none: "未执行",
+    "multi-objective-adaptive": "多目标自适应",
+  };
+  function formatExecutionPathLabel(value) {
+    return executionPathLabels[String(value || "").trim()] || value || "-";
+  }
+  function formatFusionPolicyLabel(value) {
+    return fusionPolicyLabels[String(value || "").trim()] || value || "-";
+  }
+  function formatStrategyModeLabel(value) {
+    return strategyModeLabels[String(value || "").trim()] || value || "-";
+  }
   const quickStartSteps = [
     {
       title: "1. 选目标",
-      desc: "先选本次任务更看重什么，例如高准确、低时延或高覆盖，这会改变调度权重。",
+      desc: "先告诉平台这次更看重什么，例如准确、覆盖、时延或领域匹配。",
     },
     {
       title: "2. 填文本",
-      desc: "选择场景分类，再输入要抽取的文本。场景会直接约束候选模型范围。",
+      desc: "先选场景，再贴入待抽取文本。场景会直接限制候选 deployment 的范围。",
     },
     {
       title: "3. 运行调度",
-      desc: "平台会从当前运行中的 deployment 里自动挑选 1 到多个模型，必要时做交叉验证或融合。",
+      desc: "平台会只在当前运行中的 deployment 里自动选 1 到多个模型，必要时做交叉验证或融合。",
     },
     {
       title: "4. 看结果",
-      desc: "先看最终三元组，再看候选部署得分、基准证据和历史归档，判断这次调度是否合理。",
+      desc: "先看最终三元组，再看平台为什么这么选，以及背后的 benchmark 和历史归档证据。",
     },
   ];
   const pageReadingHints = [
-    "调度结果：告诉你这次到底选了哪条执行路径，为什么这么选，最终融合出了哪些三元组。",
-    "候选部署与执行明细：看每个 deployment 的排序分数、领域匹配、资源级别和被选中原因。",
-    "运行证据与基准概览：看平台最近有哪些 benchmark 记录在支撑这次调度，例如 P95 和成功率。",
-    "策略校准总览与权重快照：看调度层怎样根据 benchmark 和在线归档，轻量修正不同目标下的评分权重。",
-    "最近决策记录：看过去做过哪些任务调度，适合论文里说明“系统可以自动归档并形成证据链”。",
+    "先看“调度结果”：这里直接回答平台最终选了什么执行路径，融合出了哪些三元组。",
+    "再看“候选部署与执行明细”：这里解释为什么选中这些 deployment，而不是别的 deployment。",
+    "接着看“运行证据与基准概览”：这里展示最近 benchmark 如何支撑本次调度选择。",
+    "最后看“策略校准总览”和“权重快照”：这里说明调度层如何根据 benchmark 与归档记录做轻量自校准。",
+    "如果要截图或追溯历史，直接看“最近决策记录”：一行就是一次真实任务调度。",
   ];
 
   return (
@@ -2856,7 +3004,7 @@ function TaskRoutingPage({
         <SectionHeader
           kicker="创新点一"
           title="任务级模型调度策略"
-          note="平台会综合任务目标、文本难度、领域特征、历史 benchmark、在线归档与资源成本，在单模型、交叉验证和多模型融合路径之间动态切换。"
+          note="这一页负责“先选模型，再做推理”。平台会综合任务目标、文本难度、领域特征、历史 benchmark、在线归档与资源成本，在单模型、交叉验证和多模型融合路径之间动态切换。"
           right={
             <div className="actions">
               <button
@@ -2898,11 +3046,17 @@ function TaskRoutingPage({
             </div>
           </div>
         </div>
+        <div className="banner banner-muted">
+          快速理解：在线推理页是“指定某个 deployment 直接跑”；任务调度页是“让平台先决定该调用哪些 deployment，再统一融合输出结果”。
+        </div>
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="操作区" title="运行参数" note="这是你每次发起任务调度时真正需要填写的部分。一般只改目标偏好、场景标识和输入文本就够了。" />
+          <SectionHeader kicker="操作区" title="运行参数" note="这是你每次真正需要填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。" />
+          <div className="banner banner-muted">
+            快速上手建议：工业设备文本优先用“领域优先 + 中文工业设备场景”；普通中文文本优先用“综合平衡 + 中文通用场景”；想尽快返回就选“低时延”。
+          </div>
           <div className="form-grid">
             <label className="stack-field">
               <span>目标偏好</span>
@@ -2927,7 +3081,7 @@ function TaskRoutingPage({
                 type="number"
                 value={taskRoutingForm.maxModels}
               />
-              <small className="detail-note">表示一次任务最多允许平台调用多少个模型参与决策或融合。除低时延场景外，现在会真实限制候选数。</small>
+              <small className="detail-note">表示这次任务最多允许多少个模型参与。它是“上限”，不是一定会选满；低时延场景通常仍只会选 1 个。</small>
             </label>
             <label className="stack-field">
               <span>场景标识</span>
@@ -2941,14 +3095,14 @@ function TaskRoutingPage({
                   </option>
                 ))}
               </select>
-              <small className="detail-note">{selectedScene.note}</small>
+              <small className="detail-note">{selectedScene.note} 这个字段不是备注，而是真会过滤候选 deployment。</small>
             </label>
             <label className="stack-field">
               <span>模型范围</span>
               <div className="stack-field-readonly">
                 {selectedScene.value === "en_general" ? "英文 deployment" : selectedScene.value === "zh_general" ? "中文通用 deployment（DuIE 路线）" : "中文工业 deployment（IndustrialEquipmentMix 路线）"}
               </div>
-              <small className="detail-note">这里会随场景自动切换，不再单独手选语言，避免英文/中文模型混用。</small>
+              <small className="detail-note">这里会随场景自动切换，不再单独手选语言，避免英文/中文模型混用，也避免工业模型和通用模型乱混。</small>
             </label>
             <label className="stack-field stack-field-wide">
               <span>输入文本</span>
@@ -2965,13 +3119,13 @@ function TaskRoutingPage({
                 rows="3"
                 value={taskRoutingForm.optionsJson}
               />
-              <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写。</small>
+              <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写；如果不确定，直接留空即可。</small>
             </label>
           </div>
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="解读区" title="关键概念说明" note="这一页不是单纯的“调用模型”，而是展示平台如何在多个运行中模型之间做任务级调度。" />
+          <SectionHeader kicker="解读区" title="关键概念说明" note="如果你第一次看这页，先读这一块。它会告诉你页面里几个最容易混淆的词分别是什么意思。" />
           <div className="relation-list">
             <div className="relation-item">
               <strong>目标偏好</strong>
@@ -3009,20 +3163,20 @@ function TaskRoutingPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="结果区" title="调度结果" note="建议先看这一块。这里回答的是“平台最终怎么调度、为什么这么调度、输出了什么三元组”。" />
+          <SectionHeader kicker="结果区" title="调度结果" note="建议先看这一块。这里最直接回答三个问题：平台选了什么路径、为什么这么选、最终输出了什么三元组。" />
           {taskRoutingResult ? (
             <>
               <div className="metrics">
-                <MetricCard title="目标" value={taskRoutingResult.objective} note={taskRoutingResult.strategy_mode} />
+                <MetricCard title="目标" value={selectedObjective.label} note={formatStrategyModeLabel(taskRoutingResult.strategy_mode)} />
                 <MetricCard title="语言" value={taskRoutingResult.inferred_language} note={`请求语言：${taskRoutingResult.requested_language || "自动"}`} />
                 <MetricCard title="任务难度" value={taskRoutingResult.difficulty} note={`候选 ${taskRoutingResult.candidate_count} 个，选中 ${taskRoutingResult.selected_count} 个`} />
-                <MetricCard title="执行路径" value={taskRoutingResult.execution_path || "-"} note={taskRoutingResult.fusion_policy || "任务级调度输出"} />
+                <MetricCard title="执行路径" value={formatExecutionPathLabel(taskRoutingResult.execution_path)} note={formatFusionPolicyLabel(taskRoutingResult.fusion_policy) || "任务级调度输出"} />
               </div>
               <div className="banner banner-muted">{taskRoutingResult.explanation}</div>
               <div className="metrics">
                 <MetricCard title="领域" value={taskRoutingResult.context_features?.domain || "-"} note={`实体线索 ${taskRoutingResult.context_features?.entity_hint_count || 0}`} />
                 <MetricCard title="文本长度" value={taskRoutingResult.context_features?.text_length || "-"} note={`子句数 ${taskRoutingResult.context_features?.clause_count || 0}`} />
-                <MetricCard title="融合模式" value={taskRoutingResult.fused_result?.fusion_mode || "-"} note={`三元组 ${taskRoutingResult.fused_result?.triple_count || 0}`} />
+                <MetricCard title="融合模式" value={formatFusionPolicyLabel(taskRoutingResult.fused_result?.fusion_mode)} note={`三元组 ${taskRoutingResult.fused_result?.triple_count || 0}`} />
                 <MetricCard title="权重主项" value={topWeightEntry?.[0] || "-"} note="当前目标下影响最大的评分项" />
               </div>
               <div className="tag-list">
@@ -3067,11 +3221,14 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表是用来看“为什么选中这些 deployment”。论文里它可以支撑你的任务调度策略不是拍脑袋，而是有评分依据。" />
+          <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表专门回答“为什么选中这些 deployment”。论文里它可以支撑任务调度不是拍脑袋，而是有评分依据。" />
           {taskRoutingResult ? (
             <>
               <div className="banner banner-muted">
-                表格解读：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
+                这张表看什么：看平台为什么选中这些 deployment，没有选中谁。重点看 `score`、`得分拆解`、`领域匹配` 和最后一列 `说明`。
+              </div>
+              <div className="banner banner-muted">
+                术语提示：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
               </div>
               <div className="table-wrap">
                 <table>
@@ -3119,20 +3276,20 @@ function TaskRoutingPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 不会回传“用户最终采用了哪个模型”，所以平台这里采用的是自动归档方案，而不是人工反馈方案。" />
+          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 通常不会回传“最终采用了哪个模型”，因此平台默认依赖自动归档；如果管理员或使用者愿意，也可以在结果归档里补充满意度反馈。" />
           {taskRoutingResult?.decision_id ? (
             <>
               <div className="metrics">
                 <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度会进入历史记录，后面可检索和截图" />
                 <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="本次真正参与运行的模型实例数" />
                 <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="会进入在线归档，参与后续统计" />
-                <MetricCard title="归档方式" value="自动归档" note="依赖 benchmark 与在线归档，不依赖终端用户确认" />
+                <MetricCard title="归档方式" value="自动归档 + 可选反馈" note="默认自动留痕，必要时可在结果归档补满意度" />
               </div>
               <div className="relation-list">
                 {[
                   "任务调度记录：保存这次任务的目标偏好、执行路径、候选部署与最终选中的模型。",
-                  "预测归档记录：保存这次任务输出的三元组数量、运行情况和可用于后续统计的结果信息。",
-                  "调度层自校准：平台后续会优先参考 benchmark 和归档结果，轻量修正不同目标的调度评分权重。",
+                  "预测归档记录：保存这次任务输出的三元组数量、运行情况，以及可选的满意 / 不满意 / 暂定反馈。",
+                  "调度层自校准：平台后续会优先参考 benchmark、在线归档和已补充的满意度反馈，轻量修正不同目标的调度评分权重。",
                 ].map((item, index) => (
                   <div className="relation-item" key={`${item}-${index + 1}`}>
                     {item}
@@ -3146,14 +3303,15 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="证据区" title="运行证据与基准概览" note="这张表主要看平台最近有哪些 benchmark 记录在支撑调度层决策，尤其适合论文里引用 P95、成功率和 profile 信息。" />
+          <SectionHeader kicker="证据区" title="运行证据与基准概览" note="这张表主要看最近有哪些 benchmark 在支撑调度层决策，尤其适合论文里引用 P95、成功率和 profile 信息。" />
           <div className="metrics">
             <MetricCard title="已完成 Benchmark" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
             <MetricCard title="在线归档" value={calibrationArchiveCount} note="作为运行证据参与策略校准" />
             <MetricCard title="当前场景" value={selectedScene.label} note="证据筛选会优先参考这一场景下的记录" />
             <MetricCard title="最近证据更新时间" value={completedBenchmarks[0]?.created_at || feedbackOverview.last_feedback_at || "-"} note="优先展示最近一条可引用记录" />
           </div>
-          <div className="banner banner-muted">表格解读：如果某个模型或 profile 最近有稳定 benchmark，它在低时延或高稳定场景中通常会更容易被调度层优先考虑。</div>
+          <div className="banner banner-muted">这张表看什么：看平台最近拿什么 benchmark 结果当作调度证据。重点看 `P95`、`成功率` 和 `Profile`。</div>
+          <div className="banner banner-muted">如果某个模型或 profile 最近有稳定 benchmark，它在低时延或高稳定场景中通常会更容易被调度层优先考虑。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3191,11 +3349,13 @@ function TaskRoutingPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="分析区" title="策略校准总览" note="这块主要回答“平台过去更常以什么目标运行、形成了多少历史调度记录”，它是调度层证据链的总览表。" />
+          <SectionHeader kicker="分析区" title="策略校准总览" note="这块主要回答“平台过去更常以什么目标运行、已经形成了多少历史调度记录”，它是调度层证据链的总览表。" />
           <div className="metrics">
             <MetricCard title="决策总数" value={feedbackOverview.total_decisions || 0} note="累计归档的任务调度记录" />
             <MetricCard title="Benchmark 证据" value={completedBenchmarks.length} note="已完成的 benchmark 记录数" />
             <MetricCard title="在线归档证据" value={calibrationArchiveCount} note="实时推理沉淀的归档记录数" />
+            <MetricCard title="满意反馈" value={feedbackOverview.archive_satisfied_count || 0} note="结果归档里被标记为满意的记录数" />
+            <MetricCard title="不满意反馈" value={feedbackOverview.archive_unsatisfied_count || 0} note="结果归档里被标记为不满意的记录数" />
             <MetricCard title="最近决策时间" value={feedbackOverview.recent_decisions?.[0]?.created_at || "-"} note="最近一条任务调度历史" />
           </div>
           <div className="relation-list">
@@ -3205,7 +3365,8 @@ function TaskRoutingPage({
               </div>
             ))}
           </div>
-          <div className="banner banner-muted">表格解读：按“目标偏好”统计历史调度。你可以看出平台在哪些任务目标下已经有较多历史样本，以及常见的主参考执行路径是什么。</div>
+          <div className="banner banner-muted">这张表看什么：看不同“目标偏好”下，平台已经积累了多少历史调度记录。它更像调度行为统计，不是模型性能榜单。</div>
+          <div className="banner banner-muted">你可以在这里看出平台在哪些任务目标下已经有较多历史样本，以及常见的主参考执行路径是什么。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3223,7 +3384,7 @@ function TaskRoutingPage({
                     <td>{item.objective}</td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
-                    <td>{item.best_execution_path || "-"}</td>
+                    <td>{formatExecutionPathLabel(item.best_execution_path)}</td>
                     <td className="limitation-cell">
                       {item.decision_count > 0
                         ? `该目标已有 ${item.decision_count} 条历史调度，可直接作为权重更新的参考窗口。`
@@ -3237,8 +3398,9 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="分析区" title="调度评分权重快照" note="这张表不是模型训练权重，而是调度层评分权重。它说明不同目标下，平台更看重准确、覆盖、时延还是资源成本。" />
-          <div className="banner banner-muted">表格解读：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`归档修正` 来自历史在线归档。</div>
+          <SectionHeader kicker="分析区" title="调度评分权重快照" note="这张表不是模型训练权重，而是调度层评分权重。它说明不同目标下，平台更看重准确、覆盖、时延、领域还是资源成本。" />
+          <div className="banner banner-muted">这张表看什么：看调度层“现在按什么规则打分”。如果某一列权重大，说明当前目标下平台更重视这一项。</div>
+          <div className="banner banner-muted">术语提示：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`校准修正` 来自历史在线归档。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3278,12 +3440,14 @@ function TaskRoutingPage({
       <section className="detail-grid page-shell">
         <article className="card detail-card">
           <SectionHeader kicker="分析区" title="执行路径分布" note="这张表看的是平台常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
-          <div className="banner banner-muted">表格解读：这里统计的是“执行方式”出现了多少次，而不是某个具体模型的性能排名。</div>
+          <div className="banner banner-muted">这张表看什么：看平台平时更常用哪种执行方式，例如单模型直出、多模型共识还是多模型融合。</div>
+          <div className="banner banner-muted">这里统计的是“执行方式”出现了多少次，而不是某个具体模型的性能排名。</div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>执行路径</th>
+                  <th>中文说明</th>
                   <th>决策数</th>
                   <th>补充记录</th>
                   <th>说明</th>
@@ -3293,6 +3457,7 @@ function TaskRoutingPage({
                 {(feedbackOverview.execution_path_summaries || []).map((item) => (
                   <tr key={item.execution_path}>
                     <td>{item.execution_path}</td>
+                    <td>{formatExecutionPathLabel(item.execution_path)}</td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
                     <td className="limitation-cell">
@@ -3309,7 +3474,7 @@ function TaskRoutingPage({
 
         <article className="card detail-card">
           <SectionHeader kicker="分析区" title="最近决策记录" note="这张表最适合做论文截图。它能直接展示平台不是一次性推理，而是会把每次任务调度结果完整留痕。" />
-          <div className="banner banner-muted">表格解读：一行就是一次真实调度，包含目标、领域、执行路径、参与模型和归档说明。</div>
+          <div className="banner banner-muted">这张表看什么：一行就是一次真实任务调度。你可以直接看到目标、领域、执行路径、参与模型和归档说明。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -3333,13 +3498,13 @@ function TaskRoutingPage({
                       <div className="table-note">{item.context_domain} / {item.inferred_language}</div>
                     </td>
                     <td>
-                      <div>{item.execution_path || "-"}</div>
+                      <div>{formatExecutionPathLabel(item.execution_path)}</div>
                       <div className="table-note">triples={item.fused_triple_count || 0}</div>
                     </td>
                     <td className="limitation-cell">{(item.selected_model_ids || []).join("、") || "-"}</td>
                     <td>
                       <div>{item.feedback_status === "completed" ? "附带补充记录" : "自动决策归档"}</div>
-                      <div className="table-note">{item.fusion_policy || "-"}</div>
+                      <div className="table-note">{formatFusionPolicyLabel(item.fusion_policy)}</div>
                     </td>
                   </tr>
                 ))}
@@ -3472,10 +3637,94 @@ function DeploymentPolicyPage({
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="自动优化" title="定时部署优化开关" note="用户手动开启后，平台会按设定间隔自动执行一轮安全优化；不会停掉正在执行推理任务的模型。" />
+        <SectionHeader kicker="显存守护" title="GPU 显存超阈值自动重启" note="这部分独立于部署优化。它负责按固定间隔巡检 GPU 上各 deployment 的显存占用，单个 deployment 超阈值时直接触发重启。" />
         <div className="form-grid">
           <label className="stack-field">
-            <span>自动优化</span>
+            <span>显存守护</span>
+            <select
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  gpuMemoryRestartEnabled: event.target.value === "true",
+                }))
+              }
+              value={String(deploymentPolicyAutomationForm.gpuMemoryRestartEnabled)}
+            >
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>巡检间隔（秒）</span>
+            <input
+              min="60"
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  gpuMemoryRestartIntervalSeconds: event.target.value,
+                }))
+              }
+              type="number"
+              value={deploymentPolicyAutomationForm.gpuMemoryRestartIntervalSeconds}
+            />
+          </label>
+          <label className="stack-field">
+            <span>显存重启阈值（MB）</span>
+            <input
+              min="1024"
+              onChange={(event) =>
+                onDeploymentPolicyAutomationFormChange((current) => ({
+                  ...current,
+                  gpuMemoryRestartThresholdMb: event.target.value,
+                }))
+              }
+              type="number"
+              value={deploymentPolicyAutomationForm.gpuMemoryRestartThresholdMb}
+            />
+          </label>
+          <div className="actions">
+            <button
+              className="btn-primary"
+              disabled={actionBusy["deployment-policy-automation"]}
+              onClick={() => void onUpdateDeploymentPolicyAutomation()}
+              type="button"
+            >
+              {actionBusy["deployment-policy-automation"] ? "保存中" : "保存守护与优化配置"}
+            </button>
+          </div>
+        </div>
+        <div className="metrics">
+          <MetricCard
+            title="守护状态"
+            value={deploymentPolicyAutomation?.gpu_memory_restart_enabled ? "已开启" : "已关闭"}
+            note={`最近巡检 ${deploymentPolicyAutomation?.last_gpu_memory_restart_at || "-"}`}
+          />
+          <MetricCard
+            title="巡检间隔"
+            value={`${deploymentPolicyAutomation?.gpu_memory_restart_interval_seconds || 60} s`}
+            note="默认每 60 秒巡检一次"
+          />
+          <MetricCard
+            title="重启阈值"
+            value={`${deploymentPolicyAutomation?.gpu_memory_restart_threshold_mb || 5120} MB`}
+            note="单个 GPU deployment 超过该阈值即触发自动重启"
+          />
+          <MetricCard
+            title="巡检轮次"
+            value={deploymentPolicyAutomation?.gpu_memory_restart_run_count || 0}
+            note="显存守护累计执行次数"
+          />
+        </div>
+        <div className="detail-note">
+          显存守护不参与“部署优化建议”决策。它只做一件事：独立按固定间隔巡检 GPU 进程，若单个 deployment 显存占用超过阈值，就在保证推理保护窗口的前提下自动重启该 deployment。
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="自动优化" title="定时部署优化开关" note="这部分才是部署优化本体。默认开启后，平台会按设定间隔执行换卡、重平衡和必要时的 CPU 迁移；不会停掉正在执行推理任务的模型。" />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>部署优化</span>
             <select
               onChange={(event) =>
                 onDeploymentPolicyAutomationFormChange((current) => ({
@@ -3485,8 +3734,8 @@ function DeploymentPolicyPage({
               }
               value={String(deploymentPolicyAutomationForm.enabled)}
             >
-              <option value="false">关闭</option>
               <option value="true">开启</option>
+              <option value="false">关闭</option>
             </select>
           </label>
           <label className="stack-field">
@@ -3517,63 +3766,19 @@ function DeploymentPolicyPage({
               value={deploymentPolicyAutomationForm.protectActiveWindowSeconds}
             />
           </label>
-          <label className="stack-field">
-            <span>显存超阈值自动重启</span>
-            <select
-              onChange={(event) =>
-                onDeploymentPolicyAutomationFormChange((current) => ({
-                  ...current,
-                  gpuMemoryRestartEnabled: event.target.value === "true",
-                }))
-              }
-              value={String(deploymentPolicyAutomationForm.gpuMemoryRestartEnabled)}
-            >
-              <option value="true">开启</option>
-              <option value="false">关闭</option>
-            </select>
-          </label>
-          <label className="stack-field">
-            <span>显存重启阈值（MB）</span>
-            <input
-              min="1024"
-              onChange={(event) =>
-                onDeploymentPolicyAutomationFormChange((current) => ({
-                  ...current,
-                  gpuMemoryRestartThresholdMb: event.target.value,
-                }))
-              }
-              type="number"
-              value={deploymentPolicyAutomationForm.gpuMemoryRestartThresholdMb}
-            />
-          </label>
-          <div className="actions">
-            <button
-              className="btn-primary"
-              disabled={actionBusy["deployment-policy-automation"]}
-              onClick={() => void onUpdateDeploymentPolicyAutomation()}
-              type="button"
-            >
-              {actionBusy["deployment-policy-automation"] ? "保存中" : "保存自动优化配置"}
-            </button>
-          </div>
         </div>
         <div className="metrics">
-          <MetricCard title="当前状态" value={deploymentPolicyAutomation?.enabled ? "已开启" : "已关闭"} note={deploymentPolicyAutomation?.last_status || "idle"} />
-          <MetricCard title="执行间隔" value={`${deploymentPolicyAutomation?.interval_seconds || 900} s`} note="定时扫描频率" />
+          <MetricCard title="优化状态" value={deploymentPolicyAutomation?.enabled ? "已开启" : "已关闭"} note={deploymentPolicyAutomation?.last_status || "idle"} />
+          <MetricCard title="执行间隔" value={`${deploymentPolicyAutomation?.interval_seconds || 900} s`} note="部署优化扫描频率" />
           <MetricCard
             title="忙碌保护"
             value={`${deploymentPolicyAutomation?.protect_active_window_seconds || 120} s`}
             note="该窗口内有推理请求的模型不会被自动优化"
           />
-          <MetricCard
-            title="显存巡检"
-            value={deploymentPolicyAutomation?.gpu_memory_restart_enabled ? "已开启" : "已关闭"}
-            note={`单个 GPU deployment 超过 ${deploymentPolicyAutomation?.gpu_memory_restart_threshold_mb || 5120} MB 时自动重启`}
-          />
-          <MetricCard title="最近执行" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
+          <MetricCard title="最近优化" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
         </div>
         <div className="detail-note">
-          自动优化遵循两阶段规则：先做显存巡检，单个 GPU deployment 显存占用超过阈值时触发自动重启；随后再检查是否可以通过 GPU 内部换卡解决局部拥塞；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
+          部署优化遵循两阶段规则：优先做 GPU 内部换卡与重平衡；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
         </div>
         {deploymentPolicyAutomation?.recent_actions?.length ? (
           <div className="table-wrap">
@@ -3781,36 +3986,39 @@ function DeploymentPolicyPage({
   );
 }
 
-function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArchive }) {
+function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportPredictionArchive, onUpdatePredictionArchiveFeedback }) {
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
+  const archiveSatisfiedCount = derived.predictArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "satisfied").length;
+  const archiveUnsatisfiedCount = derived.predictArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "unsatisfied").length;
+  const archivePendingCount = Math.max(derived.predictArchives.length - archiveSatisfiedCount - archiveUnsatisfiedCount, 0);
   return (
     <>
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="结果归档" title="结果归档" note="聚焦最近一次部署、基准测试、预测归档和 CasRel 演示报告。" />
+        <SectionHeader kicker="结果归档" title="结果归档" note="这里只保留预测留痕与反馈统计，用来回看在线推理结果、整理论文样例和补充调度证据。" />
         <div className="metrics">
-          <MetricCard title="最新部署" value={derived.latestDeployment?.deployment_id || "-"} note={derived.latestDeployment?.model_id || "-"} />
-          <MetricCard title="最新基准" value={derived.latestBenchmark?.benchmark_id || "-"} note={derived.latestBenchmark?.model_id || "-"} />
           <MetricCard title="最新预测归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
           <MetricCard title="预测归档总数" value={derived.predictArchives.length} note="在线推理结果自动留痕" />
-          <MetricCard title="CasRel 报告" value={formatStatusLabel(derived.report.status || "empty")} note={derived.report.dataset?.name || "-"} />
-          <MetricCard title="评测样本" value={derived.report.dataset?.prepared_eval_count || "-"} note={derived.report.dataset?.prepared_eval_file || "-"} />
+          <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
+          <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
+          <MetricCard title="暂定结果" value={archivePendingCount} note="默认状态，可理解为用户无反馈" />
         </div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="归档列表" title="预测结果归档列表" note="这里保留最近的单次预测结果，适合导出案例结果或补论文截图。" />
+        <SectionHeader kicker="归档列表" title="预测结果归档列表" note="这里保留最近的单次预测结果，适合导出案例结果、补论文截图，也支持直接补满意/不满意反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次真实预测归档。除了看输入、延迟和三元组数量，还可以直接补“满意 / 不满意 / 暂定”反馈，作为后续调度分析的辅助证据。</div>
         {derived.predictArchives.length ? (
           <div className="table-wrap">
-            <table>
+            <table className="archive-table">
               <thead>
                 <tr>
-                  <th>归档编号</th>
-                  <th>模型</th>
-                  <th>场景</th>
-                  <th>输入</th>
-                  <th>结果</th>
+                  <th>归档信息</th>
+                  <th>模型与场景</th>
+                  <th>输入文本</th>
+                  <th>结果摘要</th>
+                  <th>反馈</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -3820,23 +4028,45 @@ function ArchivePage({ derived, onDeletePredictionArchive, onExportPredictionArc
                   .map((item) => (
                     <tr key={item.archive_id}>
                       <td>
-                        <strong>{item.archive_id}</strong>
-                        <div className="table-note">{item.created_at}</div>
+                        <div className="archive-cell-stack">
+                          <strong className="archive-main">{item.archive_id}</strong>
+                          <div className="table-note">创建时间：{item.created_at}</div>
+                        </div>
                       </td>
                       <td>
-                        <div>{item.model_id}</div>
-                        <div className="table-note">{item.profile_name}</div>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{item.model_id}</div>
+                          <div className="table-note">Profile：{item.profile_name || "-"}</div>
+                          <div className="table-note">场景：{item.scene || "-"}</div>
+                        </div>
                       </td>
-                      <td>{item.scene || "-"}</td>
-                      <td>{item.request_text || item.request_texts?.[0] || "-"}</td>
                       <td>
-                        <div className="table-note">延迟：{escapeValue(item.latency_ms)}</div>
-                        <div className="table-note">三元组：{escapeValue(item.triple_count)}</div>
+                        <div className="archive-input">{item.request_text || item.request_texts?.[0] || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-result-grid">
+                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
+                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
+                          </div>
+                          <div className="table-note">结果归档用于回放预测输出、导出 JSON 和补充反馈。</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                          <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
+                        </div>
+                        <PredictionArchiveFeedbackControls
+                          actionBusy={actionBusy}
+                          archive={item}
+                          onUpdate={onUpdatePredictionArchiveFeedback}
+                        />
                       </td>
                       <td>
                         <div className="actions row-actions">
                           {canExportArchives ? (
-                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出 JSON</button>
+                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出</button>
                           ) : null}
                           {canManageArchives ? (
                             <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>

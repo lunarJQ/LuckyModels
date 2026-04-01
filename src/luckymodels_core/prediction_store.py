@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from .schemas import PredictionArchiveRecord
+from .schemas import PredictionArchiveRecord, utc_now
 
 
 class PredictionStore:
@@ -52,6 +52,41 @@ class PredictionStore:
         archives.append(archive)
         self._write(archives)
         return archive
+
+    def get(self, archive_id: str) -> PredictionArchiveRecord | None:
+        for item in self.list():
+            if item.archive_id == archive_id:
+                return item
+        return None
+
+    def update_feedback(
+        self,
+        archive_id: str,
+        *,
+        feedback_status: str,
+        feedback_note: str | None = None,
+    ) -> PredictionArchiveRecord | None:
+        archives = self.list()
+        updated: PredictionArchiveRecord | None = None
+        next_archives: list[PredictionArchiveRecord] = []
+        for item in archives:
+            if item.archive_id != archive_id:
+                next_archives.append(item)
+                continue
+            updated = item.model_copy(
+                update={
+                    "feedback_status": feedback_status,
+                    "feedback_note": feedback_note,
+                    "feedback_updated_at": utc_now(),
+                }
+            )
+            next_archives.append(updated)
+
+        if updated is None:
+            return None
+
+        self._write(next_archives)
+        return updated
 
     def delete(self, archive_id: str) -> PredictionArchiveRecord | None:
         archives = self.list()

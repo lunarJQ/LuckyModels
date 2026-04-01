@@ -179,6 +179,14 @@ export async function deletePredictionArchive(archiveId) {
   });
 }
 
+export async function updatePredictionArchiveFeedback(archiveId, payload) {
+  return fetchJSON(`/api/v1/prediction-archives/${encodeURIComponent(archiveId)}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getDeploymentHealth(deploymentId) {
   return fetchJSON(`/api/v1/deployments/${encodeURIComponent(deploymentId)}/health`);
 }

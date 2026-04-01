@@ -505,6 +505,13 @@ button:disabled {
   cursor: wait;
 }
 
+.button-active {
+  border-color: rgba(31, 93, 191, 0.28);
+  color: #184fbf;
+  background: linear-gradient(180deg, rgba(232, 241, 255, 0.96), rgba(245, 249, 255, 0.92));
+  box-shadow: 0 10px 22px rgba(32, 94, 215, 0.08);
+}
+
 .btn-primary {
   border-color: transparent;
   color: white;
@@ -886,6 +893,21 @@ button:disabled {
   font-size: 13px;
 }
 
+.archive-feedback-actions {
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin-top: 10px;
+}
+
+.archive-feedback-actions button {
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
 .summary-strip,
 .metrics,
 .detail-grid,
@@ -1024,6 +1046,47 @@ tbody tr:hover {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.archive-table td {
+  vertical-align: top;
+}
+
+.archive-cell-stack {
+  display: grid;
+  gap: 4px;
+}
+
+.archive-main {
+  font-weight: 700;
+  color: #223245;
+  line-height: 1.5;
+}
+
+.archive-input {
+  min-width: 280px;
+  line-height: 1.7;
+  color: #314150;
+  word-break: break-word;
+}
+
+.archive-result-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.archive-result-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  color: #2f4052;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .detail-grid {

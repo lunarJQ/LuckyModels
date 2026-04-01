@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from luckymodels_core.schemas import PredictionArchiveRecord
+from luckymodels_core.schemas import PredictionArchiveFeedbackUpdateRequest, PredictionArchiveRecord
 
 from ..dependencies import get_prediction_store
 from ..permissions import require_admin, require_permission
@@ -17,9 +17,28 @@ def list_prediction_archives() -> list[PredictionArchiveRecord]:
 @router.get("/prediction-archives/{archive_id}", response_model=PredictionArchiveRecord)
 def get_prediction_archive(archive_id: str) -> PredictionArchiveRecord:
     require_permission("predictions.view")
-    for item in get_prediction_store().list():
-        if item.archive_id == archive_id:
-            return item
+    item = get_prediction_store().get(archive_id)
+    if item is not None:
+        return item
+    raise HTTPException(status_code=404, detail=f"Prediction archive not found: {archive_id}")
+
+
+@router.post("/prediction-archives/{archive_id}/feedback", response_model=PredictionArchiveRecord)
+def update_prediction_archive_feedback(
+    archive_id: str,
+    request: PredictionArchiveFeedbackUpdateRequest,
+) -> PredictionArchiveRecord:
+    require_permission("predictions.view")
+    feedback_status = str(request.feedback_status or "pending").strip().lower()
+    if feedback_status not in {"pending", "satisfied", "unsatisfied"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported feedback_status: {request.feedback_status}")
+    updated = get_prediction_store().update_feedback(
+        archive_id,
+        feedback_status=feedback_status,
+        feedback_note=request.feedback_note,
+    )
+    if updated is not None:
+        return updated
     raise HTTPException(status_code=404, detail=f"Prediction archive not found: {archive_id}")
 
 

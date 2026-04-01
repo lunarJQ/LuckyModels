@@ -28,6 +28,7 @@ class DeploymentPolicyAutomationStore:
         state.interval_seconds = max(60, int(request.interval_seconds or 900))
         state.protect_active_window_seconds = max(30, int(request.protect_active_window_seconds or 120))
         state.gpu_memory_restart_enabled = bool(request.gpu_memory_restart_enabled)
+        state.gpu_memory_restart_interval_seconds = max(60, int(request.gpu_memory_restart_interval_seconds or 60))
         state.gpu_memory_restart_threshold_mb = max(1024, int(request.gpu_memory_restart_threshold_mb or 5120))
         self._write(state)
         return state
@@ -41,16 +42,22 @@ class DeploymentPolicyAutomationStore:
         *,
         state: DeploymentPolicyAutomationState,
         last_status: str,
-        last_run_at: str,
+        last_run_at: str | None,
+        last_gpu_memory_restart_at: str | None,
         last_policy_generated_at: str | None,
-        summary,
+        summary=None,
         actions: list[DeploymentPolicyAutomationAction],
     ) -> DeploymentPolicyAutomationState:
         state.last_status = last_status
-        state.last_run_at = last_run_at
-        state.last_policy_generated_at = last_policy_generated_at
-        state.run_count += 1
-        state.last_summary = summary
+        if last_run_at is not None:
+            state.last_run_at = last_run_at
+            state.last_policy_generated_at = last_policy_generated_at
+            state.run_count += 1
+            if summary is not None:
+                state.last_summary = summary
+        if last_gpu_memory_restart_at is not None:
+            state.last_gpu_memory_restart_at = last_gpu_memory_restart_at
+            state.gpu_memory_restart_run_count += 1
         state.recent_actions = (actions + state.recent_actions)[:20]
         self._write(state)
         return state

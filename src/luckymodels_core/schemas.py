@@ -268,7 +268,15 @@ class PredictionArchiveRecord(BaseModel):
     triple_count: int | None = None
     item_count: int | None = None
     response_payload: dict[str, Any] = Field(default_factory=dict)
+    feedback_status: str = "pending"
+    feedback_note: str | None = None
+    feedback_updated_at: str | None = None
     created_at: str = Field(default_factory=utc_now)
+
+
+class PredictionArchiveFeedbackUpdateRequest(BaseModel):
+    feedback_status: str = "pending"
+    feedback_note: str | None = None
 
 
 class TaskRoutingRequest(BaseModel):
@@ -428,6 +436,10 @@ class TaskRoutingFeedbackOverview(BaseModel):
     acceptance_rate: float | None = None
     pending_feedback_count: int = 0
     last_feedback_at: str | None = None
+    archive_feedback_total: int = 0
+    archive_satisfied_count: int = 0
+    archive_unsatisfied_count: int = 0
+    archive_pending_count: int = 0
     objective_summaries: list[TaskRoutingObjectiveFeedbackSummary] = Field(default_factory=list)
     execution_path_summaries: list[TaskRoutingExecutionPathSummary] = Field(default_factory=list)
     model_adoption_summaries: list[TaskRoutingModelAdoptionSummary] = Field(default_factory=list)
@@ -494,24 +506,28 @@ class DeploymentPolicyAutomationAction(BaseModel):
 
 
 class DeploymentPolicyAutomationState(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     interval_seconds: int = 900
     protect_active_window_seconds: int = 120
     gpu_memory_restart_enabled: bool = True
+    gpu_memory_restart_interval_seconds: int = 60
     gpu_memory_restart_threshold_mb: int = 5120
     last_run_at: str | None = None
+    last_gpu_memory_restart_at: str | None = None
     last_policy_generated_at: str | None = None
     last_status: str = "idle"
     run_count: int = 0
+    gpu_memory_restart_run_count: int = 0
     last_summary: DeploymentPolicySummary = Field(default_factory=DeploymentPolicySummary)
     recent_actions: list[DeploymentPolicyAutomationAction] = Field(default_factory=list)
 
 
 class DeploymentPolicyAutomationUpdateRequest(BaseModel):
-    enabled: bool
+    enabled: bool = True
     interval_seconds: int = 900
     protect_active_window_seconds: int = 120
     gpu_memory_restart_enabled: bool = True
+    gpu_memory_restart_interval_seconds: int = 60
     gpu_memory_restart_threshold_mb: int = 5120
 
 

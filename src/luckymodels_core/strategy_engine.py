@@ -606,6 +606,9 @@ def _build_archive_weight_adjustments(
     empty_rate = empty_count / archive_count
     avg_latency = _mean_numeric(item.latency_ms for item in matched_archives)
     avg_triple_count = _mean_numeric(item.triple_count for item in matched_archives)
+    satisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "satisfied")
+    unsatisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
+    effective_feedback_count = satisfied_count + unsatisfied_count
 
     if empty_rate >= 0.45:
         adjustments["accuracy"] += 0.05
@@ -623,6 +626,22 @@ def _build_archive_weight_adjustments(
         reasons.append(f"近期在线归档平均时延约为 {avg_latency:.1f} ms，系统适度提升时延与资源权重。")
     elif avg_latency is not None and avg_latency < 90 and empty_rate <= 0.25:
         adjustments["coverage"] += 0.01
+
+    if effective_feedback_count >= 2:
+        satisfied_rate = satisfied_count / effective_feedback_count
+        if satisfied_rate >= 0.7:
+            adjustments["accuracy"] += 0.03
+            adjustments["coverage"] += 0.01
+            reasons.append(
+                f"近期同类在线归档收到 {satisfied_count} 条满意反馈、{unsatisfied_count} 条不满意反馈，系统适度提升准确与覆盖权重。"
+            )
+        elif satisfied_rate <= 0.4:
+            adjustments["accuracy"] += 0.05
+            adjustments["stability"] += 0.04
+            adjustments["coverage"] -= 0.02
+            reasons.append(
+                f"近期同类在线归档中不满意反馈占比较高（{unsatisfied_count}/{effective_feedback_count}），系统提升准确与稳定权重。"
+            )
 
     if archive_count < 5:
         adjustments["stability"] += 0.02
@@ -1376,6 +1395,16 @@ def build_task_routing_feedback_overview(
     accepted_feedback = [item for item in feedback_records if item.accepted]
     acceptance_rate = (len(accepted_feedback) / total_feedback) if total_feedback else None
     last_feedback_at = max((item.updated_at for item in feedback_records), default=None)
+    archive_satisfied_count = sum(
+        1 for item in prediction_archives if str(item.feedback_status or "pending").strip().lower() == "satisfied"
+    )
+    archive_unsatisfied_count = sum(
+        1 for item in prediction_archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+    )
+    archive_pending_count = max(
+        len(prediction_archives) - archive_satisfied_count - archive_unsatisfied_count,
+        0,
+    )
 
     objective_summaries: list[TaskRoutingObjectiveFeedbackSummary] = []
     decisions_by_objective: dict[str, list[TaskRoutingDecisionRecord]] = defaultdict(list)
@@ -1496,6 +1525,7 @@ def build_task_routing_feedback_overview(
         acceptance_rate=acceptance_rate,
         benchmark_count=len([item for item in benchmarks if item.status == "completed"]),
         archive_count=len(prediction_archives),
+        archive_feedback_total=archive_satisfied_count + archive_unsatisfied_count,
         objective_summaries=objective_summaries,
         execution_path_summaries=execution_path_summaries,
         model_adoption_summaries=model_adoption_summaries,
@@ -1507,6 +1537,10 @@ def build_task_routing_feedback_overview(
         acceptance_rate=acceptance_rate,
         pending_feedback_count=max(len(decision_records) - total_feedback, 0),
         last_feedback_at=last_feedback_at,
+        archive_feedback_total=archive_satisfied_count + archive_unsatisfied_count,
+        archive_satisfied_count=archive_satisfied_count,
+        archive_unsatisfied_count=archive_unsatisfied_count,
+        archive_pending_count=archive_pending_count,
         objective_summaries=objective_summaries,
         execution_path_summaries=execution_path_summaries[:8],
         model_adoption_summaries=model_adoption_summaries,
@@ -1523,6 +1557,7 @@ def _build_feedback_insights(
     acceptance_rate: float | None,
     benchmark_count: int,
     archive_count: int,
+    archive_feedback_total: int,
     objective_summaries: list[TaskRoutingObjectiveFeedbackSummary],
     execution_path_summaries: list[TaskRoutingExecutionPathSummary],
     model_adoption_summaries: list[TaskRoutingModelAdoptionSummary],
@@ -1532,7 +1567,7 @@ def _build_feedback_insights(
         return ["当前还没有任务调度历史，先运行一轮策略或补一组 benchmark 后，这里会显示自校准结论。"]
     if benchmark_count > 0 or archive_count > 0:
         insights.append(
-            f"当前策略校准主要依赖 {benchmark_count} 条 benchmark 与 {archive_count} 条在线归档证据，不依赖终端用户回传采用结果。"
+            f"当前策略校准主要依赖 {benchmark_count} 条 benchmark 与 {archive_count} 条在线归档证据；归档中已补充 {archive_feedback_total} 条满意度反馈，作为辅助修正信号。"
         )
     if objective_summaries:
         best_objective = sorted(

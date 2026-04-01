@@ -188,6 +188,7 @@ def update_deployment_policy_automation(
         interval_seconds=request.interval_seconds,
         protect_active_window_seconds=request.protect_active_window_seconds,
         gpu_memory_restart_enabled=request.gpu_memory_restart_enabled,
+        gpu_memory_restart_interval_seconds=request.gpu_memory_restart_interval_seconds,
         gpu_memory_restart_threshold_mb=request.gpu_memory_restart_threshold_mb,
     )
 

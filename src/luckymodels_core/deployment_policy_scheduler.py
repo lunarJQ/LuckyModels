@@ -98,6 +98,7 @@ class DeploymentPolicyScheduler:
         interval_seconds: int,
         protect_active_window_seconds: int,
         gpu_memory_restart_enabled: bool,
+        gpu_memory_restart_interval_seconds: int,
         gpu_memory_restart_threshold_mb: int,
     ) -> DeploymentPolicyAutomationState:
         store = self.get_policy_store()
@@ -106,14 +107,27 @@ class DeploymentPolicyScheduler:
         request.interval_seconds = max(60, int(interval_seconds or 900))
         request.protect_active_window_seconds = max(30, int(protect_active_window_seconds or 120))
         request.gpu_memory_restart_enabled = bool(gpu_memory_restart_enabled)
+        request.gpu_memory_restart_interval_seconds = max(60, int(gpu_memory_restart_interval_seconds or 60))
         request.gpu_memory_restart_threshold_mb = max(1024, int(gpu_memory_restart_threshold_mb or 5120))
         return store.save(request)
 
-    def run_once(self, *, force: bool = False) -> DeploymentPolicyAutomationState:
+    def run_once(
+        self,
+        *,
+        force: bool = False,
+        include_policy_optimization: bool | None = None,
+        include_gpu_memory_restart: bool | None = None,
+    ) -> DeploymentPolicyAutomationState:
         with self._run_lock:
             store = self.get_policy_store()
             state = store.get()
-            if not force and not state.enabled:
+            run_policy_optimization = state.enabled if include_policy_optimization is None else bool(include_policy_optimization)
+            run_gpu_memory_restart = (
+                state.gpu_memory_restart_enabled
+                if include_gpu_memory_restart is None
+                else bool(include_gpu_memory_restart)
+            )
+            if not force and not run_policy_optimization and not run_gpu_memory_restart:
                 return state
 
             registry = self.get_registry()
@@ -124,31 +138,35 @@ class DeploymentPolicyScheduler:
             benchmarks: list[BenchmarkRecord] = benchmark_store.list()
             prediction_archives: list[PredictionArchiveRecord] = prediction_store.list()
             gpu_snapshot = self.get_gpu_snapshot()
-            policy = build_deployment_policy(
-                models=registry.list_models(),
-                deployments=deployments,
-                benchmarks=benchmarks,
-                prediction_archives=prediction_archives,
-                gpu_snapshot=gpu_snapshot,
-            )
+            policy: DeploymentPolicyResponse | None = None
+            if run_policy_optimization:
+                policy = build_deployment_policy(
+                    models=registry.list_models(),
+                    deployments=deployments,
+                    benchmarks=benchmarks,
+                    prediction_archives=prediction_archives,
+                    gpu_snapshot=gpu_snapshot,
+                )
 
             actions: list[DeploymentPolicyAutomationAction] = []
             status = "idle"
             restarted_model_ids: set[str] = set()
-            memory_restart_actions = self._restart_gpu_memory_hotspots(
-                deployments=deployments,
-                prediction_archives=prediction_archives,
-                gpu_snapshot=gpu_snapshot,
-                protect_active_window_seconds=state.protect_active_window_seconds,
-                gpu_memory_restart_enabled=state.gpu_memory_restart_enabled,
-                gpu_memory_restart_threshold_mb=state.gpu_memory_restart_threshold_mb,
-            )
+            memory_restart_actions = []
+            if run_gpu_memory_restart:
+                memory_restart_actions = self._restart_gpu_memory_hotspots(
+                    deployments=deployments,
+                    prediction_archives=prediction_archives,
+                    gpu_snapshot=gpu_snapshot,
+                    protect_active_window_seconds=state.protect_active_window_seconds,
+                    gpu_memory_restart_enabled=state.gpu_memory_restart_enabled,
+                    gpu_memory_restart_threshold_mb=state.gpu_memory_restart_threshold_mb,
+                )
             actions.extend(memory_restart_actions)
             restarted_model_ids.update(
                 item.model_id for item in memory_restart_actions if item.status == "restarted"
             )
 
-            if _gpu_under_pressure(policy.gpu_snapshot):
+            if run_policy_optimization and policy is not None and _gpu_under_pressure(policy.gpu_snapshot):
                 status = "applied"
                 cluster_overloaded = _gpu_cluster_overloaded(policy.gpu_snapshot)
                 context = _SchedulerContext(
@@ -198,7 +216,7 @@ class DeploymentPolicyScheduler:
                             detail="检测到局部 GPU 压力，当前优先执行 GPU 内部换卡与重平衡，不触发 CPU 迁移。",
                         )
                     )
-            elif not memory_restart_actions:
+            elif run_policy_optimization and policy is not None and not memory_restart_actions:
                 actions.append(
                     DeploymentPolicyAutomationAction(
                         action_type="scan_only",
@@ -214,20 +232,28 @@ class DeploymentPolicyScheduler:
             return store.record_run(
                 state=state,
                 last_status=status,
-                last_run_at=utc_now(),
-                last_policy_generated_at=policy.generated_at,
-                summary=policy.summary,
+                last_run_at=utc_now() if run_policy_optimization else None,
+                last_gpu_memory_restart_at=utc_now() if run_gpu_memory_restart else None,
+                last_policy_generated_at=policy.generated_at if policy is not None else None,
+                summary=policy.summary if policy is not None else None,
                 actions=actions,
             )
 
     def _run_loop(self) -> None:
         while not self._stop_event.wait(10):
             state = self.get_policy_store().get()
-            if not state.enabled:
+            run_policy_optimization = bool(state.enabled) and _is_due(state.last_run_at, state.interval_seconds)
+            run_gpu_memory_restart = bool(state.gpu_memory_restart_enabled) and _is_due(
+                state.last_gpu_memory_restart_at,
+                state.gpu_memory_restart_interval_seconds,
+            )
+            if not run_policy_optimization and not run_gpu_memory_restart:
                 continue
-            if not _is_due(state.last_run_at, state.interval_seconds):
-                continue
-            self.run_once(force=True)
+            self.run_once(
+                force=True,
+                include_policy_optimization=run_policy_optimization,
+                include_gpu_memory_restart=run_gpu_memory_restart,
+            )
 
     def _restart_gpu_memory_hotspots(
         self,
