@@ -259,6 +259,7 @@ class PredictionArchiveRecord(BaseModel):
     deployment_id: str
     model_id: str
     profile_name: str
+    archive_source: str = "deployment_predict"
     service_url: str | None = None
     scene: str | None = None
     request_text: str | None = None
@@ -268,6 +269,13 @@ class PredictionArchiveRecord(BaseModel):
     triple_count: int | None = None
     item_count: int | None = None
     response_payload: dict[str, Any] = Field(default_factory=dict)
+    task_routing_decision_id: str | None = None
+    task_routing_objective: str | None = None
+    task_routing_execution_path: str | None = None
+    task_routing_fusion_policy: str | None = None
+    task_routing_weight_snapshot: dict[str, float] = Field(default_factory=dict)
+    task_routing_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
+    task_routing_selected_model_ids: list[str] = Field(default_factory=list)
     feedback_status: str = "pending"
     feedback_note: str | None = None
     feedback_updated_at: str | None = None
@@ -320,6 +328,7 @@ class TaskRoutingExecution(BaseModel):
 
 class TaskRoutingResponse(BaseModel):
     decision_id: str | None = None
+    archive_id: str | None = None
     objective: str
     requested_language: str | None = None
     inferred_language: str

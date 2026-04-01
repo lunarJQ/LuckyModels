@@ -248,6 +248,21 @@ function formatPredictionFeedbackLabel(value) {
   return "暂定";
 }
 
+function formatArchiveSourceLabel(value) {
+  return String(value || "").trim().toLowerCase() === "task_routing" ? "任务调度" : "在线推理";
+}
+
+function formatWeightSnapshot(snapshot) {
+  const entries = Object.entries(snapshot || {});
+  if (!entries.length) {
+    return "-";
+  }
+  return entries
+    .sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))
+    .map(([key, value]) => `${key}=${Number(value).toFixed(2)}`)
+    .join(" / ");
+}
+
 function getDeploymentHealthPayload(deployment) {
   return safeJsonParse(deployment?.health?.payload || {});
 }
@@ -1136,7 +1151,8 @@ export default function App() {
         options,
       });
       setTaskRoutingResult(result);
-      setNotice({ type: "ok", text: "任务调度策略已执行。" });
+      await refreshAll({ silent: true });
+      setNotice({ type: "ok", text: `任务调度策略已执行并归档：${result.archive_id || result.decision_id || ""}` });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", text: message });
@@ -3155,7 +3171,7 @@ function TaskRoutingPage({
             <div className="relation-item">
               <strong>自校准</strong>
               <br />
-              指平台会参考 benchmark 与在线归档，调整调度评分权重；不会改动底层 ONNX 模型参数。
+              指平台会参考 benchmark 与在线归档，既调整全局调度权重，也修正候选 deployment 的得分；不会改动底层 ONNX 模型参数。
             </div>
           </div>
         </article>
@@ -3283,13 +3299,13 @@ function TaskRoutingPage({
                 <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度会进入历史记录，后面可检索和截图" />
                 <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="本次真正参与运行的模型实例数" />
                 <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="会进入在线归档，参与后续统计" />
-                <MetricCard title="归档方式" value="自动归档 + 可选反馈" note="默认自动留痕，必要时可在结果归档补满意度" />
+                <MetricCard title="归档方式" value="自动归档 + 可选反馈" note={`归档编号 ${taskRoutingResult.archive_id || "-"}`} />
               </div>
               <div className="relation-list">
                 {[
                   "任务调度记录：保存这次任务的目标偏好、执行路径、候选部署与最终选中的模型。",
                   "预测归档记录：保存这次任务输出的三元组数量、运行情况，以及可选的满意 / 不满意 / 暂定反馈。",
-                  "调度层自校准：平台后续会优先参考 benchmark、在线归档和已补充的满意度反馈，轻量修正不同目标的调度评分权重。",
+                  "调度层自校准：平台后续会优先参考 benchmark、在线归档和已补充的满意度反馈，同时修正不同目标的权重和候选 deployment 的排序得分。",
                 ].map((item, index) => (
                   <div className="relation-item" key={`${item}-${index + 1}`}>
                     {item}
@@ -3998,8 +4014,8 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
       <section className="page-shell card section-shell">
         <SectionHeader kicker="结果归档" title="结果归档" note="这里只保留预测留痕与反馈统计，用来回看在线推理结果、整理论文样例和补充调度证据。" />
         <div className="metrics">
-          <MetricCard title="最新预测归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
-          <MetricCard title="预测归档总数" value={derived.predictArchives.length} note="在线推理结果自动留痕" />
+          <MetricCard title="最新结果归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
+          <MetricCard title="结果归档总数" value={derived.predictArchives.length} note="在线推理与任务调度结果自动留痕" />
           <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
           <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
           <MetricCard title="暂定结果" value={archivePendingCount} note="默认状态，可理解为用户无反馈" />
@@ -4007,8 +4023,8 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="归档列表" title="预测结果归档列表" note="这里保留最近的单次预测结果，适合导出案例结果、补论文截图，也支持直接补满意/不满意反馈。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次真实预测归档。除了看输入、延迟和三元组数量，还可以直接补“满意 / 不满意 / 暂定”反馈，作为后续调度分析的辅助证据。</div>
+        <SectionHeader kicker="归档列表" title="结果归档列表" note="这里同时保留在线推理归档和任务调度归档，适合导出案例结果、补论文截图，也支持直接补满意/不满意反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次真实结果归档。在线推理归档偏重三元组输出，任务调度归档则会额外保留调度评分权重快照，方便基于这份快照补反馈。</div>
         {derived.predictArchives.length ? (
           <div className="table-wrap">
             <table className="archive-table">
@@ -4025,19 +4041,33 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
               <tbody>
                 {sortByCreatedDesc(derived.predictArchives)
                   .slice(0, 10)
-                  .map((item) => (
+                  .map((item) => {
+                    const isTaskRoutingArchive = item.archive_source === "task_routing";
+                    const routingModels = (item.task_routing_selected_model_ids || []).join(" / ");
+                    const weightSnapshotText = formatWeightSnapshot(item.task_routing_weight_snapshot);
+                    const adjustmentSnapshotText = formatWeightSnapshot(item.task_routing_adjustment_snapshot);
+                    return (
                     <tr key={item.archive_id}>
                       <td>
                         <div className="archive-cell-stack">
                           <strong className="archive-main">{item.archive_id}</strong>
                           <div className="table-note">创建时间：{item.created_at}</div>
+                          <div className="table-note">来源：{formatArchiveSourceLabel(item.archive_source)}</div>
                         </div>
                       </td>
                       <td>
                         <div className="archive-cell-stack">
-                          <div className="archive-main">{item.model_id}</div>
-                          <div className="table-note">Profile：{item.profile_name || "-"}</div>
+                          <div className="archive-main">{isTaskRoutingArchive ? "任务调度" : item.model_id}</div>
+                          <div className="table-note">
+                            {isTaskRoutingArchive ? `目标：${item.task_routing_objective || item.profile_name || "-"}` : `Profile：${item.profile_name || "-"}`}
+                          </div>
                           <div className="table-note">场景：{item.scene || "-"}</div>
+                          {isTaskRoutingArchive ? (
+                            <>
+                              <div className="table-note">执行路径：{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
+                              <div className="table-note">参与模型：{routingModels || "-"}</div>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                       <td>
@@ -4049,7 +4079,15 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                             <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
                             <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
                           </div>
-                          <div className="table-note">结果归档用于回放预测输出、导出 JSON 和补充反馈。</div>
+                          {isTaskRoutingArchive ? (
+                            <>
+                              <div className="table-note">决策编号：{item.task_routing_decision_id || "-"}</div>
+                              <div className="table-note">权重快照：{weightSnapshotText}</div>
+                              <div className="table-note">调整快照：{adjustmentSnapshotText}</div>
+                            </>
+                          ) : (
+                            <div className="table-note">结果归档用于回放预测输出、导出 JSON 和补充反馈。</div>
+                          )}
                         </div>
                       </td>
                       <td>
@@ -4074,12 +4112,12 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  )})}
               </tbody>
             </table>
           </div>
         ) : (
-          <EmptyState icon="A" title="暂无预测归档" note="先执行一次在线推理，这里就会出现归档结果。" />
+          <EmptyState icon="A" title="暂无结果归档" note="先执行一次在线推理或任务调度，这里就会出现归档结果。" />
         )}
       </section>
     </>

@@ -1,8 +1,12 @@
 from fastapi import APIRouter, HTTPException
 
-from luckymodels_core.schemas import PredictionArchiveFeedbackUpdateRequest, PredictionArchiveRecord
+from luckymodels_core.schemas import (
+    PredictionArchiveFeedbackUpdateRequest,
+    PredictionArchiveRecord,
+    TaskRoutingFeedbackSubmitRequest,
+)
 
-from ..dependencies import get_prediction_store
+from ..dependencies import get_prediction_store, get_task_routing_feedback_store
 from ..permissions import require_admin, require_permission
 
 router = APIRouter(tags=["predictions"])
@@ -38,6 +42,28 @@ def update_prediction_archive_feedback(
         feedback_note=request.feedback_note,
     )
     if updated is not None:
+        if updated.task_routing_decision_id:
+            feedback_store = get_task_routing_feedback_store()
+            if feedback_status == "pending":
+                feedback_store.delete_feedback(updated.task_routing_decision_id)
+            else:
+                adopted_model_id = (
+                    updated.task_routing_selected_model_ids[0]
+                    if len(updated.task_routing_selected_model_ids or []) == 1
+                    else None
+                )
+                try:
+                    feedback_store.save_feedback(
+                        TaskRoutingFeedbackSubmitRequest(
+                            decision_id=updated.task_routing_decision_id,
+                            accepted=feedback_status == "satisfied",
+                            feedback_type="accepted" if feedback_status == "satisfied" else "rejected",
+                            adopted_model_id=adopted_model_id,
+                            note=request.feedback_note or "来自结果归档页的任务调度反馈。",
+                        )
+                    )
+                except KeyError:
+                    pass
         return updated
     raise HTTPException(status_code=404, detail=f"Prediction archive not found: {archive_id}")
 

@@ -72,15 +72,26 @@ def run_task_routing_strategy(
         context_features=context_features,
         requested_language=inferred_language,
     )
+    decision_feedback_adjustments, decision_feedback_reasons = _build_decision_feedback_weight_adjustments(
+        decision_records=decision_records,
+        feedback_records=feedback_records,
+        objective=request.objective,
+        requested_language=inferred_language,
+        context_features=context_features,
+        base_weights=base_objective_weights,
+    )
     objective_weights = _apply_adaptive_weight_adjustments(
         base_weights=base_objective_weights,
         benchmark_adjustments=benchmark_adjustments,
         archive_adjustments=archive_adjustments,
+        decision_feedback_adjustments=decision_feedback_adjustments,
     )
     adaptation_reasons = _merge_adaptation_reasons(
         benchmark_adjustments=benchmark_adjustments,
         archive_adjustments=archive_adjustments,
+        decision_feedback_adjustments=decision_feedback_adjustments,
         archive_reasons=adaptation_reasons,
+        decision_feedback_reasons=decision_feedback_reasons,
     )
     candidates = _build_task_candidates(
         models=models,
@@ -152,7 +163,11 @@ def run_task_routing_strategy(
         explanation=explanation,
         context_features=context_features,
         objective_weights=objective_weights,
-        adaptive_adjustments=_sum_weight_adjustments(benchmark_adjustments, archive_adjustments),
+        adaptive_adjustments=_sum_weight_adjustments(
+            benchmark_adjustments,
+            archive_adjustments,
+            decision_feedback_adjustments,
+        ),
         adaptation_reasons=adaptation_reasons,
         decision_trace=decision_trace,
         candidate_count=len(candidates),
@@ -579,18 +594,16 @@ def _build_archive_weight_adjustments(
 
     for archive in prediction_archives:
         model = model_lookup.get(archive.model_id)
-        if model is None or (requested_language and model.language != requested_language):
+        if model is None:
             continue
-        if not _scene_matches_model(request_scene, model):
+        if not _archive_matches_request_context(
+            archive=archive,
+            model=model,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+        ):
             continue
-        if request_domain != "general":
-            candidate_domain = infer_domain(text=str(model.dataset_name or ""), scene=model.dataset_name)
-            if candidate_domain not in {request_domain, "general"}:
-                continue
-        if request_scene and archive.scene:
-            archive_scene = str(archive.scene).strip().lower()
-            if archive_scene != request_scene and archive_scene not in {request_domain, "general"}:
-                continue
         matched_archives.append(archive)
 
     adjustments = _zero_weight_vector()
@@ -627,18 +640,19 @@ def _build_archive_weight_adjustments(
     elif avg_latency is not None and avg_latency < 90 and empty_rate <= 0.25:
         adjustments["coverage"] += 0.01
 
-    if effective_feedback_count >= 2:
+    if effective_feedback_count >= 1:
         satisfied_rate = satisfied_count / effective_feedback_count
+        evidence_scale = min(1.0, effective_feedback_count / 4.0)
         if satisfied_rate >= 0.7:
-            adjustments["accuracy"] += 0.03
-            adjustments["coverage"] += 0.01
+            adjustments["accuracy"] += 0.02 + 0.02 * evidence_scale
+            adjustments["coverage"] += 0.01 + 0.01 * evidence_scale
             reasons.append(
-                f"近期同类在线归档收到 {satisfied_count} 条满意反馈、{unsatisfied_count} 条不满意反馈，系统适度提升准确与覆盖权重。"
+                f"近期同类在线归档收到 {satisfied_count} 条满意反馈、{unsatisfied_count} 条不满意反馈，系统提升准确与覆盖权重。"
             )
         elif satisfied_rate <= 0.4:
-            adjustments["accuracy"] += 0.05
-            adjustments["stability"] += 0.04
-            adjustments["coverage"] -= 0.02
+            adjustments["accuracy"] += 0.04 + 0.02 * evidence_scale
+            adjustments["stability"] += 0.03 + 0.02 * evidence_scale
+            adjustments["coverage"] -= 0.01 + 0.01 * evidence_scale
             reasons.append(
                 f"近期同类在线归档中不满意反馈占比较高（{unsatisfied_count}/{effective_feedback_count}），系统提升准确与稳定权重。"
             )
@@ -665,15 +679,92 @@ def _build_archive_weight_adjustments(
     return adjustments, reasons
 
 
+def _build_decision_feedback_weight_adjustments(
+    *,
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
+    objective: str,
+    requested_language: str,
+    context_features: dict[str, Any],
+    base_weights: dict[str, float],
+) -> tuple[dict[str, float], list[str]]:
+    feedback_by_decision = {item.decision_id: item for item in feedback_records}
+    request_domain = str(context_features.get("domain") or "general")
+    request_scene = _normalize_scene(context_features.get("scene"))
+    matched_decisions: list[TaskRoutingDecisionRecord] = []
+    for decision in decision_records:
+        feedback = feedback_by_decision.get(decision.decision_id)
+        if feedback is None:
+            continue
+        if decision.objective != objective:
+            continue
+        if requested_language and decision.inferred_language != requested_language:
+            continue
+        decision_domain = str(decision.context_features.get("domain") or "general")
+        if request_domain != "general" and decision_domain not in {request_domain, "general"}:
+            continue
+        decision_scene = _normalize_scene(decision.scene)
+        if request_scene and decision_scene and decision_scene != request_scene:
+            continue
+        matched_decisions.append(decision)
+
+    adjustments = _zero_weight_vector()
+    if not matched_decisions:
+        return adjustments, []
+
+    accepted_vectors: list[dict[str, float]] = []
+    rejected_vectors: list[dict[str, float]] = []
+    for decision in matched_decisions:
+        feedback = feedback_by_decision.get(decision.decision_id)
+        if feedback is None:
+            continue
+        if feedback.accepted:
+            accepted_vectors.append(decision.objective_weights)
+        else:
+            rejected_vectors.append(decision.objective_weights)
+
+    reasons: list[str] = []
+    evidence_count = len(accepted_vectors) + len(rejected_vectors)
+    evidence_scale = min(1.0, evidence_count / 4.0)
+    accepted_avg = _average_weight_vectors(accepted_vectors)
+    rejected_avg = _average_weight_vectors(rejected_vectors)
+
+    for key in adjustments:
+        delta = 0.0
+        if accepted_avg:
+            delta += (accepted_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.5 * evidence_scale
+        if rejected_avg:
+            delta -= (rejected_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.35 * evidence_scale
+        adjustments[key] = round(max(min(delta, 0.06), -0.06), 4)
+
+    non_zero = {key: value for key, value in adjustments.items() if abs(value) > 0.0001}
+    if non_zero:
+        strongest_key = sorted(non_zero.items(), key=lambda item: abs(item[1]), reverse=True)[0][0]
+        reasons.append(
+            f"平台参考 {evidence_count} 条同目标调度反馈与历史权重快照，自动修正当前评分重点，当前影响最大的权重项为 {strongest_key}。"
+        )
+    if accepted_vectors:
+        reasons.append(f"其中 {len(accepted_vectors)} 条历史调度结果被标记为满意，系统会向这些权重配置轻量靠拢。")
+    if rejected_vectors:
+        reasons.append(f"其中 {len(rejected_vectors)} 条历史调度结果被标记为不满意，系统会降低相近权重配置的优先级。")
+    return adjustments, reasons[:4]
+
+
 def _apply_adaptive_weight_adjustments(
     *,
     base_weights: dict[str, float],
     benchmark_adjustments: dict[str, float],
     archive_adjustments: dict[str, float],
+    decision_feedback_adjustments: dict[str, float] | None = None,
 ) -> dict[str, float]:
     merged = {}
     for key, value in base_weights.items():
-        merged[key] = value + benchmark_adjustments.get(key, 0.0) + archive_adjustments.get(key, 0.0)
+        merged[key] = (
+            value
+            + benchmark_adjustments.get(key, 0.0)
+            + archive_adjustments.get(key, 0.0)
+            + (decision_feedback_adjustments or {}).get(key, 0.0)
+        )
     total = sum(max(item, 0.0) for item in merged.values()) or 1.0
     return {key: round(max(value, 0.0) / total, 4) for key, value in merged.items()}
 
@@ -686,11 +777,23 @@ def _sum_weight_adjustments(*vectors: dict[str, float]) -> dict[str, float]:
     return {key: round(value, 4) for key, value in summed.items() if abs(value) > 0.0001}
 
 
+def _average_weight_vectors(vectors: list[dict[str, float]]) -> dict[str, float]:
+    if not vectors:
+        return {}
+    keys = {key for vector in vectors for key in vector}
+    averaged = {}
+    for key in keys:
+        averaged[key] = sum(float(vector.get(key, 0.0) or 0.0) for vector in vectors) / len(vectors)
+    return averaged
+
+
 def _merge_adaptation_reasons(
     *,
     benchmark_adjustments: dict[str, float],
     archive_adjustments: dict[str, float],
+    decision_feedback_adjustments: dict[str, float] | None = None,
     archive_reasons: list[str],
+    decision_feedback_reasons: list[str] | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     if benchmark_adjustments.get("latency", 0.0) >= 0.04:
@@ -701,7 +804,12 @@ def _merge_adaptation_reasons(
         reasons.append("近期在线归档显示三元组产出稳定，系统适度提升覆盖相关权重。")
     if archive_adjustments.get("accuracy", 0.0) >= 0.04:
         reasons.append("近期在线归档显示空结果风险偏高，系统适度提升准确率权重。")
+    if (decision_feedback_adjustments or {}).get("accuracy", 0.0) >= 0.03:
+        reasons.append("历史任务调度反馈显示当前场景更依赖高准确配置，系统提升准确率权重。")
+    if (decision_feedback_adjustments or {}).get("coverage", 0.0) >= 0.02:
+        reasons.append("历史任务调度反馈显示当前场景更依赖覆盖能力，系统适度提升覆盖权重。")
     reasons.extend(archive_reasons)
+    reasons.extend(decision_feedback_reasons or [])
     return reasons[:5]
 
 
@@ -883,8 +991,10 @@ def _build_task_candidates(
         benchmark_by_model[item.model_id].append(item)
 
     archives_by_deployment = defaultdict(list)
+    archives_by_model = defaultdict(list)
     for item in prediction_archives:
         archives_by_deployment[item.deployment_id].append(item)
+        archives_by_model[item.model_id].append(item)
 
     allowed_models = set(candidate_model_ids or [])
     candidates: list[TaskRoutingCandidate] = []
@@ -917,6 +1027,16 @@ def _build_task_candidates(
         )
         domain_match = _candidate_domain_match(context_features.get("domain"), model.dataset_name)
         resource_cost_level = _resource_cost_level(deployment)
+        candidate_archives = _match_candidate_archives(
+            deployment=deployment,
+            model=model,
+            deployment_archives=archives_by_deployment.get(deployment.deployment_id, []),
+            model_archives=archives_by_model.get(deployment.model_id, []),
+            request_scene=request_scene,
+            request_domain=str(context_features.get("domain") or "general"),
+            requested_language=requested_language,
+        )
+        archive_feedback_summary = _build_candidate_archive_feedback_summary(candidate_archives)
         score_breakdown = _selection_score_breakdown(
             success_rate=avg_success,
             p95_latency_ms=avg_p95,
@@ -924,6 +1044,7 @@ def _build_task_candidates(
             avg_triple_count=avg_triple_count,
             domain_match=domain_match,
             deployment=deployment,
+            archive_feedback_summary=archive_feedback_summary,
         )
         score = sum(
             score_breakdown.get(key, 0.0) * objective_weights.get(key, 0.0)
@@ -944,6 +1065,7 @@ def _build_task_candidates(
                     recent_request_count=recent_requests,
                     domain_match=domain_match,
                     resource_cost_level=resource_cost_level,
+                    archive_feedback_summary=archive_feedback_summary,
                 ),
                 score_breakdown={key: round(value, 4) for key, value in score_breakdown.items()},
                 estimated_p95_latency_ms=avg_p95,
@@ -975,6 +1097,7 @@ def _selection_score_breakdown(
     avg_triple_count: float | None,
     domain_match: str,
     deployment: DeploymentRecord,
+    archive_feedback_summary: dict[str, float | int | None] | None = None,
 ) -> dict[str, float]:
     accuracy_score = min(1.0, max(0.0, float(success_rate if success_rate is not None else 0.55)))
     latency_score = max(0.0, 1.0 - min(float(p95_latency_ms or 1200.0), 1500.0) / 1500.0)
@@ -982,6 +1105,25 @@ def _selection_score_breakdown(
     stability_score = min(1.0, accuracy_score * 0.7 + min(recent_request_count, 10) / 10.0 * 0.3)
     resource_score = _resource_efficiency_score(deployment)
     domain_score = {"high": 1.0, "medium": 0.65, "low": 0.3}.get(domain_match, 0.45)
+    if archive_feedback_summary:
+        effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
+        satisfied_rate = archive_feedback_summary.get("satisfied_rate")
+        empty_rate = float(archive_feedback_summary.get("empty_rate") or 0.0)
+        archive_avg_latency = archive_feedback_summary.get("avg_latency_ms")
+        evidence_scale = min(0.18, 0.05 * effective_feedback_count) if effective_feedback_count else 0.0
+        if satisfied_rate is not None and effective_feedback_count:
+            centered_rate = float(satisfied_rate) - 0.5
+            accuracy_score = min(1.0, max(0.0, accuracy_score + centered_rate * (0.24 + evidence_scale)))
+            stability_score = min(1.0, max(0.0, stability_score + centered_rate * (0.20 + evidence_scale)))
+            if centered_rate > 0 and (archive_feedback_summary.get("avg_triple_count") or 0.0) >= 1.0:
+                coverage_score = min(1.0, coverage_score + centered_rate * 0.10)
+            elif centered_rate < 0:
+                coverage_score = max(0.0, coverage_score + centered_rate * 0.08)
+        if empty_rate >= 0.4:
+            coverage_score = max(0.0, coverage_score - min(0.16, empty_rate * 0.18))
+            stability_score = max(0.0, stability_score - min(0.12, empty_rate * 0.12))
+        if p95_latency_ms is None and archive_avg_latency is not None:
+            latency_score = max(0.0, 1.0 - min(float(archive_avg_latency), 1500.0) / 1500.0)
     return {
         "accuracy": round(accuracy_score, 6),
         "latency": round(latency_score, 6),
@@ -1000,20 +1142,131 @@ def _selection_reason(
     recent_request_count: int,
     domain_match: str,
     resource_cost_level: str,
+    archive_feedback_summary: dict[str, float | int | None] | None = None,
 ) -> str:
     latency_text = f"{p95_latency_ms:.3f} ms" if p95_latency_ms is not None else "暂无 P95"
     success_text = f"{score_breakdown.get('accuracy', 0.0) * 100:.1f}%"
+    feedback_text = _build_archive_feedback_reason_text(archive_feedback_summary)
     if objective == "latency":
-        return f"优先考虑低尾延迟，本候选历史 P95 为 {latency_text}。"
+        return f"优先考虑低尾延迟，本候选历史 P95 为 {latency_text}。{feedback_text}".strip()
     if objective == "coverage":
-        return f"优先考虑覆盖与稳定运行，本候选成功率 {success_text}，近期请求 {recent_request_count} 次。"
+        return f"优先考虑覆盖与稳定运行，本候选成功率 {success_text}，近期请求 {recent_request_count} 次。{feedback_text}".strip()
     if objective == "resource":
-        return f"优先考虑低资源成本，本候选资源级别 {resource_cost_level}，历史 P95 为 {latency_text}。"
+        return f"优先考虑低资源成本，本候选资源级别 {resource_cost_level}，历史 P95 为 {latency_text}。{feedback_text}".strip()
     if objective == "domain":
-        return f"优先考虑领域匹配，本候选领域匹配度 {domain_match}，成功率 {success_text}。"
+        return f"优先考虑领域匹配，本候选领域匹配度 {domain_match}，成功率 {success_text}。{feedback_text}".strip()
     if objective == "balanced":
-        return f"兼顾准确、覆盖、时延与成本，本候选成功率 {success_text}，P95 为 {latency_text}。"
-    return f"优先考虑稳定性，本候选成功率 {success_text}，历史 P95 为 {latency_text}。"
+        return f"兼顾准确、覆盖、时延与成本，本候选成功率 {success_text}，P95 为 {latency_text}。{feedback_text}".strip()
+    return f"优先考虑稳定性，本候选成功率 {success_text}，历史 P95 为 {latency_text}。{feedback_text}".strip()
+
+
+def _archive_matches_request_context(
+    *,
+    archive: PredictionArchiveRecord,
+    model: ModelSummary,
+    requested_language: str,
+    request_scene: str | None,
+    request_domain: str,
+) -> bool:
+    normalized_scene = _normalize_scene(request_scene)
+    if requested_language and model.language != requested_language:
+        return False
+    if not _scene_matches_model(normalized_scene, model):
+        return False
+    if request_domain != "general":
+        candidate_domain = infer_domain(text=str(model.dataset_name or ""), scene=model.dataset_name)
+        if candidate_domain not in {request_domain, "general"}:
+            return False
+    if normalized_scene and archive.scene:
+        archive_scene = _normalize_scene(archive.scene)
+        if archive_scene != normalized_scene and archive_scene not in {request_domain, "general"}:
+            return False
+    return True
+
+
+def _match_candidate_archives(
+    *,
+    deployment: DeploymentRecord,
+    model: ModelSummary,
+    deployment_archives: list[PredictionArchiveRecord],
+    model_archives: list[PredictionArchiveRecord],
+    request_scene: str | None,
+    request_domain: str,
+    requested_language: str,
+) -> list[PredictionArchiveRecord]:
+    matched_deployment_archives = [
+        item
+        for item in deployment_archives
+        if _archive_matches_request_context(
+            archive=item,
+            model=model,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+        )
+    ]
+    if matched_deployment_archives:
+        return matched_deployment_archives
+    return [
+        item
+        for item in model_archives
+        if _archive_matches_request_context(
+            archive=item,
+            model=model,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+        )
+    ]
+
+
+def _build_candidate_archive_feedback_summary(
+    archives: list[PredictionArchiveRecord],
+) -> dict[str, float | int | None]:
+    if not archives:
+        return {
+            "archive_count": 0,
+            "effective_feedback_count": 0,
+            "satisfied_count": 0,
+            "unsatisfied_count": 0,
+            "satisfied_rate": None,
+            "avg_latency_ms": None,
+            "avg_triple_count": None,
+            "empty_rate": 0.0,
+        }
+    satisfied_count = sum(1 for item in archives if str(item.feedback_status or "pending").strip().lower() == "satisfied")
+    unsatisfied_count = sum(1 for item in archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
+    effective_feedback_count = satisfied_count + unsatisfied_count
+    empty_count = sum(1 for item in archives if not int(item.triple_count or 0))
+    return {
+        "archive_count": len(archives),
+        "effective_feedback_count": effective_feedback_count,
+        "satisfied_count": satisfied_count,
+        "unsatisfied_count": unsatisfied_count,
+        "satisfied_rate": (satisfied_count / effective_feedback_count) if effective_feedback_count else None,
+        "avg_latency_ms": _mean_numeric(item.latency_ms for item in archives),
+        "avg_triple_count": _mean_numeric(item.triple_count for item in archives),
+        "empty_rate": empty_count / len(archives),
+    }
+
+
+def _build_archive_feedback_reason_text(
+    archive_feedback_summary: dict[str, float | int | None] | None,
+) -> str:
+    if not archive_feedback_summary:
+        return ""
+    archive_count = int(archive_feedback_summary.get("archive_count") or 0)
+    effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
+    satisfied_count = int(archive_feedback_summary.get("satisfied_count") or 0)
+    unsatisfied_count = int(archive_feedback_summary.get("unsatisfied_count") or 0)
+    if not archive_count:
+        return "当前暂无同类在线归档反馈。"
+    if effective_feedback_count:
+        return (
+            f"同类在线归档 {archive_count} 条，其中满意 {satisfied_count} 条、不满意 {unsatisfied_count} 条，"
+            "这些记录会直接参与本次候选评分。"
+        )
+    return f"当前已有同类在线归档 {archive_count} 条，但尚无明确满意度反馈，平台暂以运行结果作为辅助证据。"
 
 
 def _select_task_candidates(
@@ -1480,6 +1733,14 @@ def build_task_routing_feedback_overview(
             context_features={"domain": "general", "language": "", "scene": ""},
             requested_language="",
         )
+        decision_feedback_adjustments, decision_feedback_reasons = _build_decision_feedback_weight_adjustments(
+            decision_records=decision_records,
+            feedback_records=feedback_records,
+            objective=objective,
+            requested_language="",
+            context_features={"domain": "general", "language": "", "scene": ""},
+            base_weights=base_weights,
+        )
         weight_profiles.append(
             TaskRoutingAdaptiveWeightProfile(
                 objective=objective,
@@ -1487,13 +1748,20 @@ def build_task_routing_feedback_overview(
                     base_weights=base_weights,
                     benchmark_adjustments=benchmark_adjustments,
                     archive_adjustments=archive_adjustments,
+                    decision_feedback_adjustments=decision_feedback_adjustments,
                 ),
                 benchmark_adjustments={key: round(value, 4) for key, value in benchmark_adjustments.items() if abs(value) > 0.0001},
-                archive_adjustments={key: round(value, 4) for key, value in archive_adjustments.items() if abs(value) > 0.0001},
+                archive_adjustments={
+                    key: round(value, 4)
+                    for key, value in _sum_weight_adjustments(archive_adjustments, decision_feedback_adjustments).items()
+                    if abs(value) > 0.0001
+                },
                 reasons=_merge_adaptation_reasons(
                     benchmark_adjustments=benchmark_adjustments,
                     archive_adjustments=archive_adjustments,
+                    decision_feedback_adjustments=decision_feedback_adjustments,
                     archive_reasons=reasons,
+                    decision_feedback_reasons=decision_feedback_reasons,
                 ),
             )
         )

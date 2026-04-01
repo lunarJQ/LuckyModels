@@ -109,6 +109,45 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         )
     )
     response.decision_id = decision.decision_id
+    archive_latency_ms = None
+    execution_latencies = [float(item.latency_ms) for item in response.execution_results if item.latency_ms is not None]
+    if execution_latencies:
+        archive_latency_ms = round(sum(execution_latencies), 3)
+    archive_payload = {
+        "latency_ms": archive_latency_ms,
+        "triple_count": int(response.fused_result.get("triple_count") or 0),
+        "item_count": len(response.execution_results or []),
+        "triples": response.fused_result.get("triples") or [],
+        "fusion_mode": response.fused_result.get("fusion_mode"),
+        "decision_id": decision.decision_id,
+        "objective": response.objective,
+        "strategy_mode": response.strategy_mode,
+        "execution_path": response.execution_path,
+        "fusion_policy": response.fusion_policy,
+        "objective_weights": response.objective_weights,
+        "adaptive_adjustments": response.adaptive_adjustments,
+        "selected_model_ids": [item.model_id for item in response.selected_deployments],
+    }
+    archive = prediction_store.create(
+        deployment_id=decision.decision_id,
+        model_id="task-routing",
+        profile_name=response.objective,
+        archive_source="task_routing",
+        service_url=None,
+        scene=request.scene,
+        request_text=request.text,
+        request_texts=[],
+        options=dict(request.options or {}),
+        response_payload=archive_payload,
+        task_routing_decision_id=decision.decision_id,
+        task_routing_objective=response.objective,
+        task_routing_execution_path=response.execution_path,
+        task_routing_fusion_policy=response.fusion_policy,
+        task_routing_weight_snapshot=response.objective_weights,
+        task_routing_adjustment_snapshot=response.adaptive_adjustments,
+        task_routing_selected_model_ids=[item.model_id for item in response.selected_deployments],
+    )
+    response.archive_id = archive.archive_id
     return response
 
 

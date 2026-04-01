@@ -78,6 +78,14 @@ class TaskRoutingFeedbackStore:
         self._write_records(self.feedback_file, feedback_items)
         return feedback
 
+    def delete_feedback(self, decision_id: str) -> bool:
+        feedback_items = self.list_feedback()
+        remaining_feedback = [item for item in feedback_items if item.decision_id != decision_id]
+        if len(remaining_feedback) == len(feedback_items):
+            return False
+        self._write_records(self.feedback_file, remaining_feedback)
+        return True
+
     def delete_by_model(self, model_id: str) -> tuple[int, int]:
         decisions = self.list_decisions()
         removed_decision_ids = {
