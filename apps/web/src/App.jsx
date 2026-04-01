@@ -4212,10 +4212,49 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
   const [predictionArchivePage, setPredictionArchivePage] = useState(1);
   const [taskRoutingArchivePage, setTaskRoutingArchivePage] = useState(1);
   const allArchives = sortByCreatedDesc(derived.predictArchives);
+  const feedbackOverview = derived.taskRoutingFeedbackOverview || { recent_decisions: [] };
   const predictionArchives = allArchives.filter((item) => item.archive_source !== "task_routing");
   const taskRoutingArchives = allArchives.filter((item) => item.archive_source === "task_routing");
+  const taskRoutingDecisionIds = new Set(
+    taskRoutingArchives.map((item) => String(item.task_routing_decision_id || "").trim()).filter(Boolean),
+  );
+  const supplementalTaskRoutingDecisionRows = (feedbackOverview.recent_decisions || [])
+    .filter((item) => {
+      const decisionId = String(item?.decision_id || "").trim();
+      return decisionId && !taskRoutingDecisionIds.has(decisionId);
+    })
+    .map((item) => ({
+      archive_id: `decision-${item.decision_id}`,
+      deployment_id: item.decision_id,
+      model_id: "task-routing",
+      profile_name: item.objective || "task-routing",
+      archive_source: "task_routing_decision",
+      service_url: null,
+      scene: item.context_domain || null,
+      request_text: null,
+      request_texts: [],
+      options: {},
+      latency_ms: null,
+      triple_count: item.fused_triple_count ?? null,
+      item_count: null,
+      response_payload: {},
+      task_routing_decision_id: item.decision_id,
+      task_routing_objective: item.objective || null,
+      task_routing_execution_path: item.execution_path || null,
+      task_routing_fusion_policy: item.fusion_policy || null,
+      task_routing_weight_snapshot: {},
+      task_routing_adjustment_snapshot: {},
+      task_routing_selected_model_ids: item.selected_model_ids || [],
+      feedback_status: item.accepted === true ? "satisfied" : item.accepted === false ? "unsatisfied" : "pending",
+      feedback_note: null,
+      feedback_updated_at: item.feedback_status === "completed" ? item.created_at : null,
+      created_at: item.created_at,
+      is_supplemental_decision: true,
+      inferred_language: item.inferred_language || null,
+    }));
+  const mergedTaskRoutingArchives = sortByCreatedDesc([...taskRoutingArchives, ...supplementalTaskRoutingDecisionRows]);
   const predictionArchiveTotalPages = Math.max(1, Math.ceil(predictionArchives.length / archivePageSize));
-  const taskRoutingArchiveTotalPages = Math.max(1, Math.ceil(taskRoutingArchives.length / archivePageSize));
+  const taskRoutingArchiveTotalPages = Math.max(1, Math.ceil(mergedTaskRoutingArchives.length / archivePageSize));
   const safePredictionArchivePage = Math.min(predictionArchivePage, predictionArchiveTotalPages);
   const safeTaskRoutingArchivePage = Math.min(taskRoutingArchivePage, taskRoutingArchiveTotalPages);
   useEffect(() => {
@@ -4236,6 +4275,10 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
     (safeTaskRoutingArchivePage - 1) * archivePageSize,
     safeTaskRoutingArchivePage * archivePageSize,
   );
+  const pagedMergedTaskRoutingArchives = mergedTaskRoutingArchives.slice(
+    (safeTaskRoutingArchivePage - 1) * archivePageSize,
+    safeTaskRoutingArchivePage * archivePageSize,
+  );
   const archiveSatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "satisfied").length;
   const archiveUnsatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "unsatisfied").length;
   return (
@@ -4246,16 +4289,16 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
           <MetricCard title="最新结果归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
           <MetricCard title="结果归档总数" value={allArchives.length} note="在线推理与任务调度结果自动留痕" />
           <MetricCard title="推理实验归档" value={predictionArchives.length} note="以 pred 开头，来自在线推理或推理实验" />
-          <MetricCard title="任务调度归档" value={taskRoutingArchives.length} note="以 trd 开头，保留调度权重快照与决策证据" />
+          <MetricCard title="任务调度归档" value={mergedTaskRoutingArchives.length} note="真实归档 + 历史最近决策补充行" />
           <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
           <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
         </div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="任务调度归档" title="任务调度归档列表" note="这一表只放以 trd 开头的任务调度归档，专门保留调度评分权重快照、执行路径与参与模型，并支持直接补反馈。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。它不仅保存融合结果，还保留当时的调度评分权重快照；你在这里补的满意 / 不满意 / 暂定反馈，也会进入任务调度学习过程。</div>
-        {taskRoutingArchives.length ? (
+        <SectionHeader kicker="任务调度归档" title="任务调度归档列表" note="这一表优先展示真实任务调度归档，同时补充接入历史最近决策记录，便于在同一处查看完整任务调度留痕。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。已生成真实归档的记录保留完整输入、权重快照和反馈入口；没有真实归档的历史最近决策，也会补成只读记录接进来。</div>
+        {mergedTaskRoutingArchives.length ? (
           <div className="table-wrap">
             <table className="archive-table">
               <thead>
@@ -4269,19 +4312,20 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                 </tr>
               </thead>
               <tbody>
-                {pagedTaskRoutingArchives
+                {pagedMergedTaskRoutingArchives
                   .map((item) => {
                     const routingModels = (item.task_routing_selected_model_ids || []).join(" / ");
                     const weightSnapshotText = formatWeightSnapshot(item.task_routing_weight_snapshot);
                     const adjustmentSnapshotText = formatWeightSnapshot(item.task_routing_adjustment_snapshot);
                     const displayId = item.task_routing_decision_id || item.archive_id;
+                    const isSupplementalDecision = Boolean(item.is_supplemental_decision);
                     return (
                     <tr key={item.archive_id}>
                       <td>
                         <div className="archive-cell-stack">
                           <strong className="archive-main">{displayId}</strong>
                           <div className="table-note">创建时间：{item.created_at}</div>
-                          <div className="table-note">来源：任务调度</div>
+                          <div className="table-note">来源：{isSupplementalDecision ? "历史最近决策补充" : "任务调度归档"}</div>
                         </div>
                       </td>
                       <td>
@@ -4290,11 +4334,14 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           <div className="table-note">执行路径：{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
                           <div className="table-note">融合策略：{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
                           <div className="table-note">场景：{item.scene || "-"}</div>
+                          <div className="table-note">语言：{item.inferred_language || "-"}</div>
                           <div className="table-note">参与模型：{routingModels || "-"}</div>
                         </div>
                       </td>
                       <td>
-                        <div className="archive-input">{item.request_text || item.request_texts?.[0] || "-"}</div>
+                        <div className="archive-input">
+                          {item.request_text || item.request_texts?.[0] || "该历史任务调度记录未保留原始输入文本。"}
+                        </div>
                       </td>
                       <td>
                         <div className="archive-cell-stack">
@@ -4304,7 +4351,9 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           </div>
                           <div className="table-note">权重快照：{weightSnapshotText}</div>
                           <div className="table-note">调整快照：{adjustmentSnapshotText}</div>
-                          <div className="table-note">这条记录的反馈会同步给任务调度学习逻辑。</div>
+                          <div className="table-note">
+                            {isSupplementalDecision ? "该条为最近决策补充记录，优先用于补足历史任务调度留痕。" : "这条记录的反馈会同步给任务调度学习逻辑。"}
+                          </div>
                         </div>
                       </td>
                       <td>
@@ -4312,20 +4361,25 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
                           <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
                         </div>
-                        <PredictionArchiveFeedbackControls
-                          actionBusy={actionBusy}
-                          archive={item}
-                          onUpdate={onUpdatePredictionArchiveFeedback}
-                        />
+                        {!isSupplementalDecision ? (
+                          <PredictionArchiveFeedbackControls
+                            actionBusy={actionBusy}
+                            archive={item}
+                            onUpdate={onUpdatePredictionArchiveFeedback}
+                          />
+                        ) : (
+                          <div className="table-note">历史补充行当前仅展示决策信息，不提供归档级反馈按钮。</div>
+                        )}
                       </td>
                       <td>
                         <div className="actions row-actions">
-                          {canExportArchives ? (
+                          {canExportArchives && !isSupplementalDecision ? (
                             <button onClick={() => onExportPredictionArchive(item)} type="button">导出</button>
                           ) : null}
-                          {canManageArchives ? (
+                          {canManageArchives && !isSupplementalDecision ? (
                             <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
                           ) : null}
+                          {isSupplementalDecision ? <span className="table-note">历史补充行</span> : null}
                         </div>
                       </td>
                     </tr>
@@ -4336,7 +4390,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
               currentPage={safeTaskRoutingArchivePage}
               totalPages={taskRoutingArchiveTotalPages}
               pageSize={archivePageSize}
-              totalItems={taskRoutingArchives.length}
+              totalItems={mergedTaskRoutingArchives.length}
               onChange={setTaskRoutingArchivePage}
             />
           </div>
