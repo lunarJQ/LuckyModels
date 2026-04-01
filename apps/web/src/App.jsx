@@ -306,34 +306,102 @@ function buildPaginationItems(currentPage, totalPages) {
   return items;
 }
 
+function getStickyTopOffset() {
+  if (typeof document === "undefined") {
+    return 0;
+  }
+  const topbar = document.querySelector(".topbar");
+  const topbarHeight = topbar ? topbar.getBoundingClientRect().height : 0;
+  return topbarHeight + 16;
+}
+
+function scrollElementToViewportTop(element) {
+  if (typeof window === "undefined" || !element) {
+    return;
+  }
+  const targetTop = window.scrollY + element.getBoundingClientRect().top - getStickyTopOffset();
+  window.scrollTo({
+    top: Math.max(0, targetTop),
+    behavior: "smooth",
+  });
+}
+
+function resetPageScrollToTop() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.scrollTo(0, 0);
+  if (typeof document !== "undefined") {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
+}
+
 function PaginationBar({ currentPage, totalPages, pageSize, totalItems, onChange }) {
   if (totalPages <= 1) {
     return null;
   }
   const pageItems = buildPaginationItems(currentPage, totalPages);
+
+  function handlePageChange(nextPage, event) {
+    onChange(nextPage);
+    const tableWrap = event?.currentTarget?.closest(".table-wrap");
+    if (tableWrap) {
+      window.requestAnimationFrame(() => {
+        scrollElementToViewportTop(tableWrap);
+      });
+    }
+  }
+
   return (
     <div className="pagination-bar">
       <div className="pagination-meta">
         共 {totalItems} 条，每页 {pageSize} 条，当前第 {currentPage} / {totalPages} 页
       </div>
       <div className="actions pagination-actions">
-        <button disabled={currentPage <= 1} onClick={() => onChange(1)} type="button">首页</button>
-        <button disabled={currentPage <= 1} onClick={() => onChange(currentPage - 1)} type="button">上一页</button>
+        <button disabled={currentPage <= 1} onClick={(event) => handlePageChange(1, event)} type="button">首页</button>
+        <button disabled={currentPage <= 1} onClick={(event) => handlePageChange(currentPage - 1, event)} type="button">上一页</button>
         {pageItems.map((page) => (
           <button
             key={page}
             className={page === currentPage ? "button-active" : ""}
-            onClick={() => onChange(page)}
+            onClick={(event) => handlePageChange(page, event)}
             type="button"
           >
             {page}
           </button>
         ))}
-        <button disabled={currentPage >= totalPages} onClick={() => onChange(currentPage + 1)} type="button">下一页</button>
-        <button disabled={currentPage >= totalPages} onClick={() => onChange(totalPages)} type="button">末页</button>
+        <button disabled={currentPage >= totalPages} onClick={(event) => handlePageChange(currentPage + 1, event)} type="button">下一页</button>
+        <button disabled={currentPage >= totalPages} onClick={(event) => handlePageChange(totalPages, event)} type="button">末页</button>
       </div>
     </div>
   );
+}
+
+function useTablePagination(items, pageSize = 10) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  useEffect(() => {
+    if (page !== safePage) {
+      setPage(safePage);
+    }
+  }, [page, safePage]);
+
+  const pagedItems = useMemo(
+    () => items.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [items, pageSize, safePage],
+  );
+
+  return {
+    page: safePage,
+    setPage,
+    totalPages,
+    pageSize,
+    totalItems: items.length,
+    pagedItems,
+  };
 }
 
 function getDeploymentHealthPayload(deployment) {
@@ -1828,6 +1896,10 @@ function Shell(props) {
   const fallbackPath = getFallbackPath(currentPermissions, currentUser);
   const currentRoleNames = (currentUser?.role_ids || []).map((item) => formatRoleLabel(item)).join(" / ") || "未分配角色";
 
+  useEffect(() => {
+    resetPageScrollToTop();
+  }, [location.pathname]);
+
   function renderGuardedRoute(path, element, options = {}) {
     return (
       <Route
@@ -2365,6 +2437,7 @@ function ExperimentsPage({
     : DEFAULT_PREDICT_DATASETS;
   const activeScene = resolvePredictDatasetKey(predictForm.scene);
   const sampleBusy = actionBusy[`predict-sample-${activeScene}`];
+  const predictArchivePagination = useTablePagination(sortByCreatedDesc(derived.predictArchives), 10);
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
@@ -2532,9 +2605,7 @@ function ExperimentsPage({
                 </tr>
               </thead>
               <tbody>
-                {sortByCreatedDesc(derived.predictArchives)
-                  .slice(0, 8)
-                  .map((item) => (
+                {predictArchivePagination.pagedItems.map((item) => (
                     <tr key={item.archive_id}>
                       <td>
                         <strong>{item.archive_id}</strong>
@@ -2580,6 +2651,13 @@ function ExperimentsPage({
                   ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={predictArchivePagination.page}
+              totalPages={predictArchivePagination.totalPages}
+              pageSize={predictArchivePagination.pageSize}
+              totalItems={predictArchivePagination.totalItems}
+              onChange={predictArchivePagination.setPage}
+            />
           </div>
         ) : (
           <EmptyState icon="A" title="暂无预测归档" note="完成一次在线推理后，结果会自动归档到这里。" />
@@ -2597,6 +2675,8 @@ function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageUsers = currentPermissions.includes("users.manage");
   const [selectedUserId, setSelectedUserId] = useState(currentUser?.user_id || "");
+  const userMatrixPagination = useTablePagination(users, 10);
+  const governancePagination = useTablePagination(users, 10);
 
   useEffect(() => {
     setSelectedUserId(currentUser?.user_id || "");
@@ -2702,7 +2782,7 @@ function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
               </tr>
             </thead>
             <tbody>
-              {users.map((item) => {
+              {userMatrixPagination.pagedItems.map((item) => {
                 const effectiveRoleNames = (item.role_ids || []).map((roleId) => formatRoleLabel(roleId)).join(" / ");
                 const effectivePermissionCount = roles
                   .filter((role) => (item.role_ids || []).includes(role.role_id))
@@ -2726,6 +2806,13 @@ function AccessControlPage({ actionBusy, derived, onSwitchCurrentAccessUser }) {
               })}
             </tbody>
           </table>
+          <PaginationBar
+            currentPage={userMatrixPagination.page}
+            totalPages={userMatrixPagination.totalPages}
+            pageSize={userMatrixPagination.pageSize}
+            totalItems={userMatrixPagination.totalItems}
+            onChange={userMatrixPagination.setPage}
+          />
         </div>
       </section>
     </>
@@ -2890,7 +2977,7 @@ function AdminConsolePage({
               </tr>
             </thead>
             <tbody>
-              {users.map((item) => (
+              {governancePagination.pagedItems.map((item) => (
                 <tr key={item.user_id}>
                   <td>
                     <strong>{item.display_name}</strong>
@@ -2973,6 +3060,13 @@ function AdminConsolePage({
               ))}
             </tbody>
           </table>
+          <PaginationBar
+            currentPage={governancePagination.page}
+            totalPages={governancePagination.totalPages}
+            pageSize={governancePagination.pageSize}
+            totalItems={governancePagination.totalItems}
+            onChange={governancePagination.setPage}
+          />
         </div>
       </section>
     </>
@@ -3020,12 +3114,17 @@ function TaskRoutingPage({
   const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
   const benchmarkedModelCount = new Set(completedBenchmarks.map((item) => item.model_id)).size;
   const calibrationArchiveCount = derived.predictArchives.length;
-  const recentBenchmarkRows = completedBenchmarks.slice(0, 6);
   const selectedObjective = candidateOptions.find((item) => item.value === taskRoutingForm.objective) || candidateOptions[0];
   const selectedScene = sceneOptions.find((item) => item.value === taskRoutingForm.scene) || sceneOptions[2];
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
+  const candidatePagination = useTablePagination(selectedDeployments, 10);
+  const benchmarkEvidencePagination = useTablePagination(completedBenchmarks, 10);
+  const objectiveSummaryPagination = useTablePagination(feedbackOverview.objective_summaries || [], 10);
+  const weightProfilePagination = useTablePagination(feedbackOverview.weight_profiles || [], 10);
+  const executionPathPagination = useTablePagination(feedbackOverview.execution_path_summaries || [], 10);
+  const recentDecisionPagination = useTablePagination(feedbackOverview.recent_decisions || [], 10);
   const strategyModeLabels = {
     none: "未执行",
     "multi-objective-adaptive": "多目标自适应",
@@ -3304,7 +3403,7 @@ function TaskRoutingPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {taskRoutingResult.selected_deployments.map((item) => (
+                    {candidatePagination.pagedItems.map((item) => (
                       <tr key={item.deployment_id}>
                         <td>
                           <strong>{item.deployment_id}</strong>
@@ -3326,6 +3425,13 @@ function TaskRoutingPage({
                     ))}
                   </tbody>
                 </table>
+                <PaginationBar
+                  currentPage={candidatePagination.page}
+                  totalPages={candidatePagination.totalPages}
+                  pageSize={candidatePagination.pageSize}
+                  totalItems={candidatePagination.totalItems}
+                  onChange={candidatePagination.setPage}
+                />
               </div>
               {(taskRoutingResult.decision_trace || []).length ? <div className="logs">{(taskRoutingResult.decision_trace || []).join("\n")}</div> : null}
             </>
@@ -3386,7 +3492,7 @@ function TaskRoutingPage({
                 </tr>
               </thead>
               <tbody>
-                {recentBenchmarkRows.map((item) => (
+                {benchmarkEvidencePagination.pagedItems.map((item) => (
                   <tr key={item.benchmark_id}>
                     <td>
                       <strong>{item.label || item.benchmark_id}</strong>
@@ -3401,8 +3507,15 @@ function TaskRoutingPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={benchmarkEvidencePagination.page}
+              totalPages={benchmarkEvidencePagination.totalPages}
+              pageSize={benchmarkEvidencePagination.pageSize}
+              totalItems={benchmarkEvidencePagination.totalItems}
+              onChange={benchmarkEvidencePagination.setPage}
+            />
           </div>
-          {!recentBenchmarkRows.length ? (
+          {!benchmarkEvidencePagination.totalItems ? (
             <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
           ) : null}
         </article>
@@ -3440,7 +3553,7 @@ function TaskRoutingPage({
                 </tr>
               </thead>
               <tbody>
-                {(feedbackOverview.objective_summaries || []).map((item) => (
+                {objectiveSummaryPagination.pagedItems.map((item) => (
                   <tr key={item.objective}>
                     <td>{item.objective}</td>
                     <td>{item.decision_count}</td>
@@ -3455,6 +3568,13 @@ function TaskRoutingPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={objectiveSummaryPagination.page}
+              totalPages={objectiveSummaryPagination.totalPages}
+              pageSize={objectiveSummaryPagination.pageSize}
+              totalItems={objectiveSummaryPagination.totalItems}
+              onChange={objectiveSummaryPagination.setPage}
+            />
           </div>
         </article>
 
@@ -3473,7 +3593,7 @@ function TaskRoutingPage({
                 </tr>
               </thead>
               <tbody>
-                {(feedbackOverview.weight_profiles || []).map((item) => (
+                {weightProfilePagination.pagedItems.map((item) => (
                   <tr key={item.objective}>
                     <td>{item.objective}</td>
                     <td className="limitation-cell">
@@ -3494,6 +3614,13 @@ function TaskRoutingPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={weightProfilePagination.page}
+              totalPages={weightProfilePagination.totalPages}
+              pageSize={weightProfilePagination.pageSize}
+              totalItems={weightProfilePagination.totalItems}
+              onChange={weightProfilePagination.setPage}
+            />
           </div>
         </article>
       </section>
@@ -3515,7 +3642,7 @@ function TaskRoutingPage({
                 </tr>
               </thead>
               <tbody>
-                {(feedbackOverview.execution_path_summaries || []).map((item) => (
+                {executionPathPagination.pagedItems.map((item) => (
                   <tr key={item.execution_path}>
                     <td>{item.execution_path}</td>
                     <td>{formatExecutionPathLabel(item.execution_path)}</td>
@@ -3530,6 +3657,13 @@ function TaskRoutingPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={executionPathPagination.page}
+              totalPages={executionPathPagination.totalPages}
+              pageSize={executionPathPagination.pageSize}
+              totalItems={executionPathPagination.totalItems}
+              onChange={executionPathPagination.setPage}
+            />
           </div>
         </article>
 
@@ -3548,7 +3682,7 @@ function TaskRoutingPage({
                 </tr>
               </thead>
               <tbody>
-                {(feedbackOverview.recent_decisions || []).map((item) => (
+                {recentDecisionPagination.pagedItems.map((item) => (
                   <tr key={item.decision_id}>
                     <td>
                       <strong>{item.decision_id}</strong>
@@ -3571,6 +3705,13 @@ function TaskRoutingPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={recentDecisionPagination.page}
+              totalPages={recentDecisionPagination.totalPages}
+              pageSize={recentDecisionPagination.pageSize}
+              totalItems={recentDecisionPagination.totalItems}
+              onChange={recentDecisionPagination.setPage}
+            />
           </div>
         </article>
       </section>
@@ -3663,6 +3804,8 @@ function DeploymentPolicyPage({
       };
     })
     .filter(Boolean);
+  const policyActionPagination = useTablePagination(deploymentPolicyAutomation?.recent_actions || [], 10);
+  const deploymentPlanPagination = useTablePagination(deploymentPlanRows, 10);
 
   return (
     <>
@@ -3854,7 +3997,7 @@ function DeploymentPolicyPage({
                 </tr>
               </thead>
               <tbody>
-                {deploymentPolicyAutomation.recent_actions.map((item, index) => (
+                {policyActionPagination.pagedItems.map((item, index) => (
                   <tr key={`${item.created_at}-${item.model_id}-${index}`}>
                     <td>{item.created_at}</td>
                     <td>{item.action_type}</td>
@@ -3868,6 +4011,13 @@ function DeploymentPolicyPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={policyActionPagination.page}
+              totalPages={policyActionPagination.totalPages}
+              pageSize={policyActionPagination.pageSize}
+              totalItems={policyActionPagination.totalItems}
+              onChange={policyActionPagination.setPage}
+            />
           </div>
         ) : (
           <div className="table-note">开启自动优化后，最近执行动作会记录在这里，便于截图和论文说明。</div>
@@ -3951,7 +4101,7 @@ function DeploymentPolicyPage({
                 </tr>
               </thead>
               <tbody>
-                {deploymentPlanRows.map((row) => (
+                {deploymentPlanPagination.pagedItems.map((row) => (
                   <tr key={row.deployment.deployment_id}>
                     <td>
                       <strong>{row.deployment.deployment_id}</strong>
@@ -4038,6 +4188,13 @@ function DeploymentPolicyPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={deploymentPlanPagination.page}
+              totalPages={deploymentPlanPagination.totalPages}
+              pageSize={deploymentPlanPagination.pageSize}
+              totalItems={deploymentPlanPagination.totalItems}
+              onChange={deploymentPlanPagination.setPage}
+            />
           </div>
         ) : (
           <EmptyState icon="P" title="还没有生成 Deployment 优化方案" note="点击“刷新部署建议”后，这里会按现有 deployment 生成优化方案。" />
@@ -4760,6 +4917,7 @@ function CapabilityMatrixPage({ derived }) {
       );
     });
   }, [deferredSearch, derived.capabilityMatrix, statusFilter]);
+  const capabilityPagination = useTablePagination(filteredRows, 10);
 
   function handleExportCapabilityMatrix() {
     if (!filteredRows.length) {
@@ -4858,7 +5016,7 @@ function CapabilityMatrixPage({ derived }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((item) => (
+                {capabilityPagination.pagedItems.map((item) => (
                   <tr key={item.model_id}>
                     <td>
                       <strong>{item.model_name}</strong>
@@ -4879,6 +5037,13 @@ function CapabilityMatrixPage({ derived }) {
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={capabilityPagination.page}
+              totalPages={capabilityPagination.totalPages}
+              pageSize={capabilityPagination.pageSize}
+              totalItems={capabilityPagination.totalItems}
+              onChange={capabilityPagination.setPage}
+            />
           </div>
         </section>
       ) : (
@@ -4993,6 +5158,7 @@ function DeploymentsPage({
 
     return next;
   }, [deferredSearch, derived.deployments, modelFilter, statusFilter]);
+  const deploymentPagination = useTablePagination(filteredDeployments, 10);
 
   function exportableRows() {
     return filteredDeployments.map((item) => ({
@@ -5176,62 +5342,71 @@ function DeploymentsPage({
         </div>
         <div className="table-wrap">
           {filteredDeployments.length ? (
-            <table>
-              <thead>
-                <tr>
-                  <th>部署编号</th>
-                  <th>模型</th>
-                  <th>配置模板</th>
-                  <th>执行参数</th>
-                  <th>状态</th>
-                  <th>服务地址</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDeployments.map((item) => (
-                  <tr key={item.deployment_id}>
-                    <td>
-                      <strong>{item.deployment_id}</strong>
-                      <div className="mono">{item.notes || "-"}</div>
-                    </td>
-                    <td>{item.model_id}</td>
-                    <td>
-                      <strong>{item.profile_name}</strong>
-                    </td>
-                    <td>
-                      <div className="table-note">{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}</div>
-                      <div className="table-note">GPU 加速：{formatBooleanLabel(item.use_gpu)}</div>
-                      <div className="table-note">GPU 卡号：{formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
-                      <div className="table-note">{formatExecutionSummary(item)}</div>
-                      <div className="table-note">执行后端：{formatProviderSummary(item)}</div>
-                    </td>
-                    <td><StatusPill status={item.status} /></td>
-                    <td>
-                      <div className="mono">{item.service_url || "-"}</div>
-                      <div className="table-note">pid: {item.pid || "-"}</div>
-                    </td>
-                    <td>
-                      <div className="actions row-actions">
-                        <button onClick={() => void onInspectDeployment("health", item.deployment_id)} type="button">健康</button>
-                        {canViewResources ? (
-                          <button onClick={() => void onInspectDeployment("logs", item.deployment_id)} type="button">日志</button>
-                        ) : null}
-                        {canManageDeployments ? (
-                          <button disabled={actionBusy[`stop-${item.deployment_id}`]} onClick={() => void onDeploymentAction("stop", item.deployment_id)} type="button">停止</button>
-                        ) : null}
-                        {canManageDeployments ? (
-                          <button disabled={actionBusy[`restart-${item.deployment_id}`]} onClick={() => void onDeploymentAction("restart", item.deployment_id)} type="button">重启</button>
-                        ) : null}
-                        {canManageDeployments ? (
-                          <button disabled={actionBusy[`delete-${item.deployment_id}`]} onClick={() => void onDeploymentAction("delete", item.deployment_id)} type="button">删除</button>
-                        ) : null}
-                      </div>
-                    </td>
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>部署编号</th>
+                    <th>模型</th>
+                    <th>配置模板</th>
+                    <th>执行参数</th>
+                    <th>状态</th>
+                    <th>服务地址</th>
+                    <th>操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {deploymentPagination.pagedItems.map((item) => (
+                    <tr key={item.deployment_id}>
+                      <td>
+                        <strong>{item.deployment_id}</strong>
+                        <div className="mono">{item.notes || "-"}</div>
+                      </td>
+                      <td>{item.model_id}</td>
+                      <td>
+                        <strong>{item.profile_name}</strong>
+                      </td>
+                      <td>
+                        <div className="table-note">{item.device || "-"} / {item.profile_runtime || item.runtime || "-"}</div>
+                        <div className="table-note">GPU 加速：{formatBooleanLabel(item.use_gpu)}</div>
+                        <div className="table-note">GPU 卡号：{formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
+                        <div className="table-note">{formatExecutionSummary(item)}</div>
+                        <div className="table-note">执行后端：{formatProviderSummary(item)}</div>
+                      </td>
+                      <td><StatusPill status={item.status} /></td>
+                      <td>
+                        <div className="mono">{item.service_url || "-"}</div>
+                        <div className="table-note">pid: {item.pid || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="actions row-actions">
+                          <button onClick={() => void onInspectDeployment("health", item.deployment_id)} type="button">健康</button>
+                          {canViewResources ? (
+                            <button onClick={() => void onInspectDeployment("logs", item.deployment_id)} type="button">日志</button>
+                          ) : null}
+                          {canManageDeployments ? (
+                            <button disabled={actionBusy[`stop-${item.deployment_id}`]} onClick={() => void onDeploymentAction("stop", item.deployment_id)} type="button">停止</button>
+                          ) : null}
+                          {canManageDeployments ? (
+                            <button disabled={actionBusy[`restart-${item.deployment_id}`]} onClick={() => void onDeploymentAction("restart", item.deployment_id)} type="button">重启</button>
+                          ) : null}
+                          {canManageDeployments ? (
+                            <button disabled={actionBusy[`delete-${item.deployment_id}`]} onClick={() => void onDeploymentAction("delete", item.deployment_id)} type="button">删除</button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <PaginationBar
+                currentPage={deploymentPagination.page}
+                totalPages={deploymentPagination.totalPages}
+                pageSize={deploymentPagination.pageSize}
+                totalItems={deploymentPagination.totalItems}
+                onChange={deploymentPagination.setPage}
+              />
+            </>
           ) : (
             <EmptyState
               icon="D"
@@ -5327,6 +5502,7 @@ function BenchmarksPage({
 
     return next;
   }, [deferredSearch, derived.benchmarks, scopeFilter, statusFilter]);
+  const benchmarkRecordPagination = useTablePagination(filteredBenchmarks, 10);
 
   const compareRows = useMemo(() => {
     const deploymentMap = new Map(derived.deployments.map((item) => [item.deployment_id, item]));
@@ -5378,6 +5554,7 @@ function BenchmarksPage({
         return left.profile_name.localeCompare(right.profile_name);
       });
   }, [compareModelId, completedBenchmarks, derived.deployments]);
+  const compareRowPagination = useTablePagination(compareRows, 10);
 
   const bestLatencyRow = useMemo(() => {
     return [...compareRows]
@@ -5400,6 +5577,7 @@ function BenchmarksPage({
       return left.profile_name.localeCompare(right.profile_name);
     });
   }, [compareRows, paperModelId]);
+  const thesisRowPagination = useTablePagination(thesisRows, 10);
 
   const selectedPaperModelRows = useMemo(() => {
     if (paperModelId === "all") {
@@ -5656,47 +5834,56 @@ function BenchmarksPage({
         </div>
         <div className="table-wrap">
           {filteredBenchmarks.length ? (
-            <table>
-              <thead>
-                <tr>
-                  <th>基准编号</th>
-                  <th>模型</th>
-                  <th>状态</th>
-                  <th>吞吐量</th>
-                  <th>平均延迟</th>
-                  <th>P95</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredBenchmarks.map((item) => (
-                  <tr key={item.benchmark_id}>
-                    <td>
-                      <strong>{item.label || item.benchmark_id}</strong>
-                      <div className="mono">{item.benchmark_id}</div>
-                    </td>
-                    <td>{item.model_id}</td>
-                    <td><StatusPill status={item.status} /></td>
-                    <td>{escapeValue(item.throughput_qps)}</td>
-                    <td>{escapeValue(item.avg_latency_ms)}</td>
-                    <td>{escapeValue(item.p95_latency_ms)}</td>
-                    <td>
-                      {canManageBenchmarks ? (
-                        <button
-                          disabled={actionBusy[`delete-benchmark-${item.benchmark_id}`]}
-                          onClick={() => void onDeleteBenchmark(item.benchmark_id)}
-                          type="button"
-                        >
-                          删除
-                        </button>
-                      ) : (
-                        <span className="table-note">只读</span>
-                      )}
-                    </td>
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>基准编号</th>
+                    <th>模型</th>
+                    <th>状态</th>
+                    <th>吞吐量</th>
+                    <th>平均延迟</th>
+                    <th>P95</th>
+                    <th>操作</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {benchmarkRecordPagination.pagedItems.map((item) => (
+                    <tr key={item.benchmark_id}>
+                      <td>
+                        <strong>{item.label || item.benchmark_id}</strong>
+                        <div className="mono">{item.benchmark_id}</div>
+                      </td>
+                      <td>{item.model_id}</td>
+                      <td><StatusPill status={item.status} /></td>
+                      <td>{escapeValue(item.throughput_qps)}</td>
+                      <td>{escapeValue(item.avg_latency_ms)}</td>
+                      <td>{escapeValue(item.p95_latency_ms)}</td>
+                      <td>
+                        {canManageBenchmarks ? (
+                          <button
+                            disabled={actionBusy[`delete-benchmark-${item.benchmark_id}`]}
+                            onClick={() => void onDeleteBenchmark(item.benchmark_id)}
+                            type="button"
+                          >
+                            删除
+                          </button>
+                        ) : (
+                          <span className="table-note">只读</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <PaginationBar
+                currentPage={benchmarkRecordPagination.page}
+                totalPages={benchmarkRecordPagination.totalPages}
+                pageSize={benchmarkRecordPagination.pageSize}
+                totalItems={benchmarkRecordPagination.totalItems}
+                onChange={benchmarkRecordPagination.setPage}
+              />
+            </>
           ) : (
             <EmptyState
               icon="☰"
@@ -5924,7 +6111,7 @@ function BenchmarksPage({
                 </tr>
                 </thead>
                 <tbody>
-                  {compareRows.map((item) => (
+                  {compareRowPagination.pagedItems.map((item) => (
                     <tr key={`${item.model_id}-${item.profile_name}`}>
                       <td>{item.model_id}</td>
                       <td>{item.profile_name}</td>
@@ -5942,6 +6129,13 @@ function BenchmarksPage({
                   ))}
                 </tbody>
               </table>
+              <PaginationBar
+                currentPage={compareRowPagination.page}
+                totalPages={compareRowPagination.totalPages}
+                pageSize={compareRowPagination.pageSize}
+                totalItems={compareRowPagination.totalItems}
+                onChange={compareRowPagination.setPage}
+              />
             </div>
           </>
         ) : (
@@ -5986,7 +6180,7 @@ function BenchmarksPage({
                 </tr>
               </thead>
               <tbody>
-                {thesisRows.map((item) => (
+                {thesisRowPagination.pagedItems.map((item) => (
                   <tr key={`${item.model_id}-${item.profile_name}-paper`}>
                     <td>
                       <strong>{item.model_id}</strong>
@@ -6007,6 +6201,13 @@ function BenchmarksPage({
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={thesisRowPagination.page}
+              totalPages={thesisRowPagination.totalPages}
+              pageSize={thesisRowPagination.pageSize}
+              totalItems={thesisRowPagination.totalItems}
+              onChange={thesisRowPagination.setPage}
+            />
             <div className="paper-caption">
               建议截图方式：选定单模型后先截“论文截图视图”，再截当前“论文表格视图”，两张图就足够支撑一小节 profile 对比实验。
             </div>
@@ -6042,6 +6243,7 @@ function ResourcesPage({ derived }) {
     0,
   );
   const explicitGpuBindings = derived.deployments.filter((item) => Array.isArray(item.gpu_ids) && item.gpu_ids.length);
+  const gpuDevicePagination = useTablePagination(gpuStatus.devices || [], 10);
 
   return (
     <>
@@ -6096,7 +6298,7 @@ function ResourcesPage({ derived }) {
                 </tr>
               </thead>
               <tbody>
-                {(gpuStatus.devices || []).map((device) => (
+                {gpuDevicePagination.pagedItems.map((device) => (
                   <tr key={device.uuid || device.index}>
                     <td>
                       <strong>GPU {device.index ?? "-"}</strong>
@@ -6142,6 +6344,13 @@ function ResourcesPage({ derived }) {
                 ))}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={gpuDevicePagination.page}
+              totalPages={gpuDevicePagination.totalPages}
+              pageSize={gpuDevicePagination.pageSize}
+              totalItems={gpuDevicePagination.totalItems}
+              onChange={gpuDevicePagination.setPage}
+            />
           </div>
         ) : (
           <EmptyState
