@@ -263,6 +263,47 @@ function formatWeightSnapshot(snapshot) {
     .join(" / ");
 }
 
+function buildPaginationItems(currentPage, totalPages) {
+  const safeCurrentPage = Math.max(1, Math.min(currentPage, totalPages));
+  const start = Math.max(1, safeCurrentPage - 2);
+  const end = Math.min(totalPages, safeCurrentPage + 2);
+  const items = [];
+  for (let page = start; page <= end; page += 1) {
+    items.push(page);
+  }
+  return items;
+}
+
+function PaginationBar({ currentPage, totalPages, pageSize, totalItems, onChange }) {
+  if (totalPages <= 1) {
+    return null;
+  }
+  const pageItems = buildPaginationItems(currentPage, totalPages);
+  return (
+    <div className="pagination-bar">
+      <div className="pagination-meta">
+        共 {totalItems} 条，每页 {pageSize} 条，当前第 {currentPage} / {totalPages} 页
+      </div>
+      <div className="actions pagination-actions">
+        <button disabled={currentPage <= 1} onClick={() => onChange(1)} type="button">首页</button>
+        <button disabled={currentPage <= 1} onClick={() => onChange(currentPage - 1)} type="button">上一页</button>
+        {pageItems.map((page) => (
+          <button
+            key={page}
+            className={page === currentPage ? "button-active" : ""}
+            onClick={() => onChange(page)}
+            type="button"
+          >
+            {page}
+          </button>
+        ))}
+        <button disabled={currentPage >= totalPages} onClick={() => onChange(currentPage + 1)} type="button">下一页</button>
+        <button disabled={currentPage >= totalPages} onClick={() => onChange(totalPages)} type="button">末页</button>
+      </div>
+    </div>
+  );
+}
+
 function getDeploymentHealthPayload(deployment) {
   return safeJsonParse(deployment?.health?.payload || {});
 }
@@ -4006,16 +4047,46 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageArchives = derived.currentAccessUser?.is_admin;
   const canExportArchives = currentPermissions.includes("archive.export");
-  const archiveSatisfiedCount = derived.predictArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "satisfied").length;
-  const archiveUnsatisfiedCount = derived.predictArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "unsatisfied").length;
-  const archivePendingCount = Math.max(derived.predictArchives.length - archiveSatisfiedCount - archiveUnsatisfiedCount, 0);
+  const archivePageSize = 10;
+  const [predictionArchivePage, setPredictionArchivePage] = useState(1);
+  const [taskRoutingArchivePage, setTaskRoutingArchivePage] = useState(1);
+  const allArchives = sortByCreatedDesc(derived.predictArchives);
+  const predictionArchives = allArchives.filter((item) => item.archive_source !== "task_routing");
+  const taskRoutingArchives = allArchives.filter((item) => item.archive_source === "task_routing");
+  const predictionArchiveTotalPages = Math.max(1, Math.ceil(predictionArchives.length / archivePageSize));
+  const taskRoutingArchiveTotalPages = Math.max(1, Math.ceil(taskRoutingArchives.length / archivePageSize));
+  const safePredictionArchivePage = Math.min(predictionArchivePage, predictionArchiveTotalPages);
+  const safeTaskRoutingArchivePage = Math.min(taskRoutingArchivePage, taskRoutingArchiveTotalPages);
+  useEffect(() => {
+    if (predictionArchivePage !== safePredictionArchivePage) {
+      setPredictionArchivePage(safePredictionArchivePage);
+    }
+  }, [predictionArchivePage, safePredictionArchivePage]);
+  useEffect(() => {
+    if (taskRoutingArchivePage !== safeTaskRoutingArchivePage) {
+      setTaskRoutingArchivePage(safeTaskRoutingArchivePage);
+    }
+  }, [taskRoutingArchivePage, safeTaskRoutingArchivePage]);
+  const pagedPredictionArchives = predictionArchives.slice(
+    (safePredictionArchivePage - 1) * archivePageSize,
+    safePredictionArchivePage * archivePageSize,
+  );
+  const pagedTaskRoutingArchives = taskRoutingArchives.slice(
+    (safeTaskRoutingArchivePage - 1) * archivePageSize,
+    safeTaskRoutingArchivePage * archivePageSize,
+  );
+  const archiveSatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "satisfied").length;
+  const archiveUnsatisfiedCount = allArchives.filter((item) => normalizePredictionFeedbackStatus(item.feedback_status) === "unsatisfied").length;
+  const archivePendingCount = Math.max(allArchives.length - archiveSatisfiedCount - archiveUnsatisfiedCount, 0);
   return (
     <>
       <section className="page-shell card section-shell">
         <SectionHeader kicker="结果归档" title="结果归档" note="这里只保留预测留痕与反馈统计，用来回看在线推理结果、整理论文样例和补充调度证据。" />
         <div className="metrics">
           <MetricCard title="最新结果归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
-          <MetricCard title="结果归档总数" value={derived.predictArchives.length} note="在线推理与任务调度结果自动留痕" />
+          <MetricCard title="结果归档总数" value={allArchives.length} note="在线推理与任务调度结果自动留痕" />
+          <MetricCard title="推理实验归档" value={predictionArchives.length} note="以 pred 开头，来自在线推理或推理实验" />
+          <MetricCard title="任务调度归档" value={taskRoutingArchives.length} note="以 trd 开头，保留调度权重快照与决策证据" />
           <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
           <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
           <MetricCard title="暂定结果" value={archivePendingCount} note="默认状态，可理解为用户无反馈" />
@@ -4023,9 +4094,9 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="归档列表" title="结果归档列表" note="这里同时保留在线推理归档和任务调度归档，适合导出案例结果、补论文截图，也支持直接补满意/不满意反馈。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次真实结果归档。在线推理归档偏重三元组输出，任务调度归档则会额外保留调度评分权重快照，方便基于这份快照补反馈。</div>
-        {derived.predictArchives.length ? (
+        <SectionHeader kicker="推理实验归档" title="推理实验记录归档列表" note="这一表只放以 pred 开头的归档，主要回看单次在线推理或推理实验结果，也支持直接补反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次推理实验记录。它保留输入文本、延迟和三元组数量，补上的满意 / 不满意 / 暂定反馈会继续影响任务调度学习过程。</div>
+        {predictionArchives.length ? (
           <div className="table-wrap">
             <table className="archive-table">
               <thead>
@@ -4039,35 +4110,22 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                 </tr>
               </thead>
               <tbody>
-                {sortByCreatedDesc(derived.predictArchives)
-                  .slice(0, 10)
+                {pagedPredictionArchives
                   .map((item) => {
-                    const isTaskRoutingArchive = item.archive_source === "task_routing";
-                    const routingModels = (item.task_routing_selected_model_ids || []).join(" / ");
-                    const weightSnapshotText = formatWeightSnapshot(item.task_routing_weight_snapshot);
-                    const adjustmentSnapshotText = formatWeightSnapshot(item.task_routing_adjustment_snapshot);
                     return (
                     <tr key={item.archive_id}>
                       <td>
                         <div className="archive-cell-stack">
                           <strong className="archive-main">{item.archive_id}</strong>
                           <div className="table-note">创建时间：{item.created_at}</div>
-                          <div className="table-note">来源：{formatArchiveSourceLabel(item.archive_source)}</div>
+                          <div className="table-note">来源：推理实验</div>
                         </div>
                       </td>
                       <td>
                         <div className="archive-cell-stack">
-                          <div className="archive-main">{isTaskRoutingArchive ? "任务调度" : item.model_id}</div>
-                          <div className="table-note">
-                            {isTaskRoutingArchive ? `目标：${item.task_routing_objective || item.profile_name || "-"}` : `Profile：${item.profile_name || "-"}`}
-                          </div>
+                          <div className="archive-main">{item.model_id}</div>
+                          <div className="table-note">Profile：{item.profile_name || "-"}</div>
                           <div className="table-note">场景：{item.scene || "-"}</div>
-                          {isTaskRoutingArchive ? (
-                            <>
-                              <div className="table-note">执行路径：{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
-                              <div className="table-note">参与模型：{routingModels || "-"}</div>
-                            </>
-                          ) : null}
                         </div>
                       </td>
                       <td>
@@ -4079,15 +4137,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                             <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
                             <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
                           </div>
-                          {isTaskRoutingArchive ? (
-                            <>
-                              <div className="table-note">决策编号：{item.task_routing_decision_id || "-"}</div>
-                              <div className="table-note">权重快照：{weightSnapshotText}</div>
-                              <div className="table-note">调整快照：{adjustmentSnapshotText}</div>
-                            </>
-                          ) : (
-                            <div className="table-note">结果归档用于回放预测输出、导出 JSON 和补充反馈。</div>
-                          )}
+                          <div className="table-note">推理实验归档用于回放预测输出、导出 JSON 和补充反馈。</div>
                         </div>
                       </td>
                       <td>
@@ -4115,9 +4165,109 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                   )})}
               </tbody>
             </table>
+            <PaginationBar
+              currentPage={safePredictionArchivePage}
+              totalPages={predictionArchiveTotalPages}
+              pageSize={archivePageSize}
+              totalItems={predictionArchives.length}
+              onChange={setPredictionArchivePage}
+            />
           </div>
         ) : (
-          <EmptyState icon="A" title="暂无结果归档" note="先执行一次在线推理或任务调度，这里就会出现归档结果。" />
+          <EmptyState icon="A" title="暂无推理实验归档" note="先执行一次在线推理或推理实验，这里就会出现以 pred 开头的归档结果。" />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="任务调度归档" title="任务调度归档列表" note="这一表只放以 trd 开头的任务调度归档，专门保留调度评分权重快照、执行路径与参与模型，并支持直接补反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。它不仅保存融合结果，还保留当时的调度评分权重快照；你在这里补的满意 / 不满意 / 暂定反馈，也会进入任务调度学习过程。</div>
+        {taskRoutingArchives.length ? (
+          <div className="table-wrap">
+            <table className="archive-table">
+              <thead>
+                <tr>
+                  <th>归档信息</th>
+                  <th>目标与场景</th>
+                  <th>输入文本</th>
+                  <th>调度快照</th>
+                  <th>反馈</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedTaskRoutingArchives
+                  .map((item) => {
+                    const routingModels = (item.task_routing_selected_model_ids || []).join(" / ");
+                    const weightSnapshotText = formatWeightSnapshot(item.task_routing_weight_snapshot);
+                    const adjustmentSnapshotText = formatWeightSnapshot(item.task_routing_adjustment_snapshot);
+                    const displayId = item.task_routing_decision_id || item.archive_id;
+                    return (
+                    <tr key={item.archive_id}>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <strong className="archive-main">{displayId}</strong>
+                          <div className="table-note">创建时间：{item.created_at}</div>
+                          <div className="table-note">来源：任务调度</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{item.task_routing_objective || item.profile_name || "-"}</div>
+                          <div className="table-note">执行路径：{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
+                          <div className="table-note">融合策略：{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
+                          <div className="table-note">场景：{item.scene || "-"}</div>
+                          <div className="table-note">参与模型：{routingModels || "-"}</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-input">{item.request_text || item.request_texts?.[0] || "-"}</div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-result-grid">
+                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
+                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
+                          </div>
+                          <div className="table-note">权重快照：{weightSnapshotText}</div>
+                          <div className="table-note">调整快照：{adjustmentSnapshotText}</div>
+                          <div className="table-note">这条记录的反馈会同步给任务调度学习逻辑。</div>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="archive-cell-stack">
+                          <div className="archive-main">{formatPredictionFeedbackLabel(item.feedback_status)}</div>
+                          <div className="table-note">{item.feedback_updated_at || "尚未更新反馈时间"}</div>
+                        </div>
+                        <PredictionArchiveFeedbackControls
+                          actionBusy={actionBusy}
+                          archive={item}
+                          onUpdate={onUpdatePredictionArchiveFeedback}
+                        />
+                      </td>
+                      <td>
+                        <div className="actions row-actions">
+                          {canExportArchives ? (
+                            <button onClick={() => onExportPredictionArchive(item)} type="button">导出</button>
+                          ) : null}
+                          {canManageArchives ? (
+                            <button onClick={() => void onDeletePredictionArchive(item.archive_id)} type="button">删除</button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  )})}
+              </tbody>
+            </table>
+            <PaginationBar
+              currentPage={safeTaskRoutingArchivePage}
+              totalPages={taskRoutingArchiveTotalPages}
+              pageSize={archivePageSize}
+              totalItems={taskRoutingArchives.length}
+              onChange={setTaskRoutingArchivePage}
+            />
+          </div>
+        ) : (
+          <EmptyState icon="T" title="暂无任务调度归档" note="先运行一次任务调度，这里就会出现以 trd 开头的归档结果。" />
         )}
       </section>
     </>

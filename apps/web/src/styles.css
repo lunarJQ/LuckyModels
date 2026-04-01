@@ -908,6 +908,33 @@ button:disabled {
   flex: 1 1 auto;
 }
 
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 2px 2px;
+}
+
+.pagination-meta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.pagination-actions {
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pagination-actions button {
+  min-width: 42px;
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .summary-strip,
 .metrics,
 .detail-grid,
