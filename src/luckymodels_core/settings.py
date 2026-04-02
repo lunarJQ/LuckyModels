@@ -19,6 +19,7 @@ class Settings:
     task_routing_decisions_file: Path
     task_routing_feedback_file: Path
     deployment_policy_automation_file: Path
+    gpu_pool_config_file: Path
     casrel_demo_report_file: Path
     webnlg_eval_cases_file: Path
     dataset_eval_cases_dir: Path
@@ -44,6 +45,7 @@ def get_settings() -> Settings:
         task_routing_decisions_file=state_root / "task_routing_decisions.json",
         task_routing_feedback_file=state_root / "task_routing_feedback.json",
         deployment_policy_automation_file=state_root / "deployment_policy_automation.json",
+        gpu_pool_config_file=state_root / "gpu_pool_config.json",
         casrel_demo_report_file=reports_root / "casrel_demo_report.json",
         webnlg_eval_cases_file=reports_root / "webnlg_eval_cases.json",
         dataset_eval_cases_dir=reports_root / "datasets",

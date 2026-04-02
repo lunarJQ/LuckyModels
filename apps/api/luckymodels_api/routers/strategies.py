@@ -7,6 +7,9 @@ from luckymodels_core.schemas import (
     DeploymentPolicyAutomationState,
     DeploymentPolicyAutomationUpdateRequest,
     DeploymentPolicyResponse,
+    GpuPoolState,
+    GpuPoolUpdateRequest,
+    GpuPoolUpdateResult,
     TaskRoutingDecisionRecord,
     TaskRoutingDecisionSummary,
     TaskRoutingFeedbackOverview,
@@ -26,6 +29,7 @@ from ..dependencies import (
     get_benchmark_store,
     get_deployment_policy_store,
     get_deployment_store,
+    get_gpu_pool_store,
     get_inference_activity_tracker,
     get_prediction_store,
     get_registry,
@@ -221,6 +225,24 @@ def get_deployment_policy() -> DeploymentPolicyResponse:
 def get_deployment_policy_automation() -> DeploymentPolicyAutomationState:
     require_permission("strategies.manage")
     return _get_scheduler().get_state()
+
+
+@router.post("/strategies/deployment-policy/gpu-pool", response_model=GpuPoolUpdateResult)
+def update_deployment_policy_gpu_pool(
+    request: GpuPoolUpdateRequest,
+) -> GpuPoolUpdateResult:
+    require_permission("strategies.manage")
+    store = get_gpu_pool_store()
+    current_snapshot = collect_gpu_status()
+    previous_state = GpuPoolState.model_validate(current_snapshot.get("gpu_pool_state") or {})
+    store.save(request.allowed_gpu_ids)
+    next_snapshot = collect_gpu_status()
+    next_state = GpuPoolState.model_validate(next_snapshot.get("gpu_pool_state") or {})
+    return _get_scheduler().apply_gpu_pool_change(
+        previous_state=previous_state,
+        next_state=next_state,
+        trigger_policy_optimization=bool(request.run_policy_optimization),
+    )
 
 
 @router.post("/strategies/deployment-policy/automation", response_model=DeploymentPolicyAutomationState)

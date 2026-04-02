@@ -455,12 +455,14 @@ def build_deployment_policy(
         recommendations=recommendations,
         recent_window_days=recent_window_days,
         busiest_model_id=busiest_model_id,
+        gpu_snapshot=gpu_snapshot,
     )
     return DeploymentPolicyResponse(
         gpu_available=bool(gpu_snapshot.get("available")),
         summary=summary,
         recommendations=recommendations,
         gpu_snapshot=gpu_snapshot,
+        gpu_pool_state=(gpu_snapshot.get("gpu_pool_state") or {}),
     )
 
 
@@ -2567,7 +2569,7 @@ def _build_automation_history_signal_map(
 
 
 def _rank_gpu_devices(gpu_snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    devices = list(gpu_snapshot.get("devices") or [])
+    devices = [item for item in list(gpu_snapshot.get("devices") or []) if item.get("platform_enabled", True)]
     if not gpu_snapshot.get("available") or not devices:
         return ([], [])
 
@@ -2942,6 +2944,7 @@ def _build_deployment_policy_summary(
     recommendations: list[DeploymentPolicyRecommendation],
     recent_window_days: int,
     busiest_model_id: str | None,
+    gpu_snapshot: dict[str, Any],
 ) -> DeploymentPolicySummary:
     hot_count = sum(1 for item in recommendations if item.service_tier == "hot")
     warm_count = sum(1 for item in recommendations if item.service_tier == "warm")
@@ -2954,8 +2957,17 @@ def _build_deployment_policy_summary(
     cpu_fallback_count = sum(1 for item in recommendations if item.gpu_pressure_action == "migrate_to_cpu")
     cross_layer_priority_count = sum(1 for item in recommendations if item.routing_value_score >= 18.0)
     high_risk_count = sum(1 for item in recommendations if item.operational_risk_score >= 8.0)
+    allowed_gpu_ids = list(gpu_snapshot.get("platform_allowed_gpu_ids") or [])
+    disabled_gpu_ids = list(gpu_snapshot.get("platform_disabled_gpu_ids") or [])
+    gpu_scope_note = (
+        f"当前平台允许使用 GPU {', '.join(str(item) for item in allowed_gpu_ids)}；"
+        if allowed_gpu_ids
+        else "当前平台已将所有 GPU 设为禁用，新部署默认仅使用 CPU；"
+    )
+    if disabled_gpu_ids:
+        gpu_scope_note += f"已禁用 GPU {', '.join(str(item) for item in disabled_gpu_ids)}。"
     strategy_overview = (
-        f"平台当前共分析 {len(recommendations)} 个模型，其中热模型 {hot_count} 个、温模型 {warm_count} 个、冷模型 {cold_count} 个。"
+        f"{gpu_scope_note}平台当前共分析 {len(recommendations)} 个模型，其中热模型 {hot_count} 个、温模型 {warm_count} 个、冷模型 {cold_count} 个。"
         f"任务调度侧识别出 {cross_layer_priority_count} 个高价值模型，运行侧识别出 {high_risk_count} 个高风险模型；"
         f"建议常驻 {always_on_count} 个、保温 {keep_warm_count} 个、按需启动 {on_demand_count} 个；"
         f"局部 GPU 压力时优先执行换卡重平衡；全局 GPU 高压时有 {cpu_fallback_count} 个低优先级模型建议迁移到 CPU 释放显存。"

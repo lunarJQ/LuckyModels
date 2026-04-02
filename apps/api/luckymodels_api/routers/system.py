@@ -7,10 +7,17 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from luckymodels_core.schemas import SystemSummary
+from luckymodels_core.schemas import GpuPoolState, SystemSummary
 from luckymodels_core.settings import get_settings
 
-from ..dependencies import get_access_store, get_benchmark_store, get_deployment_store, get_prediction_store, get_registry
+from ..dependencies import (
+    get_access_store,
+    get_benchmark_store,
+    get_deployment_store,
+    get_gpu_pool_store,
+    get_prediction_store,
+    get_registry,
+)
 from ..permissions import require_permission
 
 router = APIRouter(tags=["system"])
@@ -62,11 +69,16 @@ def collect_gpu_status() -> dict[str, Any]:
             scope="gpu",
         )
     except Exception as exc:  # noqa: BLE001
+        gpu_pool_state = _resolve_gpu_pool_state([])
         return {
             "available": False,
             "detail": str(exc),
             "gpu_count": 0,
             "devices": [],
+            "visible_gpu_ids": [],
+            "platform_allowed_gpu_ids": gpu_pool_state.effective_gpu_ids,
+            "platform_disabled_gpu_ids": gpu_pool_state.disabled_gpu_ids,
+            "gpu_pool_state": gpu_pool_state.model_dump(),
         }
 
     processes: list[dict[str, Any]]
@@ -102,6 +114,13 @@ def collect_gpu_status() -> dict[str, Any]:
         )
 
     devices_by_uuid = {str(item.get("uuid", "")): item for item in devices}
+    visible_gpu_ids = []
+    for device in devices:
+        index = _to_int(device.get("index"))
+        if index is not None:
+            visible_gpu_ids.append(index)
+    gpu_pool_state = _resolve_gpu_pool_state(visible_gpu_ids)
+    allowed_gpu_ids = set(gpu_pool_state.effective_gpu_ids)
     for device in devices:
         device["index"] = _to_int(device.get("index"))
         device["memory_total_mb"] = _to_float(device.pop("memory.total", None))
@@ -109,6 +128,9 @@ def collect_gpu_status() -> dict[str, Any]:
         device["utilization_gpu_pct"] = _to_float(device.pop("utilization.gpu", None))
         device["temperature_c"] = _to_float(device.pop("temperature.gpu", None))
         device["power_draw_w"] = _to_float(device.pop("power.draw", None))
+        device["platform_enabled"] = device.get("index") in allowed_gpu_ids
+        device["platform_state"] = "enabled" if device["platform_enabled"] else "disabled"
+        device["platform_state_label"] = "平台可用" if device["platform_enabled"] else "平台禁用"
         device["assigned_deployments"] = []
         device["active_processes"] = []
 
@@ -140,9 +162,17 @@ def collect_gpu_status() -> dict[str, Any]:
     return {
         "available": True,
         "gpu_count": len(devices),
+        "visible_gpu_ids": gpu_pool_state.visible_gpu_ids,
+        "platform_allowed_gpu_ids": gpu_pool_state.effective_gpu_ids,
+        "platform_disabled_gpu_ids": gpu_pool_state.disabled_gpu_ids,
+        "gpu_pool_state": gpu_pool_state.model_dump(),
         "devices": devices,
         "process_count": len(process_rows),
     }
+
+
+def _resolve_gpu_pool_state(visible_gpu_ids: list[int]) -> GpuPoolState:
+    return get_gpu_pool_store().resolve(visible_gpu_ids)
 
 
 def _query_nvidia_smi(fields: list[str], *, scope: str) -> list[dict[str, str]]:

@@ -18,6 +18,8 @@ from .schemas import (
     DeploymentPolicyRecommendation,
     DeploymentPolicyResponse,
     DeploymentRecord,
+    GpuPoolState,
+    GpuPoolUpdateResult,
     ModelDetail,
     PredictionArchiveRecord,
     utc_now,
@@ -244,6 +246,169 @@ class DeploymentPolicyScheduler:
                 last_policy_generated_at=policy.generated_at if policy is not None else None,
                 summary=policy.summary if policy is not None else None,
                 actions=actions,
+            )
+
+    def apply_gpu_pool_change(
+        self,
+        *,
+        previous_state: GpuPoolState,
+        next_state: GpuPoolState,
+        trigger_policy_optimization: bool = True,
+    ) -> GpuPoolUpdateResult:
+        with self._run_lock:
+            policy_store = self.get_policy_store()
+            automation_state = policy_store.get()
+            registry = self.get_registry()
+            deployment_store = self.get_deployment_store()
+            benchmark_store = self.get_benchmark_store()
+            prediction_store = self.get_prediction_store()
+            feedback_store = self.get_task_routing_feedback_store()
+            prediction_archives: list[PredictionArchiveRecord] = prediction_store.list()
+
+            previous_effective = sorted({int(item) for item in previous_state.effective_gpu_ids})
+            next_effective = sorted({int(item) for item in next_state.effective_gpu_ids})
+            disabled_gpu_ids = [item for item in previous_effective if item not in next_effective]
+            enabled_gpu_ids = [item for item in next_effective if item not in previous_effective]
+
+            actions: list[DeploymentPolicyAutomationAction] = []
+            affected_deployment_ids: list[str] = []
+            migrated_deployment_ids: list[str] = []
+            cpu_fallback_deployment_ids: list[str] = []
+            busy_deployment_ids: list[str] = []
+            skipped_deployment_ids: list[str] = []
+
+            policy: DeploymentPolicyResponse | None = None
+            gpu_snapshot = self.get_gpu_snapshot()
+            if trigger_policy_optimization:
+                policy = build_deployment_policy(
+                    models=registry.list_models(),
+                    deployments=deployment_store.list(),
+                    benchmarks=benchmark_store.list(),
+                    prediction_archives=prediction_archives,
+                    gpu_snapshot=gpu_snapshot,
+                    decision_records=feedback_store.list_decisions(),
+                    feedback_records=feedback_store.list_feedback(),
+                    automation_actions=automation_state.recent_actions,
+                )
+
+            context = _SchedulerContext(
+                policy=policy or DeploymentPolicyResponse(gpu_snapshot=gpu_snapshot, gpu_pool_state=next_state),
+                deployments=deployment_store.list(),
+                prediction_archives=prediction_archives,
+                protect_active_window_seconds=automation_state.protect_active_window_seconds,
+                inference_activity_tracker=self.get_inference_activity_tracker(),
+                cluster_overloaded=_gpu_cluster_overloaded(gpu_snapshot),
+            )
+            recommendation_by_model_id = {
+                item.model_id: item for item in (policy.recommendations if policy is not None else [])
+            }
+
+            if disabled_gpu_ids:
+                affected_deployments = [
+                    item
+                    for item in deployment_store.list()
+                    if item.use_gpu
+                    and item.status in {"running", "starting", "planned"}
+                    and any(int(gpu_id) in disabled_gpu_ids for gpu_id in (item.gpu_ids or []))
+                ]
+                affected_deployment_ids = [item.deployment_id for item in affected_deployments]
+
+                for deployment in affected_deployments:
+                    recommendation = recommendation_by_model_id.get(deployment.model_id)
+                    action = self._relocate_deployment_for_gpu_pool_change(
+                        deployment=deployment,
+                        recommendation=recommendation,
+                        context=context,
+                    )
+                    actions.append(action)
+                    if action.status == "migrated" and action.deployment_id:
+                        migrated_deployment_ids.append(action.deployment_id)
+                        if action.action_type == "gpu_pool_fallback_cpu":
+                            cpu_fallback_deployment_ids.append(action.deployment_id)
+                    elif action.status == "busy" and action.deployment_id:
+                        busy_deployment_ids.append(action.deployment_id)
+                    elif action.deployment_id:
+                        skipped_deployment_ids.append(action.deployment_id)
+
+            follow_up_actions: list[DeploymentPolicyAutomationAction] = []
+            if trigger_policy_optimization:
+                gpu_snapshot = self.get_gpu_snapshot()
+                policy = build_deployment_policy(
+                    models=registry.list_models(),
+                    deployments=deployment_store.list(),
+                    benchmarks=benchmark_store.list(),
+                    prediction_archives=prediction_archives,
+                    gpu_snapshot=gpu_snapshot,
+                    decision_records=feedback_store.list_decisions(),
+                    feedback_records=feedback_store.list_feedback(),
+                    automation_actions=(actions + automation_state.recent_actions)[:20],
+                )
+                context = _SchedulerContext(
+                    policy=policy,
+                    deployments=deployment_store.list(),
+                    prediction_archives=prediction_archives,
+                    protect_active_window_seconds=automation_state.protect_active_window_seconds,
+                    inference_activity_tracker=self.get_inference_activity_tracker(),
+                    cluster_overloaded=_gpu_cluster_overloaded(gpu_snapshot),
+                )
+                follow_up_actions = self._apply_follow_up_gpu_pool_rebalance(
+                    policy=policy,
+                    context=context,
+                    excluded_model_ids={
+                        item.model_id
+                        for item in actions
+                        if item.status == "migrated" and item.model_id
+                    },
+                )
+                actions.extend(follow_up_actions)
+                for action in follow_up_actions:
+                    if action.status == "migrated" and action.deployment_id:
+                        migrated_deployment_ids.append(action.deployment_id)
+                    elif action.status == "busy" and action.deployment_id:
+                        busy_deployment_ids.append(action.deployment_id)
+
+            if not actions:
+                actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="gpu_pool_update",
+                        model_id="-",
+                        status="applied",
+                        detail=(
+                            f"GPU 使用范围已更新为 "
+                            f"{','.join(str(item) for item in next_effective) or 'CPU only'}，"
+                            "当前没有需要迁移的 deployment。"
+                        ),
+                    )
+                )
+
+            status = "applied" if any(item.status in {"migrated", "applied", "restarted"} for item in actions) else "idle"
+            policy_store.record_run(
+                state=automation_state,
+                last_status=status,
+                last_run_at=utc_now() if trigger_policy_optimization else None,
+                last_gpu_memory_restart_at=None,
+                last_policy_generated_at=policy.generated_at if policy is not None else None,
+                summary=policy.summary if policy is not None else None,
+                actions=actions,
+            )
+
+            detail = (
+                f"已批量更新平台可用 GPU：{','.join(str(item) for item in next_effective) or '仅 CPU'}。"
+                f" 受影响 deployment {len(affected_deployment_ids)} 个，实际迁移 {len(migrated_deployment_ids)} 个。"
+            )
+            return GpuPoolUpdateResult(
+                state=next_state,
+                previous_effective_gpu_ids=previous_effective,
+                enabled_gpu_ids=enabled_gpu_ids,
+                disabled_gpu_ids=disabled_gpu_ids,
+                affected_deployment_ids=affected_deployment_ids,
+                migrated_deployment_ids=sorted(set(migrated_deployment_ids)),
+                cpu_fallback_deployment_ids=sorted(set(cpu_fallback_deployment_ids)),
+                busy_deployment_ids=sorted(set(busy_deployment_ids)),
+                skipped_deployment_ids=sorted(set(skipped_deployment_ids)),
+                actions=actions,
+                policy_run_triggered=bool(trigger_policy_optimization),
+                detail=detail,
             )
 
     def _run_loop(self) -> None:
@@ -637,6 +802,234 @@ class DeploymentPolicyScheduler:
                 detail=f"GPU 重平衡失败：{type(exc).__name__}: {exc}",
             )
 
+    def _relocate_deployment_for_gpu_pool_change(
+        self,
+        *,
+        deployment: DeploymentRecord,
+        recommendation: DeploymentPolicyRecommendation | None,
+        context: _SchedulerContext,
+    ) -> DeploymentPolicyAutomationAction:
+        protection = _get_model_protection_status(
+            deployment.model_id,
+            inference_activity_tracker=context.inference_activity_tracker,
+            prediction_archives=context.prediction_archives,
+            protect_active_window_seconds=context.protect_active_window_seconds,
+        )
+        if protection.protected:
+            return DeploymentPolicyAutomationAction(
+                action_type="gpu_pool_scope_change",
+                model_id=deployment.model_id,
+                deployment_id=deployment.deployment_id,
+                status="busy",
+                detail=(
+                    f"deployment {deployment.deployment_id} 当前绑定的 GPU 已被平台禁用，但{protection.detail}"
+                ),
+            )
+
+        registry = self.get_registry()
+        model: ModelDetail = registry.get_model(deployment.model_id)
+        if (
+            recommendation is not None
+            and recommendation.recommended_use_gpu
+            and recommendation.recommended_gpu_ids
+        ):
+            return self._reconfigure_deployment_target(
+                deployment=deployment,
+                model=model,
+                profile_name=recommendation.recommended_profile_name,
+                use_gpu=True,
+                gpu_ids=[int(item) for item in recommendation.recommended_gpu_ids],
+                action_type="gpu_pool_reassign_gpu",
+                success_detail=(
+                    f"deployment {deployment.deployment_id} 原绑定 GPU 已不在平台允许范围内，"
+                    f"已迁移到 GPU {','.join(str(item) for item in recommendation.recommended_gpu_ids)}。"
+                ),
+            )
+
+        fallback_profile_name = (
+            recommendation.fallback_profile_name
+            if recommendation is not None and recommendation.fallback_profile_name
+            else ("memory" if "memory" in model.resolved_profiles else "default")
+        )
+        return self._reconfigure_deployment_target(
+            deployment=deployment,
+            model=model,
+            profile_name=fallback_profile_name,
+            use_gpu=False,
+            gpu_ids=[],
+            action_type="gpu_pool_fallback_cpu",
+            success_detail=(
+                f"deployment {deployment.deployment_id} 原绑定 GPU 已不在平台允许范围内，"
+                "当前没有合适的目标 GPU，已迁移到 CPU 保持可用。"
+            ),
+        )
+
+    def _apply_follow_up_gpu_pool_rebalance(
+        self,
+        *,
+        policy: DeploymentPolicyResponse,
+        context: _SchedulerContext,
+        excluded_model_ids: set[str],
+    ) -> list[DeploymentPolicyAutomationAction]:
+        actions: list[DeploymentPolicyAutomationAction] = []
+        applied_count = 0
+        for recommendation in policy.recommendations:
+            if recommendation.model_id in excluded_model_ids:
+                continue
+            if not recommendation.recommended_use_gpu or not recommendation.recommended_gpu_ids:
+                continue
+            if recommendation.service_tier not in {"hot", "warm"}:
+                continue
+            action = self._apply_gpu_rebalance(recommendation, context=context)
+            if action is None:
+                action = self._promote_cpu_deployment_to_gpu(
+                    recommendation=recommendation,
+                    context=context,
+                )
+            if action is None:
+                continue
+            actions.append(action)
+            if action.status == "migrated":
+                applied_count += 1
+            if applied_count >= 3:
+                break
+        return actions
+
+    def _reconfigure_deployment_target(
+        self,
+        *,
+        deployment: DeploymentRecord,
+        model: ModelDetail,
+        profile_name: str,
+        use_gpu: bool,
+        gpu_ids: list[int],
+        action_type: str,
+        success_detail: str,
+    ) -> DeploymentPolicyAutomationAction:
+        deployment_store = self.get_deployment_store()
+        previous_profile_name = deployment.profile_name
+        previous_status = deployment.status
+        previous_gpu_ids = list(deployment.gpu_ids or [])
+        previous_use_gpu = bool(deployment.use_gpu)
+        previous_pid = deployment.pid
+
+        if profile_name not in model.resolved_profiles:
+            profile_name = (
+                deployment.profile_name
+                if deployment.profile_name in model.resolved_profiles
+                else ("default" if "default" in model.resolved_profiles else next(iter(model.resolved_profiles)))
+            )
+
+        should_restart_runtime = bool(deployment.pid) or deployment.status in {"running", "starting"}
+
+        try:
+            if deployment.pid:
+                stop_runtime_process(deployment.pid)
+
+            deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
+            deployment.profile_name = profile_name
+            deployment.profile_path = model.resolved_profiles[profile_name]
+            deployment.use_gpu = bool(use_gpu)
+            deployment.gpu_ids = [int(item) for item in gpu_ids] if use_gpu else []
+            deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
+            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            deployment.notes = " | ".join(
+                item
+                for item in [
+                    deployment.notes,
+                    action_type,
+                ]
+                if item
+            )
+
+            if should_restart_runtime and model.summary.predict_ready:
+                port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
+                pid, service_url = launch_runtime_process(
+                    root_dir=self.settings.root_dir,
+                    manifest_path=deployment.manifest_path,
+                    profile_path=deployment.profile_path,
+                    port=port,
+                    log_path=deployment.log_path,
+                    gpu_ids=deployment.gpu_ids,
+                    use_gpu=deployment.use_gpu,
+                )
+                deployment.pid = pid
+                deployment.service_url = service_url
+                deployment.status = "running" if wait_for_runtime(service_url) else "starting"
+            elif should_restart_runtime:
+                deployment.pid = None
+                deployment.status = "planned"
+
+            deployment_store.update(deployment)
+            return DeploymentPolicyAutomationAction(
+                action_type=action_type,
+                model_id=deployment.model_id,
+                deployment_id=deployment.deployment_id,
+                status="migrated",
+                detail=success_detail,
+            )
+        except Exception as exc:  # noqa: BLE001
+            deployment.profile_name = previous_profile_name
+            deployment.use_gpu = previous_use_gpu
+            deployment.gpu_ids = previous_gpu_ids
+            deployment.pid = previous_pid
+            deployment.status = previous_status
+            deployment_store.update(deployment)
+            return DeploymentPolicyAutomationAction(
+                action_type=action_type,
+                model_id=deployment.model_id,
+                deployment_id=deployment.deployment_id,
+                status="failed",
+                detail=f"GPU 使用范围切换失败：{type(exc).__name__}: {exc}",
+            )
+
+    def _promote_cpu_deployment_to_gpu(
+        self,
+        *,
+        recommendation: DeploymentPolicyRecommendation,
+        context: _SchedulerContext,
+    ) -> DeploymentPolicyAutomationAction | None:
+        candidate_deployments = [
+            item
+            for item in context.deployments
+            if item.model_id == recommendation.model_id
+            and item.status in {"running", "starting", "planned"}
+            and not item.use_gpu
+        ]
+        if not candidate_deployments:
+            return None
+
+        protection = _get_model_protection_status(
+            recommendation.model_id,
+            inference_activity_tracker=context.inference_activity_tracker,
+            prediction_archives=context.prediction_archives,
+            protect_active_window_seconds=context.protect_active_window_seconds,
+        )
+        if protection.protected:
+            return DeploymentPolicyAutomationAction(
+                action_type="gpu_pool_promote_gpu",
+                model_id=recommendation.model_id,
+                deployment_id=candidate_deployments[0].deployment_id,
+                status="busy",
+                detail=protection.detail,
+            )
+
+        registry = self.get_registry()
+        model: ModelDetail = registry.get_model(recommendation.model_id)
+        deployment = sorted(candidate_deployments, key=lambda item: item.deployment_id)[0]
+        return self._reconfigure_deployment_target(
+            deployment=deployment,
+            model=model,
+            profile_name=recommendation.recommended_profile_name,
+            use_gpu=True,
+            gpu_ids=[int(item) for item in recommendation.recommended_gpu_ids],
+            action_type="gpu_pool_promote_gpu",
+            success_detail=(
+                f"检测到平台重新开放 GPU {','.join(str(item) for item in recommendation.recommended_gpu_ids)}，"
+                f"已将 deployment {deployment.deployment_id} 从 CPU 回迁到 GPU。"
+            ),
+        )
+
 
 def _is_due(last_run_at: str | None, interval_seconds: int) -> bool:
     if not last_run_at:
@@ -654,7 +1047,7 @@ def _is_due(last_run_at: str | None, interval_seconds: int) -> bool:
 def _gpu_under_pressure(gpu_snapshot: dict[str, Any]) -> bool:
     if not gpu_snapshot.get("available"):
         return False
-    devices = list(gpu_snapshot.get("devices") or [])
+    devices = _get_platform_enabled_gpu_devices(gpu_snapshot)
     for item in devices:
         total = float(item.get("memory_total_mb") or 0.0)
         used = float(item.get("memory_used_mb") or 0.0)
@@ -668,7 +1061,7 @@ def _gpu_under_pressure(gpu_snapshot: dict[str, Any]) -> bool:
 def _gpu_cluster_overloaded(gpu_snapshot: dict[str, Any]) -> bool:
     if not gpu_snapshot.get("available"):
         return False
-    devices = list(gpu_snapshot.get("devices") or [])
+    devices = _get_platform_enabled_gpu_devices(gpu_snapshot)
     if not devices:
         return False
     pressured_count = 0
@@ -680,6 +1073,10 @@ def _gpu_cluster_overloaded(gpu_snapshot: dict[str, Any]) -> bool:
         if free_ratio <= 0.18 or utilization >= 85.0:
             pressured_count += 1
     return pressured_count >= len(devices)
+
+
+def _get_platform_enabled_gpu_devices(gpu_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in list(gpu_snapshot.get("devices") or []) if item.get("platform_enabled", True)]
 
 
 def _get_model_protection_status(

@@ -2,6 +2,7 @@ from luckymodels_core.access_store import AccessStore
 from luckymodels_core.benchmark_store import BenchmarkStore
 from luckymodels_core.deployment_policy_store import DeploymentPolicyAutomationStore
 from luckymodels_core.deployment_store import DeploymentStore
+from luckymodels_core.gpu_pool_store import GpuPoolStore
 from luckymodels_core.inference_activity_tracker import InferenceActivityTracker
 from luckymodels_core.prediction_store import PredictionStore
 from luckymodels_core.registry import ArtifactRegistry
@@ -51,3 +52,8 @@ def get_inference_activity_tracker() -> InferenceActivityTracker:
 def get_deployment_policy_store() -> DeploymentPolicyAutomationStore:
     settings = get_settings()
     return DeploymentPolicyAutomationStore(settings.deployment_policy_automation_file)
+
+
+def get_gpu_pool_store() -> GpuPoolStore:
+    settings = get_settings()
+    return GpuPoolStore(settings.gpu_pool_config_file)

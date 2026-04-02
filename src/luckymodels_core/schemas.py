@@ -220,6 +220,21 @@ class SystemSummary(BaseModel):
     logs_root: str | None = None
 
 
+class GpuPoolState(BaseModel):
+    auto_detect_all: bool = True
+    configured_gpu_ids: list[int] = Field(default_factory=list)
+    visible_gpu_ids: list[int] = Field(default_factory=list)
+    effective_gpu_ids: list[int] = Field(default_factory=list)
+    disabled_gpu_ids: list[int] = Field(default_factory=list)
+    unavailable_configured_gpu_ids: list[int] = Field(default_factory=list)
+    updated_at: str | None = None
+
+
+class GpuPoolUpdateRequest(BaseModel):
+    allowed_gpu_ids: list[int] = Field(default_factory=list)
+    run_policy_optimization: bool = True
+
+
 class BenchmarkCreateRequest(BaseModel):
     deployment_id: str
     text: str
@@ -588,12 +603,28 @@ class DeploymentPolicyAutomationUpdateRequest(BaseModel):
     gpu_memory_restart_threshold_mb: int = 5120
 
 
+class GpuPoolUpdateResult(BaseModel):
+    state: GpuPoolState = Field(default_factory=GpuPoolState)
+    previous_effective_gpu_ids: list[int] = Field(default_factory=list)
+    enabled_gpu_ids: list[int] = Field(default_factory=list)
+    disabled_gpu_ids: list[int] = Field(default_factory=list)
+    affected_deployment_ids: list[str] = Field(default_factory=list)
+    migrated_deployment_ids: list[str] = Field(default_factory=list)
+    cpu_fallback_deployment_ids: list[str] = Field(default_factory=list)
+    busy_deployment_ids: list[str] = Field(default_factory=list)
+    skipped_deployment_ids: list[str] = Field(default_factory=list)
+    actions: list[DeploymentPolicyAutomationAction] = Field(default_factory=list)
+    policy_run_triggered: bool = False
+    detail: str = ""
+
+
 class DeploymentPolicyResponse(BaseModel):
     generated_at: str = Field(default_factory=utc_now)
     gpu_available: bool = False
     summary: DeploymentPolicySummary = Field(default_factory=DeploymentPolicySummary)
     recommendations: list[DeploymentPolicyRecommendation] = Field(default_factory=list)
     gpu_snapshot: dict[str, Any] = Field(default_factory=dict)
+    gpu_pool_state: GpuPoolState = Field(default_factory=GpuPoolState)
 
 
 class AccessPermission(BaseModel):

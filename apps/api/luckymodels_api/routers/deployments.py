@@ -306,9 +306,9 @@ def _resolve_runtime_device(
         return (False, [], None)
 
     gpu_status = get_gpu_status()
-    devices = list(gpu_status.get("devices") or [])
+    devices = [item for item in list(gpu_status.get("devices") or []) if item.get("platform_enabled", True)]
     if not gpu_status.get("available") or not devices:
-        return (False, [], "gpu_unavailable_auto_fallback_cpu")
+        return (False, [], "gpu_unavailable_or_disabled_auto_fallback_cpu")
 
     required_memory_mb = _estimate_required_gpu_memory_mb(
         package_root=getattr(getattr(model, "summary", None), "package_root", None),

@@ -1832,6 +1832,40 @@ tbody tr:hover {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.gpu-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.gpu-scope-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 247, 0.88);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.gpu-scope-card.is-selected {
+  border-color: rgba(31, 93, 191, 0.28);
+  box-shadow: 0 12px 24px rgba(31, 93, 191, 0.08);
+}
+
+.gpu-scope-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gpu-scope-card input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
 .relation-item {
   padding: 10px 12px;
   border-radius: 12px;

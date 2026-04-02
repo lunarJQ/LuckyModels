@@ -32,6 +32,7 @@ import {
   updatePredictionArchiveFeedback,
   updateDeploymentPolicyAutomation,
   updateAccessUser,
+  updateDeploymentPolicyGpuPool,
 } from "./api";
 import { EmptyState, MetricCard, SectionHeader, StatusPill } from "./components";
 import { navGroups } from "./nav";
@@ -1566,6 +1567,39 @@ export default function App() {
     }
   }
 
+  async function handleApplyGpuPoolUpdate(allowedGpuIds) {
+    setActionBusy((current) => ({ ...current, "gpu-pool-update": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const [result, policyResult, automationResult] = await Promise.all([
+        updateDeploymentPolicyGpuPool({
+          allowed_gpu_ids: allowedGpuIds,
+          run_policy_optimization: true,
+        }),
+        getDeploymentPolicy().catch(() => null),
+        getDeploymentPolicyAutomation().catch(() => null),
+      ]);
+      if (policyResult) {
+        setDeploymentPolicy(policyResult);
+      }
+      if (automationResult) {
+        setDeploymentPolicyAutomation(automationResult);
+      }
+      await refreshAll({ silent: true });
+      setNotice({
+        type: "ok",
+        text:
+          result.detail ||
+          `GPU 使用范围已更新，当前可用 GPU：${(result.state?.effective_gpu_ids || []).join(",") || "仅 CPU"}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "gpu-pool-update": false }));
+    }
+  }
+
   async function handleCreateAccessUser(payload) {
     await runAction(
       "create-access-user",
@@ -1838,6 +1872,7 @@ export default function App() {
       }
       onImportModel={handleImportModel}
       onCreateAccessUser={handleCreateAccessUser}
+      onApplyGpuPoolUpdate={handleApplyGpuPoolUpdate}
       onLoadDeploymentPolicy={handleLoadDeploymentPolicy}
       onLogout={handleLogout}
       onSwitchCurrentAccessUser={handleSwitchCurrentAccessUser}
@@ -2038,6 +2073,7 @@ function Shell(props) {
     onExportPredictResult,
     onImportModel,
     onCreateAccessUser,
+    onApplyGpuPoolUpdate,
     onLoadDeploymentPolicy,
     onRunDeploymentPolicyAutomationNow,
     onUpdateDeploymentPolicyAutomation,
@@ -2339,7 +2375,14 @@ function Shell(props) {
                 onDeleteBenchmark={onDeleteBenchmark}
               />,
             )}
-            {renderGuardedRoute("/resources", <ResourcesPage derived={derived} />)}
+            {renderGuardedRoute(
+              "/resources",
+              <ResourcesPage
+                actionBusy={actionBusy}
+                derived={derived}
+                onApplyGpuPoolUpdate={onApplyGpuPoolUpdate}
+              />,
+            )}
             {renderGuardedRoute("/logs", <LogsPage derived={derived} selectedLogs={selectedLogs} />)}
             <Route element={<Navigate replace to={fallbackPath} />} path="*" />
           </Routes>
@@ -4585,13 +4628,16 @@ function DeploymentPolicyPage({
   const coldModels = recommendations.filter((item) => item.service_tier === "cold");
   const gpuPressureModels = recommendations.filter((item) => item.gpu_pressure_action === "migrate_to_cpu");
   const recommendationByModelId = new Map(recommendations.map((item) => [item.model_id, item]));
-  const freestGpu = deploymentPolicy?.gpu_snapshot?.devices?.length
-    ? [...deploymentPolicy.gpu_snapshot.devices].sort(
+  const visiblePolicyDevices = (deploymentPolicy?.gpu_snapshot?.devices || []).filter((item) => item.platform_enabled !== false);
+  const freestGpu = visiblePolicyDevices.length
+    ? [...visiblePolicyDevices].sort(
         (left, right) =>
           ((right.memory_total_mb || 0) - (right.memory_used_mb || 0)) -
           ((left.memory_total_mb || 0) - (left.memory_used_mb || 0)),
       )[0]
     : null;
+  const allowedGpuIds = deploymentPolicy?.gpu_snapshot?.platform_allowed_gpu_ids || [];
+  const disabledGpuIds = deploymentPolicy?.gpu_snapshot?.platform_disabled_gpu_ids || [];
 
   const tierLabel = {
     hot: "热模型",
@@ -4683,6 +4729,12 @@ function DeploymentPolicyPage({
         <div className="banner banner-muted">
           {summary?.strategy_overview ||
             "这里展示的不是简单“热门上好卡”的规则，而是把任务调度价值、维度贡献、显存重启历史和 CPU 回退历史一起纳入的跨层协同部署策略。"}
+        </div>
+        <div className="detail-note">
+          当前部署策略只会在平台允许范围内推荐 GPU。
+          当前可用 GPU：{allowedGpuIds.length ? allowedGpuIds.join(", ") : "仅 CPU"}；
+          已禁用 GPU：{disabledGpuIds.length ? disabledGpuIds.join(", ") : "无"}。
+          若在运行资源页一次性调整多张卡，这里会在下一次分析时直接反映最新范围。
         </div>
       </section>
 
@@ -4875,6 +4927,7 @@ function DeploymentPolicyPage({
         {deploymentPolicy?.gpu_snapshot?.available ? (
           <div className="metrics">
             <MetricCard title="GPU 数量" value={deploymentPolicy.gpu_snapshot.gpu_count} note="当前服务器可见设备数" />
+            <MetricCard title="平台可用 GPU" value={allowedGpuIds.length} note={allowedGpuIds.length ? `GPU ${allowedGpuIds.join(", ")}` : "当前仅允许 CPU"} />
             <MetricCard title="活跃进程" value={deploymentPolicy.gpu_snapshot.process_count || 0} note="nvidia-smi 检测到的活跃进程" />
             <MetricCard title="最空闲 GPU" value={freestGpu ? `GPU ${freestGpu.index}` : "-"} note="按显存余量估算" />
             <MetricCard title="CPU 迁移候选" value={gpuPressureModels.length} note="全局 GPU 高压时建议迁移到 CPU 的模型数" />
@@ -7139,7 +7192,7 @@ function BenchmarksPage({
   );
 }
 
-function ResourcesPage({ derived }) {
+function ResourcesPage({ actionBusy, derived, onApplyGpuPoolUpdate }) {
   const providerSet = new Set();
   const runtimeSnapshots = sortByCreatedDesc(derived.runningDeployments).map((item) => {
     const payload = getDeploymentHealthPayload(item);
@@ -7153,12 +7206,57 @@ function ResourcesPage({ derived }) {
     };
   });
   const gpuStatus = derived.gpuStatus || { available: false, gpu_count: 0, devices: [] };
+  const gpuPoolState = gpuStatus.gpu_pool_state || {
+    effective_gpu_ids: [],
+    disabled_gpu_ids: [],
+    visible_gpu_ids: [],
+  };
+  const visibleGpuIds = gpuPoolState.visible_gpu_ids || (gpuStatus.devices || []).map((item) => item.index).filter((item) => item !== null && item !== undefined);
+  const currentPermissions = derived.currentAccessPermissions || [];
+  const canManageGpuPool = currentPermissions.includes("strategies.manage");
   const activeGpuProcesses = (gpuStatus.devices || []).reduce(
     (sum, device) => sum + Number(device.active_processes?.length || 0),
     0,
   );
   const explicitGpuBindings = derived.deployments.filter((item) => Array.isArray(item.gpu_ids) && item.gpu_ids.length);
   const gpuDevicePagination = useTablePagination(gpuStatus.devices || [], 5);
+  const [selectedGpuIds, setSelectedGpuIds] = useState(gpuPoolState.effective_gpu_ids || []);
+
+  useEffect(() => {
+    setSelectedGpuIds(gpuPoolState.effective_gpu_ids || []);
+  }, [JSON.stringify(gpuPoolState.effective_gpu_ids || [])]);
+
+  const pendingDisabledGpuIds = useMemo(
+    () => visibleGpuIds.filter((item) => !selectedGpuIds.includes(item)),
+    [selectedGpuIds, visibleGpuIds],
+  );
+  const pendingAffectedDeployments = useMemo(() => {
+    if (!pendingDisabledGpuIds.length) {
+      return [];
+    }
+    return (derived.deployments || []).filter(
+      (item) =>
+        item.use_gpu &&
+        item.status !== "deleted" &&
+        (item.gpu_ids || []).some((gpuId) => pendingDisabledGpuIds.includes(gpuId)),
+    );
+  }, [derived.deployments, pendingDisabledGpuIds]);
+
+  async function handleSubmitGpuPool() {
+    await onApplyGpuPoolUpdate(selectedGpuIds);
+  }
+
+  function handleToggleGpu(deviceIndex, checked) {
+    setSelectedGpuIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(deviceIndex);
+      } else {
+        next.delete(deviceIndex);
+      }
+      return visibleGpuIds.filter((item) => next.has(item));
+    });
+  }
 
   return (
     <>
@@ -7179,9 +7277,9 @@ function ResourcesPage({ derived }) {
             <div className="resource-meta">
               GPU 数量：{gpuStatus.gpu_count || 0}
               <br />
-              活跃 GPU 进程：{activeGpuProcesses}
+              平台启用 GPU：{(gpuPoolState.effective_gpu_ids || []).length}
               <br />
-              显式绑定 deployment：{explicitGpuBindings.length}
+              活跃 GPU 进程：{activeGpuProcesses}
             </div>
           </article>
           <article className="resource-card">
@@ -7190,7 +7288,104 @@ function ResourcesPage({ derived }) {
               {Array.from(providerSet).join(" / ") || "待检测"}
             </div>
           </article>
+          <article className="resource-card">
+            <h4>平台范围</h4>
+            <div className="resource-meta">
+              当前可用 GPU：{(gpuPoolState.effective_gpu_ids || []).length ? gpuPoolState.effective_gpu_ids.join(", ") : "仅 CPU"}
+              <br />
+              已禁用 GPU：{(gpuPoolState.disabled_gpu_ids || []).length ? gpuPoolState.disabled_gpu_ids.join(", ") : "无"}
+              <br />
+              显式绑定 deployment：{explicitGpuBindings.length}
+            </div>
+          </article>
         </div>
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="GPU 管理"
+          title="GPU 使用范围管理"
+          note="在这里一次性选择平台允许使用的 GPU。提交后会统一迁移受影响 deployment，并仅触发一轮部署优化，适合批量启用或禁用多张卡。"
+        />
+        <div className="metrics">
+          <MetricCard title="服务器可见 GPU" value={visibleGpuIds.length} note="实时从当前服务器读取，不写死 GPU 数量" />
+          <MetricCard title="平台允许使用" value={(gpuPoolState.effective_gpu_ids || []).length} note={(gpuPoolState.effective_gpu_ids || []).length ? `GPU ${gpuPoolState.effective_gpu_ids.join(", ")}` : "当前仅允许 CPU"} />
+          <MetricCard title="平台禁用" value={(gpuPoolState.disabled_gpu_ids || []).length} note={(gpuPoolState.disabled_gpu_ids || []).length ? `GPU ${gpuPoolState.disabled_gpu_ids.join(", ")}` : "暂无禁用"} />
+          <MetricCard title="待迁移实例" value={pendingAffectedDeployments.length} note="按当前勾选结果预估会受影响的 deployment 数" />
+        </div>
+        {gpuStatus.available ? (
+          <>
+            <div className="gpu-scope-grid">
+              {(gpuStatus.devices || []).map((device) => {
+                const deviceIndex = Number(device.index);
+                const checked = selectedGpuIds.includes(deviceIndex);
+                return (
+                  <label
+                    className={`gpu-scope-card ${checked ? "is-selected" : ""}`}
+                    key={device.uuid || device.index}
+                  >
+                    <div className="gpu-scope-card-top">
+                      <strong>GPU {device.index ?? "-"}</strong>
+                      <input
+                        checked={checked}
+                        disabled={!canManageGpuPool}
+                        onChange={(event) => handleToggleGpu(deviceIndex, event.target.checked)}
+                        type="checkbox"
+                      />
+                    </div>
+                    <div className="table-note">{device.name || "-"}</div>
+                    <div className="table-note">
+                      显存 {formatFixed(device.memory_used_mb, 0)} / {formatFixed(device.memory_total_mb, 0)} MB
+                    </div>
+                    <div className="table-note">
+                      利用率 {formatFixed(device.utilization_gpu_pct, 0)}% · 活跃进程 {device.active_processes?.length || 0}
+                    </div>
+                    <div className="table-note">
+                      当前状态：{device.platform_state_label || (checked ? "平台可用" : "平台禁用")}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="detail-note">
+              预览说明：若本次应用后禁用了 {pendingDisabledGpuIds.length || 0} 张 GPU，预计会影响 {pendingAffectedDeployments.length} 个 deployment。
+              平台会优先把这些 deployment 迁移到仍可用的 GPU；若剩余 GPU 空间不足，则回退到 CPU，且不会重复触发多轮优化。
+            </div>
+            <div className="actions">
+              <button
+                disabled={!canManageGpuPool}
+                onClick={() => setSelectedGpuIds(visibleGpuIds)}
+                type="button"
+              >
+                全部启用
+              </button>
+              <button
+                disabled={!canManageGpuPool}
+                onClick={() => setSelectedGpuIds([])}
+                type="button"
+              >
+                全部停用，仅 CPU
+              </button>
+              <button
+                className="btn-primary"
+                disabled={!canManageGpuPool || actionBusy["gpu-pool-update"]}
+                onClick={() => void handleSubmitGpuPool()}
+                type="button"
+              >
+                {actionBusy["gpu-pool-update"] ? "应用中" : "应用 GPU 变更"}
+              </button>
+            </div>
+            {!canManageGpuPool ? (
+              <div className="table-note">当前账号只有查看权限，GPU 使用范围管理仅对管理员或策略管理员开放。</div>
+            ) : null}
+          </>
+        ) : (
+          <EmptyState
+            icon="G"
+            title="暂时无法管理 GPU 范围"
+            note={gpuStatus.detail || "当前 API 没有拿到 nvidia-smi 返回结果。"}
+          />
+        )}
       </section>
 
       <section className="page-shell card section-shell">
@@ -7205,6 +7400,7 @@ function ResourcesPage({ derived }) {
               <thead>
                 <tr>
                   <th>GPU</th>
+                  <th>平台范围</th>
                   <th>显存</th>
                   <th>利用率</th>
                   <th>温度 / 功耗</th>
@@ -7219,6 +7415,11 @@ function ResourcesPage({ derived }) {
                       <strong>GPU {device.index ?? "-"}</strong>
                       <div>{device.name || "-"}</div>
                       <div className="mono">{device.uuid || "-"}</div>
+                    </td>
+                    <td>
+                      <span className={`tag ${device.platform_enabled ? "tag-emphasis" : ""}`}>
+                        {device.platform_state_label || (device.platform_enabled ? "平台可用" : "平台禁用")}
+                      </span>
                     </td>
                     <td>
                       {formatFixed(device.memory_used_mb, 0)} / {formatFixed(device.memory_total_mb, 0)} MB

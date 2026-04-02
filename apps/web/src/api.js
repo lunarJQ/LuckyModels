@@ -276,6 +276,14 @@ export async function runDeploymentPolicyAutomationNow() {
   });
 }
 
+export async function updateDeploymentPolicyGpuPool(payload) {
+  return fetchJSON("/api/v1/strategies/deployment-policy/gpu-pool", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createAccessUser(payload) {
   return fetchJSON("/api/v1/access-control/users", {
     method: "POST",
