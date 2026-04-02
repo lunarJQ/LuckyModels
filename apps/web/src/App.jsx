@@ -316,7 +316,33 @@ function formatPredictionFeedbackSummary(status, note) {
 }
 
 function formatArchiveSourceLabel(value) {
-  return String(value || "").trim().toLowerCase() === "task_routing" ? "任务调度" : "在线推理";
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "task_routing" || normalized === "task_routing_decision") {
+    return "任务调度";
+  }
+  return "在线推理";
+}
+
+function getArchiveImpactSignals(archive) {
+  const status = normalizePredictionFeedbackStatus(archive?.feedback_status);
+  const reasons = parsePredictionFeedbackReasons(archive?.feedback_note);
+  if (status === "satisfied") {
+    return ["满意反馈", "整体正向"];
+  }
+  if (status === "unsatisfied") {
+    const signals = [];
+    if (reasons.includes("missing_too_many")) {
+      signals.push("覆盖率承压");
+    }
+    if (reasons.includes("false_positive_too_many")) {
+      signals.push("准确率/稳定性承压");
+    }
+    if (reasons.includes("latency_high")) {
+      signals.push("时延维度承压");
+    }
+    return signals.length ? signals : ["不满意", "存在负向校准"];
+  }
+  return ["无显式反馈", "仅留痕"];
 }
 
 function collectArchiveModelHints(archive) {
@@ -477,6 +503,74 @@ function formatExecutionPathNote(value) {
 
 function formatFusionPolicyNote(value) {
   return fusionPolicyNotes[String(value || "").trim()] || "该融合策略当前没有补充说明。";
+}
+
+function buildWeightSnapshotChipClass(variantClass, value, withSign = false) {
+  const classNames = ["weight-snapshot-chip"];
+  if (variantClass) {
+    classNames.push(variantClass);
+  }
+  if (withSign) {
+    const numericValue = Number(value || 0);
+    if (numericValue > 0) {
+      classNames.push("weight-snapshot-chip-positive");
+    } else if (numericValue < 0) {
+      classNames.push("weight-snapshot-chip-negative");
+    } else {
+      classNames.push("weight-snapshot-chip-neutral");
+    }
+  }
+  return classNames.join(" ");
+}
+
+function renderWeightSnapshotGrid(snapshot, keyPrefix, { variantClass = "", signed = false } = {}) {
+  const entries = getWeightSnapshotEntries(snapshot || {});
+  if (!entries.length) {
+    return <span className="table-note">无</span>;
+  }
+  return (
+    <div className="weight-snapshot-grid">
+      {entries.map(([key, value]) => (
+        <span
+          className={buildWeightSnapshotChipClass(variantClass, value, signed)}
+          key={`${keyPrefix}-${key}`}
+        >
+          <strong>{signed ? formatWeightDimensionLabel(key) : key}</strong>
+          <span>{signed ? formatSignedNumber(value, 3) : Number(value).toFixed(2)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function buildSnapshotDelta(currentSnapshot, baselineSnapshot) {
+  const keys = new Set([
+    ...Object.keys(currentSnapshot || {}),
+    ...Object.keys(baselineSnapshot || {}),
+  ]);
+  const delta = {};
+  keys.forEach((key) => {
+    const value = Number((currentSnapshot || {})[key] || 0) - Number((baselineSnapshot || {})[key] || 0);
+    if (Math.abs(value) > 0.000001) {
+      delta[key] = value;
+    }
+  });
+  return delta;
+}
+
+function applySnapshotDelta(baselineSnapshot, deltaSnapshot) {
+  const keys = new Set([
+    ...Object.keys(baselineSnapshot || {}),
+    ...Object.keys(deltaSnapshot || {}),
+  ]);
+  const nextSnapshot = {};
+  keys.forEach((key) => {
+    const value = Number((baselineSnapshot || {})[key] || 0) + Number((deltaSnapshot || {})[key] || 0);
+    if (Math.abs(value) > 0.000001) {
+      nextSnapshot[key] = value;
+    }
+  });
+  return nextSnapshot;
 }
 
 function formatDeploymentPolicyActionLabel(value) {
@@ -2055,7 +2149,7 @@ function GuardedPage({ allowed, children, fallbackPath, title, note }) {
   if (allowed) {
     return children;
   }
-  return <AccessDeniedPage fallbackPath={fallbackPath} note={note} title={title} />;
+  return <Navigate replace to="/login" />;
 }
 
 function AccessDeniedPage({ fallbackPath, note, title }) {
@@ -2294,6 +2388,7 @@ function Shell(props) {
                 actionBusy={actionBusy}
                 derived={derived}
                 onRunTaskRouting={onRunTaskRouting}
+                onUpdatePredictionArchiveFeedback={onUpdatePredictionArchiveFeedback}
                 onTaskRoutingFormChange={onTaskRoutingFormChange}
                 taskRoutingForm={taskRoutingForm}
                 taskRoutingResult={taskRoutingResult}
@@ -2428,7 +2523,7 @@ function Shell(props) {
               />,
             )}
             {renderGuardedRoute("/logs", <LogsPage derived={derived} selectedLogs={selectedLogs} />)}
-            <Route element={<Navigate replace to={fallbackPath} />} path="*" />
+            <Route element={<Navigate replace to="/login" />} path="*" />
           </Routes>
         </section>
       </main>
@@ -2493,15 +2588,22 @@ function OverviewPage({ derived }) {
   );
 }
 
-function PredictionGraphCard({ predictResult }) {
+function RelationGraphCard({
+  emptyNote = "先完成一次推理，平台会根据三元组自动绘制关系图谱。",
+  emptyTitle = "还没有可展示的图谱",
+  kicker = "关系图谱",
+  note = "根据本次结果自动生成小图谱，支持滚轮缩放、拖拽平移与节点数量调节。",
+  title = "图谱视图",
+  triples,
+}) {
   const [nodeLimit, setNodeLimit] = useState(20);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragStart, setDragStart] = useState(null);
 
   const graphData = useMemo(() => {
-    const triples = Array.isArray(predictResult?.triples) ? predictResult.triples : [];
-    if (!triples.length) {
+    const sourceTriples = Array.isArray(triples) ? triples : [];
+    if (!sourceTriples.length) {
       return { nodes: [], edges: [], totalNodeCount: 0 };
     }
 
@@ -2509,7 +2611,7 @@ function PredictionGraphCard({ predictResult }) {
     const nodeIndex = new Map();
     const edges = [];
 
-    for (const triple of triples) {
+    for (const triple of sourceTriples) {
       const subject = String(triple?.subject || "").trim();
       const object = String(triple?.object || "").trim();
       const predicate = String(triple?.predicate || "").trim();
@@ -2562,7 +2664,7 @@ function PredictionGraphCard({ predictResult }) {
       edges: positionedEdges,
       totalNodeCount: nodes.length,
     };
-  }, [nodeLimit, predictResult]);
+  }, [nodeLimit, triples]);
 
   function handleWheel(event) {
     event.preventDefault();
@@ -2596,9 +2698,9 @@ function PredictionGraphCard({ predictResult }) {
   return (
     <article className="card detail-card">
       <SectionHeader
-        kicker="关系图谱"
-        title="图谱视图"
-        note="根据本次预测结果自动生成小图谱，支持滚轮缩放、拖拽平移与节点数量调节。"
+        kicker={kicker}
+        title={title}
+        note={note}
       />
       {graphData.nodes.length ? (
         <>
@@ -2664,9 +2766,22 @@ function PredictionGraphCard({ predictResult }) {
           </div>
         </>
       ) : (
-        <EmptyState icon="G" title="还没有可展示的图谱" note="先完成一次在线推理，平台会根据三元组自动绘制关系图谱。" />
+        <EmptyState icon="G" title={emptyTitle} note={emptyNote} />
       )}
     </article>
+  );
+}
+
+function PredictionGraphCard({ predictResult }) {
+  return (
+    <RelationGraphCard
+      emptyNote="先完成一次在线推理，平台会根据三元组自动绘制关系图谱。"
+      emptyTitle="还没有可展示的图谱"
+      kicker="关系图谱"
+      note="根据本次预测结果自动生成小图谱，支持滚轮缩放、拖拽平移与节点数量调节。"
+      title="图谱视图"
+      triples={predictResult?.triples || []}
+    />
   );
 }
 
@@ -3428,6 +3543,7 @@ function TaskRoutingPage({
   actionBusy,
   derived,
   onRunTaskRouting,
+  onUpdatePredictionArchiveFeedback,
   onTaskRoutingFormChange,
   taskRoutingForm,
   taskRoutingResult,
@@ -3471,10 +3587,34 @@ function TaskRoutingPage({
   const hasCurrentRun = Boolean(taskRoutingResult);
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
+  const currentTaskRoutingArchive = useMemo(() => {
+    if (!hasCurrentRun) {
+      return null;
+    }
+    const targetArchiveId = String(taskRoutingResult?.archive_id || "").trim();
+    const targetDecisionId = String(
+      taskRoutingResult?.decision_id || taskRoutingResult?.task_routing_decision_id || "",
+    ).trim();
+    return (
+      sortByCreatedDesc(derived.predictArchives || []).find((item) => {
+        const archiveId = String(item?.archive_id || "").trim();
+        const decisionId = String(item?.task_routing_decision_id || "").trim();
+        return (targetArchiveId && archiveId === targetArchiveId) || (targetDecisionId && decisionId === targetDecisionId);
+      }) || null
+    );
+  }, [derived.predictArchives, hasCurrentRun, taskRoutingResult]);
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
   const currentWeightProfile = useMemo(
     () => (feedbackOverview.weight_profiles || []).find((item) => item.objective === taskRoutingForm.objective) || null,
     [feedbackOverview.weight_profiles, taskRoutingForm.objective],
+  );
+  const objectiveWeightRows = useMemo(
+    () =>
+      candidateOptions.map((item) => ({
+        ...item,
+        profile: (feedbackOverview.weight_profiles || []).find((profile) => profile.objective === item.value) || null,
+      })),
+    [candidateOptions, feedbackOverview.weight_profiles],
   );
   const currentModelScoreSummaries = useMemo(
     () => {
@@ -3556,11 +3696,7 @@ function TaskRoutingPage({
     return narratives;
   }, [currentWeightProfile, sceneFeedbackSummary, selectedObjective.label, selectedScene.value]);
   const candidatePagination = useTablePagination(selectedDeployments, 5);
-  const benchmarkEvidencePagination = useTablePagination(completedBenchmarks, 5);
-  const objectiveSummaryPagination = useTablePagination(feedbackOverview.objective_summaries || [], 5);
-  const weightProfilePagination = useTablePagination(feedbackOverview.weight_profiles || [], 5);
   const modelScoreSummaryPagination = useTablePagination(currentModelScoreSummaries, 5);
-  const executionPathPagination = useTablePagination(feedbackOverview.execution_path_summaries || [], 5);
   const strategyModeLabels = {
     none: "未执行",
     "multi-objective-adaptive": "多目标自适应",
@@ -3574,6 +3710,10 @@ function TaskRoutingPage({
   const activeBenchmarkAdjustments = currentWeightProfile?.benchmark_adjustments || {};
   const activeUnsupervisedAdjustments = currentWeightProfile?.unsupervised_adjustments || {};
   const activeFeedbackAdjustments = currentWeightProfile?.feedback_adjustments || {};
+  const currentObjectiveWeightDelta = useMemo(
+    () => buildSnapshotDelta(activeWeightSnapshot, currentWeightProfile?.effective_weights || {}),
+    [activeWeightSnapshot, currentWeightProfile?.effective_weights],
+  );
 
   return (
     <>
@@ -3602,77 +3742,89 @@ function TaskRoutingPage({
           <MetricCard title="在线归档" value={calibrationArchiveCount} note="历史推理归档会参与调度层自校准" />
           <MetricCard title="当前目标" value={selectedObjective.label} note={selectedObjective.note} />
         </div>
-        <div className="banner banner-muted">
-          使用顺序很简单：先填参数，再运行任务调度，然后依次看调度结果、候选部署、基准证据和评分变化。
-        </div>
+        <div className="banner banner-muted">使用顺序很简单：先填参数，再运行任务调度，然后依次看调度结果、结果反馈、候选部署、目标权重和评分规则。</div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="操作区" title="运行参数" note="这是任务调度唯一需要你主动填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。" />
+        <SectionHeader
+          kicker="操作区"
+          title="运行参数"
+          note="这是任务调度唯一需要你主动填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。"
+        />
         <div className="form-grid">
-            <label className="stack-field">
-              <span>目标偏好</span>
-              <select
-                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
-                value={taskRoutingForm.objective}
-              >
-                {candidateOptions.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-              <small className="detail-note">{selectedObjective.note}</small>
-            </label>
-            <label className="stack-field">
-              <span>最大模型数</span>
-              <input
-                min="1"
-                max="5"
-                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, maxModels: event.target.value }))}
-                type="number"
-                value={taskRoutingForm.maxModels}
-              />
-              <small className="detail-note">表示这次任务最多允许多少个模型参与。它是“上限”，不是一定会选满；低时延场景通常仍只会选 1 个。</small>
-            </label>
-            <label className="stack-field">
-              <span>场景标识</span>
-              <select
-                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, scene: event.target.value }))}
-                value={taskRoutingForm.scene}
-              >
-                {sceneOptions.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-              <small className="detail-note">{selectedScene.note} 这个字段不是备注，而是真会过滤候选 deployment。</small>
-            </label>
-            <label className="stack-field">
-              <span>模型范围</span>
-              <div className="stack-field-readonly">
-                {selectedScene.value === "en_general" ? "英文 deployment" : selectedScene.value === "zh_general" ? "中文通用 deployment（DuIE 路线）" : "中文工业 deployment（IndustrialEquipmentMix 路线）"}
-              </div>
-              <small className="detail-note">这里会随场景自动切换，不再单独手选语言，避免英文/中文模型混用，也避免工业模型和通用模型乱混。</small>
-            </label>
-            <label className="stack-field stack-field-wide">
-              <span>输入文本</span>
-              <textarea
-                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, text: event.target.value }))}
-                rows="5"
-                value={taskRoutingForm.text}
-              />
-            </label>
-            <label className="stack-field stack-field-wide">
-              <span>附加参数 JSON</span>
-              <textarea
-                onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
-                rows="3"
-                value={taskRoutingForm.optionsJson}
-              />
-              <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写；如果不确定，直接留空即可。</small>
-            </label>
+          <label className="stack-field">
+            <span>目标偏好</span>
+            <select
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, objective: event.target.value }))}
+              value={taskRoutingForm.objective}
+            >
+              {candidateOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">{selectedObjective.note}</small>
+          </label>
+          <label className="stack-field">
+            <span>最大模型数</span>
+            <input
+              max="5"
+              min="1"
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, maxModels: event.target.value }))}
+              type="number"
+              value={taskRoutingForm.maxModels}
+            />
+            <small className="detail-note">表示这次任务最多允许多少个模型参与。它是“上限”，不是一定会选满；低时延场景通常仍只会选 1 个。</small>
+          </label>
+          <label className="stack-field">
+            <span>场景标识</span>
+            <select
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, scene: event.target.value }))}
+              value={taskRoutingForm.scene}
+            >
+              {sceneOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">{selectedScene.note} 这个字段不是备注，而是真会过滤候选 deployment。</small>
+          </label>
+          <label className="stack-field">
+            <span>模型范围</span>
+            <div className="stack-field-readonly">
+              {selectedScene.value === "en_general" ? "英文 deployment" : selectedScene.value === "zh_general" ? "中文通用 deployment（DuIE 路线）" : "中文工业 deployment（IndustrialEquipmentMix 路线）"}
+            </div>
+            <small className="detail-note">这里会随场景自动切换，不再单独手选语言，避免英文/中文模型混用，也避免工业模型和通用模型乱混。</small>
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>输入文本</span>
+            <textarea
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, text: event.target.value }))}
+              rows="5"
+              value={taskRoutingForm.text}
+            />
+          </label>
+          <label className="stack-field stack-field-wide">
+            <span>附加参数 JSON</span>
+            <textarea
+              onChange={(event) => onTaskRoutingFormChange((current) => ({ ...current, optionsJson: event.target.value }))}
+              rows="3"
+              value={taskRoutingForm.optionsJson}
+            />
+            <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写；如果不确定，直接留空即可。</small>
+          </label>
+          <div className="actions inline-actions stack-field-wide">
+            <button
+              className="btn-primary"
+              disabled={actionBusy["task-routing"]}
+              onClick={() => void onRunTaskRouting()}
+              type="button"
+            >
+              {actionBusy["task-routing"] ? "执行中" : "运行任务调度"}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -3686,6 +3838,12 @@ function TaskRoutingPage({
                 <MetricCard title="语言" value={taskRoutingResult.inferred_language} note={`请求语言：${taskRoutingResult.requested_language || "自动"}`} />
                 <MetricCard title="任务难度" value={taskRoutingResult.difficulty} note={`候选 ${taskRoutingResult.candidate_count} 个，选中 ${taskRoutingResult.selected_count} 个`} />
                 <MetricCard title="执行路径" value={formatExecutionPathLabel(taskRoutingResult.execution_path)} note={formatFusionPolicyLabel(taskRoutingResult.fusion_policy) || "任务级调度输出"} />
+                <MetricCard title="归档编号" value={currentTaskRoutingArchive?.archive_id || taskRoutingResult.archive_id || "-"} note="本次调度结果已自动写入任务调度归档" />
+                <MetricCard
+                  title="当前反馈"
+                  value={formatPredictionFeedbackSummary(currentTaskRoutingArchive?.feedback_status, currentTaskRoutingArchive?.feedback_note)}
+                  note={currentTaskRoutingArchive?.feedback_updated_at || "可在下方“结果反馈”区直接补充"}
+                />
               </div>
               <div className="banner banner-muted">{taskRoutingResult.explanation}</div>
               <div className="metrics">
@@ -3735,114 +3893,184 @@ function TaskRoutingPage({
           )}
         </article>
 
-        <article className="card detail-card">
-          <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表专门回答“为什么选中这些 deployment”。论文里它可以支撑任务调度不是拍脑袋，而是有评分依据。" />
-          {taskRoutingResult ? (
-            <>
-              <div className="banner banner-muted">
-                这张表看什么：看平台为什么选中这些 deployment，没有选中谁。重点看 `score`、`得分拆解`、`领域匹配` 和最后一列 `说明`。
-              </div>
-              <div className="banner banner-muted">
-                术语提示：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>部署</th>
-                      <th>模型</th>
-                      <th>得分拆解</th>
-                      <th>领域匹配</th>
-                      <th>资源级别</th>
-                      <th>说明</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {candidatePagination.pagedItems.map((item) => (
-                      <tr key={item.deployment_id}>
-                        <td>
-                          <strong>{item.deployment_id}</strong>
-                          <div className="table-note">{item.profile_name}</div>
-                        </td>
-                        <td>
-                          <div>{item.model_id}</div>
-                          <div className="table-note">score={item.selection_score ?? "-"}</div>
-                        </td>
-                        <td>
-                          <div className="table-note">acc {item.score_breakdown?.accuracy ?? "-"}</div>
-                          <div className="table-note">cov {item.score_breakdown?.coverage ?? "-"}</div>
-                          <div className="table-note">lat {item.score_breakdown?.latency ?? "-"}</div>
-                        </td>
-                        <td>{item.domain_match || "-"}</td>
-                        <td>{item.resource_cost_level || "-"}</td>
-                        <td className="limitation-cell">{item.selection_reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <PaginationBar
-                  currentPage={candidatePagination.page}
-                  totalPages={candidatePagination.totalPages}
-                  pageSize={candidatePagination.pageSize}
-                  totalItems={candidatePagination.totalItems}
-                  onChange={candidatePagination.setPage}
-                />
-              </div>
-              {(taskRoutingResult.decision_trace || []).length ? <div className="logs">{(taskRoutingResult.decision_trace || []).join("\n")}</div> : null}
-            </>
-          ) : (
-            <div className="logs">运行后这里会给出候选排序、实际选中的 deployment，以及各模型的执行结果摘要。</div>
-          )}
-        </article>
+        <RelationGraphCard
+          emptyNote="运行一次任务调度后，平台会根据融合后的最终三元组自动绘制图谱。"
+          emptyTitle="还没有可展示的调度图谱"
+          kicker="图谱区"
+          note="根据本次任务调度融合结果自动生成小图谱，支持滚轮缩放、拖拽平移与节点数量调节。"
+          title="融合结果图谱"
+          triples={fusedTriples}
+        />
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="证据区" title="运行证据与基准概览" note="只保留真正会影响调度的 benchmark 证据。" />
-        <div className="metrics">
-          <MetricCard title="已完成 Benchmark" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
-          <MetricCard title="在线归档" value={calibrationArchiveCount} note="作为运行证据参与策略校准" />
-          <MetricCard title="当前场景" value={selectedScene.label} note="证据筛选会优先参考这一场景下的记录" />
-          <MetricCard title="最近证据更新时间" value={completedBenchmarks[0]?.created_at || feedbackOverview.last_feedback_at || "-"} note="优先展示最近一条可引用记录" />
+        <SectionHeader
+          kicker="结果反馈"
+          title="本次调度反馈"
+          note="任务调度执行成功后，可以直接在这里给出满意度反馈。该反馈会进入在线学习流程，参与后续调度权重与模型评分修正。"
+        />
+        {currentTaskRoutingArchive ? (
+          <>
+            <div className="metrics">
+              <MetricCard title="归档编号" value={currentTaskRoutingArchive.archive_id} note={currentTaskRoutingArchive.created_at || "-"} />
+              <MetricCard title="决策编号" value={currentTaskRoutingArchive.task_routing_decision_id || taskRoutingResult?.decision_id || "-"} note="任务调度留痕编号" />
+              <MetricCard title="当前反馈" value={formatPredictionFeedbackSummary(currentTaskRoutingArchive.feedback_status, currentTaskRoutingArchive.feedback_note)} note={currentTaskRoutingArchive.feedback_updated_at || "尚未补充"} />
+              <MetricCard title="不满意原因" value={currentTaskRoutingArchive.feedback_note ? formatPredictionFeedbackReasonSummary(currentTaskRoutingArchive.feedback_note) : "无"} note="支持多选，可留空" />
+            </div>
+            <div className="banner banner-muted">
+              如果这次任务调度的融合结果已经可直接用于业务，可标记“满意”；如果你觉得输出有明显问题，可标记“不满意”，再选择“漏抽多”“误抽多”和/或“延迟高”。这份反馈会直接作用到后续任务调度学习过程。
+            </div>
+            <PredictionArchiveFeedbackControls
+              actionBusy={actionBusy}
+              archive={currentTaskRoutingArchive}
+              onUpdate={onUpdatePredictionArchiveFeedback}
+            />
+          </>
+        ) : (
+          <EmptyState
+            icon="F"
+            title="还没有可反馈的调度结果"
+            note="先完成一次任务调度，平台生成归档后，这里才会开放直接反馈。"
+          />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表专门回答“为什么选中这些 deployment”。论文里它可以支撑任务调度不是拍脑袋，而是有评分依据。" />
+        {taskRoutingResult ? (
+          <>
+            <div className="banner banner-muted">
+              这张表看什么：看平台为什么选中这些 deployment，没有选中谁。重点看 `score`、`得分拆解`、`领域匹配` 和最后一列 `说明`。
+            </div>
+            <div className="banner banner-muted">
+              术语提示：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>部署</th>
+                    <th>模型</th>
+                    <th>得分拆解</th>
+                    <th>领域匹配</th>
+                    <th>资源级别</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {candidatePagination.pagedItems.map((item) => (
+                    <tr key={item.deployment_id}>
+                      <td>
+                        <strong>{item.deployment_id}</strong>
+                        <div className="table-note">{item.profile_name}</div>
+                      </td>
+                      <td>
+                        <div>{item.model_id}</div>
+                        <div className="table-note">score={item.selection_score ?? "-"}</div>
+                      </td>
+                      <td>
+                        <div className="table-note">acc {item.score_breakdown?.accuracy ?? "-"}</div>
+                        <div className="table-note">cov {item.score_breakdown?.coverage ?? "-"}</div>
+                        <div className="table-note">lat {item.score_breakdown?.latency ?? "-"}</div>
+                      </td>
+                      <td>{item.domain_match || "-"}</td>
+                      <td>{item.resource_cost_level || "-"}</td>
+                      <td className="limitation-cell">{item.selection_reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <PaginationBar
+                currentPage={candidatePagination.page}
+                totalPages={candidatePagination.totalPages}
+                pageSize={candidatePagination.pageSize}
+                totalItems={candidatePagination.totalItems}
+                onChange={candidatePagination.setPage}
+              />
+            </div>
+            {(taskRoutingResult.decision_trace || []).length ? <div className="logs">{(taskRoutingResult.decision_trace || []).join("\n")}</div> : null}
+          </>
+        ) : (
+          <div className="logs">运行后这里会给出候选排序、实际选中的 deployment，以及各模型的执行结果摘要。</div>
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="目标对比"
+          title="目标调度评分权重"
+          note="这张表用于选目标前快速对比。每一行是一个调度目标；当前选中目标如果已经执行过本次调度，还会额外展示“本次调度变化”。"
+        />
+        <div className="banner banner-muted">
+          这张表看什么：如果你还没决定选“高准确”“高覆盖”还是“领域优先”，先看这里。当前表单里正在使用的目标会高亮；如果已经执行了本次调度，当前目标那一行会额外告诉你这次调度相对历史快照把哪些权重推高或压低了。
         </div>
         <div className="table-wrap">
-          <table>
+          <table className="task-routing-objective-table weight-profile-table">
             <thead>
               <tr>
-                <th>Benchmark</th>
-                <th>模型</th>
-                <th>Profile</th>
-                <th>P95</th>
-                <th>成功率</th>
-                <th>时间</th>
+                <th>任务调度目标</th>
+                <th>当前有效权重</th>
+                <th>本次调度变化</th>
+                <th>Benchmark 修正</th>
+                <th>无用户反馈校准修正</th>
+                <th>有用户反馈校准修正</th>
+                <th>说明</th>
               </tr>
             </thead>
             <tbody>
-              {benchmarkEvidencePagination.pagedItems.map((item) => (
-                <tr key={item.benchmark_id}>
+              {objectiveWeightRows.map((item) => (
+                <tr
+                  className={taskRoutingForm.objective === item.value ? "is-current-objective-row" : ""}
+                  key={`task-routing-objective-${item.value}`}
+                >
                   <td>
-                    <strong>{item.label || item.benchmark_id}</strong>
-                    <div className="table-note">{item.benchmark_id}</div>
+                    <div className="archive-cell-stack">
+                      <div className="archive-main">{item.label}</div>
+                      <div className="table-note">{item.note}</div>
+                    </div>
                   </td>
-                  <td>{item.model_id}</td>
-                  <td>{item.profile_name}</td>
-                  <td>{item.p95_latency_ms ? `${Number(item.p95_latency_ms).toFixed(3)} ms` : "-"}</td>
-                  <td>{formatPercent(item.total_requests ? item.success_count / item.total_requests : null)}</td>
-                  <td>{item.created_at}</td>
+                  <td>
+                    {renderWeightSnapshotGrid(
+                      hasCurrentRun && item.value === taskRoutingForm.objective
+                        ? activeWeightSnapshot
+                        : item.profile?.effective_weights || {},
+                      `${item.value}-effective`,
+                    )}
+                    {hasCurrentRun && item.value === taskRoutingForm.objective ? (
+                      <div className="table-note">这里显示的是本次调度真正使用的权重快照。</div>
+                    ) : (
+                      <div className="table-note">这里显示的是历史累计后的稳定权重快照。</div>
+                    )}
+                  </td>
+                  <td>
+                    {hasCurrentRun && item.value === taskRoutingForm.objective ? (
+                      <>
+                        {renderWeightSnapshotGrid(currentObjectiveWeightDelta, `${item.value}-delta`, {
+                          variantClass: "weight-snapshot-chip-feedback",
+                          signed: true,
+                        })}
+                        <div className="table-note">按“本次实际权重 - 历史稳定权重”计算，正值表示本次抬高，负值表示本次压低。</div>
+                      </>
+                    ) : (
+                      <span className="table-note">当前这一行没有本次调度增量。</span>
+                    )}
+                  </td>
+                  <td>{renderWeightSnapshotGrid(item.profile?.benchmark_adjustments || {}, `${item.value}-benchmark`, { variantClass: "weight-snapshot-chip-benchmark", signed: true })}</td>
+                  <td>{renderWeightSnapshotGrid(item.profile?.unsupervised_adjustments || {}, `${item.value}-unsupervised`, { variantClass: "weight-snapshot-chip-unsupervised", signed: true })}</td>
+                  <td>{renderWeightSnapshotGrid(item.profile?.feedback_adjustments || {}, `${item.value}-feedback`, { variantClass: "weight-snapshot-chip-feedback", signed: true })}</td>
+                  <td className="limitation-cell">
+                    {taskRoutingForm.objective === item.value
+                      ? hasCurrentRun
+                        ? "当前操作区正在使用这个目标，并且这一行已经叠加了本次调度造成的即时变化。"
+                        : "当前操作区正在使用这个目标。"
+                      : "可切回上方操作区直接改成这个目标再执行调度。"}
+                    {item.profile?.reasons?.length ? ` ${item.profile.reasons.slice(0, 2).join("；")}` : ""}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <PaginationBar
-            currentPage={benchmarkEvidencePagination.page}
-            totalPages={benchmarkEvidencePagination.totalPages}
-            pageSize={benchmarkEvidencePagination.pageSize}
-            totalItems={benchmarkEvidencePagination.totalItems}
-            onChange={benchmarkEvidencePagination.setPage}
-          />
         </div>
-        {!benchmarkEvidencePagination.totalItems ? (
-          <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
-        ) : null}
       </section>
 
       <section className="page-shell card section-shell">
@@ -4252,6 +4480,79 @@ function TaskRoutingHistoryPage({ derived }) {
       : filteredTaskRoutingHistoryRows.find((item) => getHistoryDecisionKey(item) === historyDecisionFilter) || null),
     [filteredTaskRoutingHistoryRows, historyDecisionFilter, isAllHistoryDecisionSelected],
   );
+  const selectedHistoryDecisionObjective = String(selectedHistoryDecision?.task_routing_objective || "").trim().toLowerCase();
+  const selectedHistoryDecisionWeightProfile = useMemo(
+    () =>
+      selectedHistoryDecisionObjective
+        ? (feedbackOverview.weight_profiles || []).find((item) => String(item.objective || "").trim().toLowerCase() === selectedHistoryDecisionObjective) || null
+        : null,
+    [feedbackOverview.weight_profiles, selectedHistoryDecisionObjective],
+  );
+  const selectedHistoryDecisionResponsePayload = selectedHistoryDecision?.response_payload || {};
+  const selectedHistoryDecisionPayloadWeights =
+    selectedHistoryDecisionResponsePayload?.objective_weights ||
+    selectedHistoryDecisionResponsePayload?.objective_weight_snapshot ||
+    selectedHistoryDecision?.objective_weights ||
+    {};
+  const selectedHistoryDecisionPayloadAdaptiveAdjustments =
+    selectedHistoryDecisionResponsePayload?.adaptive_adjustments ||
+    selectedHistoryDecision?.adaptive_adjustments ||
+    {};
+  const selectedHistoryDecisionWeightDelta = useMemo(() => {
+    if (Object.keys(selectedHistoryDecisionPayloadWeights || {}).length) {
+      return buildSnapshotDelta(selectedHistoryDecisionPayloadWeights, selectedHistoryDecisionWeightProfile?.effective_weights || {});
+    }
+    if (Object.keys(selectedHistoryDecisionPayloadAdaptiveAdjustments || {}).length) {
+      return selectedHistoryDecisionPayloadAdaptiveAdjustments || {};
+    }
+    return {};
+  }, [selectedHistoryDecisionPayloadAdaptiveAdjustments, selectedHistoryDecisionPayloadWeights, selectedHistoryDecisionWeightProfile?.effective_weights]);
+  const selectedHistoryDecisionAfterWeights = useMemo(() => {
+    if (Object.keys(selectedHistoryDecisionPayloadWeights || {}).length) {
+      return selectedHistoryDecisionPayloadWeights;
+    }
+    if (Object.keys(selectedHistoryDecisionWeightDelta || {}).length) {
+      return applySnapshotDelta(selectedHistoryDecisionWeightProfile?.effective_weights || {}, selectedHistoryDecisionWeightDelta);
+    }
+    return {};
+  }, [selectedHistoryDecisionPayloadWeights, selectedHistoryDecisionWeightDelta, selectedHistoryDecisionWeightProfile?.effective_weights]);
+  const decisionScopedObjectiveSummaries = useMemo(() => {
+    if (!selectedHistoryDecision) {
+      return filteredObjectiveSummaries;
+    }
+    const feedbackStatus = normalizePredictionFeedbackStatus(selectedHistoryDecision.feedback_status);
+    return [{
+      objective: selectedHistoryDecisionObjective || selectedHistoryDecision?.task_routing_objective || "unknown",
+      decision_count: 1,
+      feedback_count: feedbackStatus === "pending" ? 0 : 1,
+      acceptance_rate: feedbackStatus === "satisfied" ? 1 : feedbackStatus === "unsatisfied" ? 0 : null,
+      best_execution_path: selectedHistoryDecision.task_routing_execution_path || "none",
+      fusion_policy: selectedHistoryDecision.task_routing_fusion_policy || "empty",
+      triple_count: Number(selectedHistoryDecision.triple_count || 0),
+      feedback_status: feedbackStatus,
+    }];
+  }, [filteredObjectiveSummaries, selectedHistoryDecision, selectedHistoryDecisionObjective]);
+  const decisionScopedWeightProfiles = useMemo(() => {
+    if (!selectedHistoryDecision) {
+      return filteredWeightProfiles;
+    }
+    return [{
+      objective: selectedHistoryDecisionObjective || selectedHistoryDecision?.task_routing_objective || "unknown",
+      baseline_weights: selectedHistoryDecisionWeightProfile?.effective_weights || {},
+      decision_delta: selectedHistoryDecisionWeightDelta || {},
+      effective_weights: selectedHistoryDecisionAfterWeights || {},
+      reasons: selectedHistoryDecisionWeightProfile?.reasons || [],
+      data_ready: Boolean(Object.keys(selectedHistoryDecisionAfterWeights || {}).length || Object.keys(selectedHistoryDecisionWeightDelta || {}).length),
+    }];
+  }, [
+    filteredWeightProfiles,
+    selectedHistoryDecision,
+    selectedHistoryDecisionAfterWeights,
+    selectedHistoryDecisionObjective,
+    selectedHistoryDecisionWeightDelta,
+    selectedHistoryDecisionWeightProfile?.effective_weights,
+    selectedHistoryDecisionWeightProfile?.reasons,
+  ]);
   const baseHistoryModelScoreRows = useMemo(() => {
     let rows = [...(feedbackOverview.model_score_summaries || [])];
     if (historyObjectiveFilter !== "all") {
@@ -4386,8 +4687,8 @@ function TaskRoutingHistoryPage({ derived }) {
       }))
       .sort((left, right) => right.decision_count - left.decision_count || right.feedback_count - left.feedback_count || left.fusion_policy.localeCompare(right.fusion_policy));
   }, [filteredTaskRoutingHistoryRows]);
-  const objectiveSummaryPagination = useTablePagination(filteredObjectiveSummaries, 5);
-  const weightProfilePagination = useTablePagination(filteredWeightProfiles, 5);
+  const objectiveSummaryPagination = useTablePagination(decisionScopedObjectiveSummaries, 5);
+  const weightProfilePagination = useTablePagination(decisionScopedWeightProfiles, 5);
   const historyModelScorePagination = useTablePagination(filteredHistoryModelScoreRows, 5);
   const executionPathPagination = useTablePagination(filteredExecutionPathSummaries, 5);
   const fusionPolicyPagination = useTablePagination(filteredFusionPolicySummaries, 5);
@@ -4395,7 +4696,13 @@ function TaskRoutingHistoryPage({ derived }) {
   return (
     <>
       <section className="page-shell card section-shell score-evolution-section">
-        <SectionHeader kicker="历史累计视角" title="任务调度历史累计总览" note="这一页只看长期沉淀，不看本次临时输入。它回答平台长期在哪些目标下运行更多、已经形成了怎样的调度权重，以及常见执行路径与最近真实决策长什么样。" />
+        <SectionHeader
+          kicker={selectedHistoryDecision ? "单条决策视角" : "历史累计视角"}
+          title={selectedHistoryDecision ? "任务调度单条决策分析" : "任务调度历史累计总览"}
+          note={selectedHistoryDecision
+            ? "当前已选中一条真实决策记录。下方表 1 和表 2 将不再展示长期累计结果，而是改为这条决策本身带来的目标概览与评分权重变化。"
+            : "这一页只看长期沉淀，不看本次临时输入。它回答平台长期在哪些目标下运行更多、已经形成了怎样的调度权重，以及常见执行路径与最近真实决策长什么样。"}
+        />
         <div className="metrics">
           <MetricCard title="历史决策总数" value={feedbackOverview.total_decisions || 0} note="累计沉淀的任务调度记录" />
           <MetricCard title="历史反馈总数" value={feedbackOverview.total_feedback || 0} note="任务调度反馈与结果反馈共同支撑长期校准" />
@@ -4436,11 +4743,15 @@ function TaskRoutingHistoryPage({ derived }) {
               })}
             </select>
             <small className="detail-note">
-              这里用于查看某一条真实决策记录；也支持切回“全部记录”。选中单条后，页面下方会同步聚焦这条记录的执行路径、融合策略、选中模型，以及对应模型部署的表现变化。
+              这里用于查看某一条真实决策记录；也支持切回“全部记录”。选中单条后，表 1 和表 2 会切成“单条决策影响视角”，同时页面下方也会同步聚焦这条记录的执行路径、融合策略、选中模型，以及对应模型部署的表现变化。
             </small>
           </label>
         </div>
-        <div className="banner banner-muted">阅读顺序建议：先看“单条决策详情”，再看“各目标历史累计概览”和“长期调度评分权重快照”；随后看“历史部署表现变化”，最后再用“执行路径分布”和“最近决策记录”核对长期统计。</div>
+        <div className="banner banner-muted">
+          {selectedHistoryDecision
+            ? "阅读顺序建议：先看“单条决策详情”，再看表 1 的本次决策影响概览和表 2 的本次决策评分权重变化；随后看“模型部署表现变化”，最后再用执行路径与融合策略核对这条记录在平台中的定位。"
+            : "阅读顺序建议：先看“单条决策详情”，再看“各目标历史累计概览”和“目标调度评分权重（历史累计）”；随后看“历史部署表现变化”，最后再用“执行路径分布”和“融合策略历史”核对长期统计。"}
+        </div>
         <div className="relation-list">
           {(feedbackOverview.insights || []).map((item, index) => (
             <div className="relation-item" key={`${item}-${index + 1}`}>
@@ -4549,17 +4860,21 @@ function TaskRoutingHistoryPage({ derived }) {
 
       <section className="page-shell card section-shell score-evolution-section">
         <div className="score-evolution-block">
-          <div className="table-subhead">表 1：各目标历史累计概览</div>
-          <div className="banner banner-muted">这张表看什么：一行就是一个任务调度目标。顶部切到某个目标分类后，这里会只保留该目标的历史累计结果；切回“全部目标”则恢复全量目标对比。</div>
+          <div className="table-subhead">{selectedHistoryDecision ? "表 1：本次决策影响概览" : "表 1：各目标历史累计概览"}</div>
+          <div className="banner banner-muted">
+            {selectedHistoryDecision
+              ? "这张表看什么：当前只看你选中的这一条决策记录。它不再统计长期累计，而是直接展示这次决策属于哪个目标、这次有没有反馈、采用了哪条执行路径，以及融合输出的大致规模。"
+              : "这张表看什么：一行就是一个任务调度目标。顶部切到某个目标分类后，这里会只保留该目标的历史累计结果；切回“全部目标”则恢复全量目标对比。"}
+          </div>
           <div className="table-wrap">
             <table className="weight-profile-table">
               <thead>
                 <tr>
                   <th>任务调度目标</th>
-                  <th>历史决策数</th>
-                  <th>历史反馈数</th>
-                  <th>接受率</th>
-                  <th>主参考执行路径</th>
+                  <th>{selectedHistoryDecision ? "本次决策数" : "历史决策数"}</th>
+                  <th>{selectedHistoryDecision ? "本次反馈数" : "历史反馈数"}</th>
+                  <th>{selectedHistoryDecision ? "本次反馈结果" : "接受率"}</th>
+                  <th>{selectedHistoryDecision ? "本次执行路径" : "主参考执行路径"}</th>
                   <th>说明</th>
                 </tr>
               </thead>
@@ -4574,15 +4889,17 @@ function TaskRoutingHistoryPage({ derived }) {
                     </td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
-                    <td>{formatPercent(item.acceptance_rate)}</td>
+                    <td>{selectedHistoryDecision ? formatPredictionFeedbackLabel(item.feedback_status) : formatPercent(item.acceptance_rate)}</td>
                     <td>
                       <div>{formatExecutionPathLabel(item.best_execution_path)}</div>
                       <div className="table-note">{item.best_execution_path || "-"}</div>
                     </td>
                     <td className="limitation-cell">
-                      {item.decision_count > 0
-                        ? `该目标已有 ${item.decision_count} 条历史调度记录，长期主要参考“${formatExecutionPathLabel(item.best_execution_path)}”路径。`
-                        : "当前还没有该目标的历史调度记录。"}
+                      {selectedHistoryDecision
+                        ? `这条决策采用“${formatExecutionPathLabel(item.best_execution_path)}”路径，融合策略为“${formatFusionPolicyLabel(item.fusion_policy)}”，最终输出 ${item.triple_count || 0} 个三元组。`
+                        : item.decision_count > 0
+                          ? `该目标已有 ${item.decision_count} 条历史调度记录，长期主要参考“${formatExecutionPathLabel(item.best_execution_path)}”路径。`
+                          : "当前还没有该目标的历史调度记录。"}
                     </td>
                   </tr>
                 ))}
@@ -4599,17 +4916,21 @@ function TaskRoutingHistoryPage({ derived }) {
         </div>
 
         <div className="score-evolution-block">
-          <div className="table-subhead">表 2：各目标长期调度评分权重快照</div>
-          <div className="banner banner-muted">这张表看什么：一行还是一个任务调度目标。顶部如果选择了某个调度目标分类，这里就只展示该目标长期学到的权重；如果保持“全部目标”，就能横向比较六类目标的长期打分规则差异。</div>
+          <div className="table-subhead">{selectedHistoryDecision ? "表 2：本次决策造成的评分权重变化" : "表 2：目标调度评分权重（历史累计）"}</div>
+          <div className="banner banner-muted">
+            {selectedHistoryDecision
+              ? "这张表看什么：当前只看这条决策本身。它展示该目标在“决策前稳定权重”基础上，本次调度又额外推高或压低了哪些维度，并给出本次真正落地使用的权重快照。"
+              : "这张表看什么：这是调度历史页里的“目标调度评分权重”版本，口径是长期累计而不是单次运行。顶部如果选择了某个调度目标分类，这里就只展示该目标长期学到的权重；如果保持“全部目标”，就能横向比较六类目标的长期打分规则差异。"}
+          </div>
           <div className="table-wrap">
             <table className="weight-profile-table">
               <thead>
                 <tr>
                   <th>任务调度目标</th>
-                  <th>当前有效权重</th>
-                  <th>Benchmark 修正</th>
-                  <th>无用户反馈校准修正</th>
-                  <th>有用户反馈校准修正</th>
+                  <th>{selectedHistoryDecision ? "决策前稳定权重" : "当前有效权重"}</th>
+                  <th>{selectedHistoryDecision ? "本次决策变化" : "Benchmark 修正"}</th>
+                  <th>{selectedHistoryDecision ? "决策后实际权重" : "无用户反馈校准修正"}</th>
+                  <th>{selectedHistoryDecision ? "说明" : "有用户反馈校准修正"}</th>
                 </tr>
               </thead>
               <tbody>
@@ -4622,70 +4943,52 @@ function TaskRoutingHistoryPage({ derived }) {
                       </div>
                     </td>
                     <td>
-                      <div className="weight-snapshot-grid">
-                        {getWeightSnapshotEntries(item.effective_weights || {}).length ? (
-                          getWeightSnapshotEntries(item.effective_weights || {}).map(([key, value]) => (
-                            <span className="weight-snapshot-chip" key={`${item.objective}-effective-${key}`}>
-                              <strong>{key}</strong>
-                              <span>{Number(value).toFixed(2)}</span>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="table-note">无</span>
+                      {selectedHistoryDecision
+                        ? renderWeightSnapshotGrid(item.baseline_weights || {}, `${item.objective}-baseline`)
+                        : (
+                          <>
+                            {renderWeightSnapshotGrid(item.effective_weights || {}, `${item.objective}-effective`)}
+                            <div className="table-note">{(item.reasons || []).slice(0, 2).join("；") || "暂无额外说明"}</div>
+                          </>
                         )}
-                      </div>
-                      <div className="table-note">{(item.reasons || []).slice(0, 2).join("；") || "暂无额外说明"}</div>
                     </td>
                     <td>
-                      <div className="weight-snapshot-grid">
-                        {getWeightSnapshotEntries(item.benchmark_adjustments || {}).length ? (
-                          getWeightSnapshotEntries(item.benchmark_adjustments || {}).map(([key, value]) => (
-                            <span
-                              className={`weight-snapshot-chip weight-snapshot-chip-benchmark ${Number(value) > 0 ? "weight-snapshot-chip-positive" : Number(value) < 0 ? "weight-snapshot-chip-negative" : "weight-snapshot-chip-neutral"}`}
-                              key={`${item.objective}-benchmark-${key}`}
-                            >
-                              <strong>{key}</strong>
-                              <span>{formatSignedNumber(value, 3)}</span>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="table-note">无</span>
-                        )}
-                      </div>
+                      {selectedHistoryDecision
+                        ? renderWeightSnapshotGrid(item.decision_delta || {}, `${item.objective}-decision-delta`, {
+                          variantClass: "weight-snapshot-chip-feedback",
+                          signed: true,
+                        })
+                        : renderWeightSnapshotGrid(item.benchmark_adjustments || {}, `${item.objective}-benchmark`, {
+                          variantClass: "weight-snapshot-chip-benchmark",
+                          signed: true,
+                        })}
                     </td>
                     <td>
-                      <div className="weight-snapshot-grid">
-                        {getWeightSnapshotEntries(item.unsupervised_adjustments || {}).length ? (
-                          getWeightSnapshotEntries(item.unsupervised_adjustments || {}).map(([key, value]) => (
-                            <span
-                              className={`weight-snapshot-chip weight-snapshot-chip-unsupervised ${Number(value) > 0 ? "weight-snapshot-chip-positive" : Number(value) < 0 ? "weight-snapshot-chip-negative" : "weight-snapshot-chip-neutral"}`}
-                              key={`${item.objective}-unsupervised-${key}`}
-                            >
-                              <strong>{key}</strong>
-                              <span>{formatSignedNumber(value, 3)}</span>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="table-note">无</span>
-                        )}
-                      </div>
+                      {selectedHistoryDecision
+                        ? renderWeightSnapshotGrid(item.effective_weights || {}, `${item.objective}-after`)
+                        : renderWeightSnapshotGrid(item.unsupervised_adjustments || {}, `${item.objective}-unsupervised`, {
+                          variantClass: "weight-snapshot-chip-unsupervised",
+                          signed: true,
+                        })}
                     </td>
                     <td>
-                      <div className="weight-snapshot-grid">
-                        {getWeightSnapshotEntries(item.feedback_adjustments || {}).length ? (
-                          getWeightSnapshotEntries(item.feedback_adjustments || {}).map(([key, value]) => (
-                            <span
-                              className={`weight-snapshot-chip weight-snapshot-chip-feedback ${Number(value) > 0 ? "weight-snapshot-chip-positive" : Number(value) < 0 ? "weight-snapshot-chip-negative" : "weight-snapshot-chip-neutral"}`}
-                              key={`${item.objective}-feedback-${key}`}
-                            >
-                              <strong>{key}</strong>
-                              <span>{formatSignedNumber(value, 3)}</span>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="table-note">无</span>
-                        )}
-                      </div>
+                      {selectedHistoryDecision ? (
+                        <div className="archive-cell-stack">
+                          <div className="table-note">
+                            {item.data_ready
+                              ? "当前优先使用这条归档记录中写入的真实权重快照；若未完整写入，则回退为“稳定权重 + 本次变化”的估算结果。"
+                              : "这条决策记录没有写入足够的权重字段，因此当前无法完整还原本次权重变化。"}
+                          </div>
+                          <div className="table-note">
+                            {(item.reasons || []).slice(0, 2).join("；") || "暂无额外说明"}
+                          </div>
+                        </div>
+                      ) : (
+                        renderWeightSnapshotGrid(item.feedback_adjustments || {}, `${item.objective}-feedback`, {
+                          variantClass: "weight-snapshot-chip-feedback",
+                          signed: true,
+                        })
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -4948,13 +5251,26 @@ function DeploymentPerformancePage({ derived }) {
   const deployments = derived.deployments || [];
   const feedbackOverview = derived.taskRoutingFeedbackOverview || { model_score_summaries: [] };
   const modelScoreSummaries = feedbackOverview.model_score_summaries || [];
+  const taskRoutingArchives = (derived.predictArchives || []).filter(
+    (item) =>
+      item.archive_source === "task_routing" ||
+      item.archive_source === "task_routing_decision" ||
+      String(item.task_routing_decision_id || "").trim(),
+  );
   const experimentArchives = (derived.predictArchives || []).filter((item) => item.archive_source !== "task_routing");
   const datasetCatalog = derived.datasetCatalog || { datasets: DEFAULT_PREDICT_DATASETS };
 
   const [modelFilter, setModelFilter] = useState("all");
+  const [deploymentFilter, setDeploymentFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [taskSceneFilter, setTaskSceneFilter] = useState("all");
   const [datasetSceneFilter, setDatasetSceneFilter] = useState("all");
+  const [recordDeploymentFilter, setRecordDeploymentFilter] = useState("all");
+  const [recordModelFilter, setRecordModelFilter] = useState("all");
+  const [recordTypeFilter, setRecordTypeFilter] = useState("all");
+  const [recordObjectiveFilter, setRecordObjectiveFilter] = useState("all");
+  const [recordTaskSceneFilter, setRecordTaskSceneFilter] = useState("all");
+  const [recordDatasetSceneFilter, setRecordDatasetSceneFilter] = useState("all");
 
   const datasetLabelMap = useMemo(() => {
     const map = new Map();
@@ -4996,6 +5312,10 @@ function DeploymentPerformancePage({ derived }) {
     () => ["all", ...Array.from(new Set(deployments.map((item) => String(item.model_id || "").trim()).filter(Boolean))).sort()],
     [deployments],
   );
+  const deploymentOptions = useMemo(
+    () => ["all", ...Array.from(new Set(deployments.map((item) => String(item.deployment_id || "").trim()).filter(Boolean))).sort()],
+    [deployments],
+  );
   const statusOptions = useMemo(
     () => ["all", ...Array.from(new Set(deployments.map((item) => String(item.status || "").trim()).filter(Boolean))).sort()],
     [deployments],
@@ -5014,6 +5334,11 @@ function DeploymentPerformancePage({ derived }) {
       setModelFilter("all");
     }
   }, [modelFilter, modelOptions]);
+  useEffect(() => {
+    if (!deploymentOptions.includes(deploymentFilter)) {
+      setDeploymentFilter("all");
+    }
+  }, [deploymentFilter, deploymentOptions]);
   useEffect(() => {
     if (!statusOptions.includes(statusFilter)) {
       setStatusFilter("all");
@@ -5047,10 +5372,19 @@ function DeploymentPerformancePage({ derived }) {
       const avgTripleCount = meanBy(experimentRows, (item) => item.triple_count);
       const taskObjectiveLabels = Array.from(new Set(routingRows.map((item) => String(item.objective || "").trim()).filter(Boolean)));
       const latestExperimentAt = sortByCreatedDesc(experimentRows)[0]?.created_at || "-";
+      const matchedTaskRoutingArchives = sortByCreatedDesc(taskRoutingArchives).filter((item) => {
+        const archiveDeploymentId = String(item.deployment_id || "").trim();
+        if (archiveDeploymentId && archiveDeploymentId === deploymentId) {
+          return true;
+        }
+        const modelHints = collectArchiveModelHints(item);
+        return modelHints.includes(deploymentModelId.toLowerCase());
+      });
 
       return {
         deployment,
         routingRows,
+        matchedTaskRoutingArchives,
         experimentRows,
         taskScenes,
         datasetScenes,
@@ -5068,11 +5402,14 @@ function DeploymentPerformancePage({ derived }) {
         modelId: deploymentModelId,
       };
     });
-  }, [deployments, experimentArchives, modelScoreSummaries]);
+  }, [deployments, experimentArchives, modelScoreSummaries, taskRoutingArchives]);
 
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
       if (modelFilter !== "all" && row.modelId !== modelFilter) {
+        return false;
+      }
+      if (deploymentFilter !== "all" && String(row.deployment.deployment_id || "").trim() !== deploymentFilter) {
         return false;
       }
       if (statusFilter !== "all" && String(row.deployment.status || "").trim() !== statusFilter) {
@@ -5100,9 +5437,158 @@ function DeploymentPerformancePage({ derived }) {
       }
       return String(left.deployment.deployment_id || "").localeCompare(String(right.deployment.deployment_id || ""));
     });
-  }, [datasetSceneFilter, modelFilter, rows, statusFilter, taskSceneFilter]);
+  }, [datasetSceneFilter, deploymentFilter, modelFilter, rows, statusFilter, taskSceneFilter]);
+
+  const recordRows = useMemo(() => {
+    return rows.flatMap((row) => {
+      const deploymentId = String(row.deployment.deployment_id || "").trim();
+      const taskRoutingRecordRows = row.matchedTaskRoutingArchives.map((archive) => {
+        const archiveScene = String(archive.scene || "").trim();
+        const archiveObjective = String(archive.task_routing_objective || "").trim();
+        const matchedSummary =
+          row.routingRows.find(
+            (item) =>
+              String(item.scene || "").trim() === archiveScene &&
+              String(item.objective || "").trim() === archiveObjective,
+          ) ||
+          row.routingRows.find((item) => String(item.scene || "").trim() === archiveScene) ||
+          row.routingRows[0] ||
+          null;
+        const directMatched = String(archive.deployment_id || "").trim() === deploymentId;
+        const performanceDeltaBreakdown = matchedSummary?.performance_delta_breakdown || {};
+        const performanceDeltaFromBreakdown = Object.values(performanceDeltaBreakdown).reduce(
+          (sum, value) => sum + (Number(value) || 0),
+          0,
+        );
+        return {
+          recordType: "task_routing",
+          recordId: archive.task_routing_decision_id || archive.archive_id || "-",
+          deploymentId,
+          modelId: row.deployment.model_id,
+          profileName: row.deployment.profile_name,
+          status: row.deployment.status,
+          createdAt: archive.created_at || "-",
+          taskScene: archiveScene || "none",
+          datasetScene: "none",
+          objective: archiveObjective || "all",
+          sourceLabel: formatArchiveSourceLabel(archive.archive_source),
+          summaryLabel: formatPredictionFeedbackSummary(archive.feedback_status, archive.feedback_note),
+          impactSignals: getArchiveImpactSignals(archive),
+          matchedScoreDelta: matchedSummary?.score_delta ?? null,
+          matchedPerformanceScoreDelta:
+            matchedSummary?.performance_score_delta ??
+            (Object.keys(performanceDeltaBreakdown).length ? performanceDeltaFromBreakdown : null),
+          matchedPerformanceDeltaBreakdown: performanceDeltaBreakdown,
+          latencyMs: archive.latency_ms ?? null,
+          tripleCount: archive.triple_count ?? null,
+          note: directMatched ? "通过 deployment_id 直接命中" : "通过任务调度记录中的模型提示命中",
+        };
+      });
+      const experimentRecordRows = row.experimentRows.map((archive) => ({
+        recordType: "experiment",
+        recordId: archive.archive_id || "-",
+        deploymentId,
+        modelId: row.deployment.model_id,
+        profileName: row.deployment.profile_name,
+        status: row.deployment.status,
+        createdAt: archive.created_at || "-",
+        taskScene: "none",
+        datasetScene: String(archive.scene || "").trim() || "none",
+        objective: "all",
+        sourceLabel: formatArchiveSourceLabel(archive.archive_source),
+        summaryLabel: formatPredictionFeedbackSummary(archive.feedback_status, archive.feedback_note),
+        impactSignals: getArchiveImpactSignals(archive),
+        matchedScoreDelta: null,
+        matchedPerformanceScoreDelta: null,
+        matchedPerformanceDeltaBreakdown: {},
+        latencyMs: archive.latency_ms ?? null,
+        tripleCount: archive.triple_count ?? null,
+        note: "通过 deployment_id 直接命中推理实验归档",
+      }));
+      return [...taskRoutingRecordRows, ...experimentRecordRows];
+    }).sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
+  }, [rows]);
+
+  const recordObjectiveOptions = useMemo(
+    () => ["all", ...Array.from(new Set(recordRows.map((item) => String(item.objective || "").trim()).filter((item) => item && item !== "all"))).sort()],
+    [recordRows],
+  );
+  const recordModelOptions = useMemo(
+    () => ["all", ...Array.from(new Set(recordRows.map((item) => String(item.modelId || "").trim()).filter(Boolean))).sort()],
+    [recordRows],
+  );
+  const recordDeploymentOptions = useMemo(() => {
+    const scopedRows = recordModelFilter === "all"
+      ? recordRows
+      : recordRows.filter((item) => String(item.modelId || "").trim() === recordModelFilter);
+    return ["all", ...Array.from(new Set(scopedRows.map((item) => String(item.deploymentId || "").trim()).filter(Boolean))).sort()];
+  }, [recordModelFilter, recordRows]);
+  const recordTaskSceneOptions = useMemo(
+    () => ["all", "none", ...Array.from(new Set(recordRows.map((item) => String(item.taskScene || "").trim()).filter((item) => item && item !== "none"))).sort()],
+    [recordRows],
+  );
+  const recordDatasetSceneOptions = useMemo(
+    () => ["all", "none", ...Array.from(new Set(recordRows.map((item) => String(item.datasetScene || "").trim()).filter((item) => item && item !== "none"))).sort()],
+    [recordRows],
+  );
+  useEffect(() => {
+    if (!recordModelOptions.includes(recordModelFilter)) {
+      setRecordModelFilter("all");
+    }
+  }, [recordModelFilter, recordModelOptions]);
+  useEffect(() => {
+    if (!recordDeploymentOptions.includes(recordDeploymentFilter)) {
+      setRecordDeploymentFilter("all");
+    }
+  }, [recordDeploymentFilter, recordDeploymentOptions]);
+  useEffect(() => {
+    if (!recordObjectiveOptions.includes(recordObjectiveFilter)) {
+      setRecordObjectiveFilter("all");
+    }
+  }, [recordObjectiveFilter, recordObjectiveOptions]);
+  useEffect(() => {
+    if (!recordTaskSceneOptions.includes(recordTaskSceneFilter)) {
+      setRecordTaskSceneFilter("all");
+    }
+  }, [recordTaskSceneFilter, recordTaskSceneOptions]);
+  useEffect(() => {
+    if (!recordDatasetSceneOptions.includes(recordDatasetSceneFilter)) {
+      setRecordDatasetSceneFilter("all");
+    }
+  }, [recordDatasetSceneFilter, recordDatasetSceneOptions]);
+
+  const filteredRecordRows = useMemo(() => {
+    return recordRows.filter((row) => {
+      if (recordModelFilter !== "all" && row.modelId !== recordModelFilter) {
+        return false;
+      }
+      if (recordDeploymentFilter !== "all" && row.deploymentId !== recordDeploymentFilter) {
+        return false;
+      }
+      if (recordTypeFilter !== "all" && row.recordType !== recordTypeFilter) {
+        return false;
+      }
+      if (recordObjectiveFilter !== "all" && row.objective !== recordObjectiveFilter) {
+        return false;
+      }
+      if (recordTaskSceneFilter === "none" && row.taskScene !== "none") {
+        return false;
+      }
+      if (recordTaskSceneFilter !== "all" && recordTaskSceneFilter !== "none" && row.taskScene !== recordTaskSceneFilter) {
+        return false;
+      }
+      if (recordDatasetSceneFilter === "none" && row.datasetScene !== "none") {
+        return false;
+      }
+      if (recordDatasetSceneFilter !== "all" && recordDatasetSceneFilter !== "none" && row.datasetScene !== recordDatasetSceneFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [recordDatasetSceneFilter, recordDeploymentFilter, recordModelFilter, recordObjectiveFilter, recordRows, recordTaskSceneFilter, recordTypeFilter]);
 
   const pagination = useTablePagination(filteredRows, 5);
+  const recordPagination = useTablePagination(filteredRecordRows, 5);
   const noTaskRoutingCount = rows.filter((item) => !item.hasTaskRouting).length;
   const noExperimentCount = rows.filter((item) => !item.hasExperiment).length;
 
@@ -5127,6 +5613,17 @@ function DeploymentPerformancePage({ derived }) {
               <option value="all">全部模型</option>
               {modelOptions.filter((item) => item !== "all").map((item) => (
                 <option key={`deployment-performance-model-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>Deployment</span>
+            <select onChange={(event) => setDeploymentFilter(event.target.value)} value={deploymentFilter}>
+              <option value="all">全部 Deployment</option>
+              {deploymentOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-performance-deployment-${item}`} value={item}>
                   {item}
                 </option>
               ))}
@@ -5169,7 +5666,7 @@ function DeploymentPerformancePage({ derived }) {
           </label>
         </div>
         <div className="banner banner-muted">
-          过滤策略我先给成四层：模型、Deployment 状态、任务调度场景、推理实验数据集场景。这样能同时兼容“任务调度记录”和“推理实验记录”两条数据链路，而且还能显式筛出“无记录”的 deployment。
+          当前过滤策略保留四层：模型、Deployment 状态、任务调度场景、推理实验数据集场景。这样既能筛出某个 Deployment 在哪些调度场景下发生变化，也能对照看到推理实验记录。
         </div>
       </section>
 
@@ -5177,7 +5674,7 @@ function DeploymentPerformancePage({ derived }) {
         <SectionHeader
           kicker="表现层"
           title="所有 Deployment 表现变化"
-          note="表内同时展示任务调度侧的表现层变化，以及推理实验侧的数据集场景与运行统计。"
+          note="表内同时展示任务调度表现概览、表现层拆解、表现层净变化，以及造成这些变化的任务调度记录与推理记录。变化来源记录默认各展示最近 3 条。"
         />
         <div className="table-wrap">
           <table className="weight-profile-table score-evolution-table score-evolution-primary-table deployment-performance-table">
@@ -5188,13 +5685,15 @@ function DeploymentPerformancePage({ derived }) {
                 <th>任务调度表现概览</th>
                 <th>当前表现层拆解</th>
                 <th>表现层净变化</th>
-                <th>推理实验与说明</th>
+                <th>变化来源记录</th>
               </tr>
             </thead>
             <tbody>
               {pagination.pagedItems.length ? pagination.pagedItems.map((row) => {
                 const deltaPositive = Number(row.avgScoreDelta || 0) > 0;
                 const deltaNegative = Number(row.avgScoreDelta || 0) < 0;
+                const recentTaskRoutingArchives = row.matchedTaskRoutingArchives.slice(0, 3);
+                const recentExperimentArchives = sortByCreatedDesc(row.experimentRows).slice(0, 3);
                 return (
                   <tr key={row.deployment.deployment_id}>
                     <td className="score-evolution-cell-identity">
@@ -5277,7 +5776,24 @@ function DeploymentPerformancePage({ derived }) {
                     </td>
                     <td>
                       <div className="archive-cell-stack">
-                        <div className="archive-main">实验数 {row.experimentRows.length}</div>
+                        <div className="archive-main">任务调度记录 {row.matchedTaskRoutingArchives.length}</div>
+                        {recentTaskRoutingArchives.length ? recentTaskRoutingArchives.map((item) => (
+                          <div className="table-note" key={`${row.deployment.deployment_id}-task-archive-${item.archive_id || item.task_routing_decision_id}`}>
+                            {item.task_routing_decision_id || item.archive_id || "-"} · {item.created_at || "-"} · {item.scene || "-"}
+                          </div>
+                        )) : (
+                          <div className="table-note">未命中任务调度归档</div>
+                        )}
+                        <div className="table-note">默认展示最近 3 条任务调度记录</div>
+                        <div className="archive-main">推理记录 {row.experimentRows.length}</div>
+                        {recentExperimentArchives.length ? recentExperimentArchives.map((item) => (
+                          <div className="table-note" key={`${row.deployment.deployment_id}-experiment-archive-${item.archive_id || item.created_at}`}>
+                            {item.archive_id || "-"} · {formatDatasetSceneLabel(item.scene)} · {item.created_at || "-"}
+                          </div>
+                        )) : (
+                          <div className="table-note">未命中推理实验归档</div>
+                        )}
+                        <div className="table-note">默认展示最近 3 条推理记录</div>
                         <div className="table-note">平均延迟 {row.avgLatencyMs !== null ? `${Number(row.avgLatencyMs).toFixed(2)} ms` : "-"}</div>
                         <div className="table-note">平均三元组 {row.avgTripleCount !== null ? Number(row.avgTripleCount).toFixed(2) : "-"}</div>
                         <div className="table-note">最近实验 {row.latestExperimentAt}</div>
@@ -5307,6 +5823,184 @@ function DeploymentPerformancePage({ derived }) {
             pageSize={pagination.pageSize}
             totalItems={pagination.totalItems}
             onChange={pagination.setPage}
+          />
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="记录级"
+          title="Deployment 记录级影响明细"
+          note="这张表一行就是一条真实记录。筛选顺序改成先选模型，再选这个模型下的 Deployment，用来更直接定位某个 Deployment 的表现变化到底由哪条任务调度记录或推理记录带来。"
+        />
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>模型</span>
+            <select onChange={(event) => setRecordModelFilter(event.target.value)} value={recordModelFilter}>
+              <option value="all">全部模型</option>
+              {recordModelOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-records-model-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>Deployment</span>
+            <select onChange={(event) => setRecordDeploymentFilter(event.target.value)} value={recordDeploymentFilter}>
+              <option value="all">全部 Deployment</option>
+              {recordDeploymentOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-records-deployment-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">这里会跟随上一个“模型”筛选，只展示该模型下的 Deployment。</small>
+          </label>
+          <label className="stack-field">
+            <span>记录类型</span>
+            <select onChange={(event) => setRecordTypeFilter(event.target.value)} value={recordTypeFilter}>
+              <option value="all">全部类型</option>
+              <option value="task_routing">任务调度</option>
+              <option value="experiment">推理实验</option>
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>调度目标</span>
+            <select onChange={(event) => setRecordObjectiveFilter(event.target.value)} value={recordObjectiveFilter}>
+              <option value="all">全部目标</option>
+              {recordObjectiveOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-records-objective-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>任务调度场景</span>
+            <select onChange={(event) => setRecordTaskSceneFilter(event.target.value)} value={recordTaskSceneFilter}>
+              <option value="all">全部场景</option>
+              <option value="none">非任务调度记录</option>
+              {recordTaskSceneOptions.filter((item) => !["all", "none"].includes(item)).map((item) => (
+                <option key={`deployment-records-task-scene-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>推理实验数据集场景</span>
+            <select onChange={(event) => setRecordDatasetSceneFilter(event.target.value)} value={recordDatasetSceneFilter}>
+              <option value="all">全部场景</option>
+              <option value="none">非推理实验记录</option>
+              {recordDatasetSceneOptions.filter((item) => !["all", "none"].includes(item)).map((item) => (
+                <option key={`deployment-records-dataset-scene-${item}`} value={item}>
+                  {formatDatasetSceneLabel(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="banner banner-muted">
+          这张表看什么：如果你想知道“为什么某个 Deployment 最近表现变了”，就看这里。任务调度记录会带出它所属的评分上下文和净变化；推理实验记录会带出反馈信号、延迟和三元组信息。
+        </div>
+        <div className="table-wrap">
+          <table className="weight-profile-table score-evolution-table deployment-record-table">
+            <thead>
+              <tr>
+                <th>记录类型 / 编号</th>
+                <th>Deployment / 模型</th>
+                <th>目标 / 场景</th>
+                <th>记录内容</th>
+                <th>表现层净变化</th>
+                <th>命中说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recordPagination.pagedItems.length ? recordPagination.pagedItems.map((row) => (
+                <tr key={`${row.recordType}-${row.deploymentId}-${row.recordId}-${row.createdAt}`}>
+                  <td>
+                    <div className="archive-cell-stack">
+                      <div className="archive-main">{row.sourceLabel}</div>
+                      <div className="table-note">{row.recordId}</div>
+                      <div className="table-note">{row.createdAt}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="archive-cell-stack">
+                      <div className="archive-main">{row.deploymentId}</div>
+                      <div className="table-note">{row.status || "-"}</div>
+                      <div>{row.modelId}</div>
+                      <div className="table-note">{row.profileName || "-"}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="archive-cell-stack">
+                      <div className="table-note">目标：{row.objective === "all" ? "-" : row.objective}</div>
+                      <div className="table-note">任务调度场景：{row.taskScene === "none" ? "-" : row.taskScene}</div>
+                      <div className="table-note">数据集场景：{row.datasetScene === "none" ? "-" : formatDatasetSceneLabel(row.datasetScene)}</div>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="archive-cell-stack">
+                      <div>{row.summaryLabel}</div>
+                      <div className="tag-list">
+                        {row.impactSignals.map((item) => (
+                          <span className="tag" key={`${row.recordType}-${row.recordId}-${item}`}>{item}</span>
+                        ))}
+                      </div>
+                      <div className="table-note">延迟：{row.latencyMs !== null && row.latencyMs !== undefined ? `${Number(row.latencyMs).toFixed(2)} ms` : "-"}</div>
+                      <div className="table-note">三元组：{row.tripleCount !== null && row.tripleCount !== undefined ? row.tripleCount : "-"}</div>
+                    </div>
+                  </td>
+                  <td>
+                    {row.recordType === "task_routing" ? (
+                      <div className="archive-cell-stack">
+                        <div className={`score-delta-chip ${Number(row.matchedPerformanceScoreDelta || 0) > 0 ? "score-delta-positive" : Number(row.matchedPerformanceScoreDelta || 0) < 0 ? "score-delta-negative" : ""}`}>
+                          净变化 {formatSignedNumber(row.matchedPerformanceScoreDelta || 0, 4)}
+                        </div>
+                        <div className="table-note">
+                          评分变化 {formatSignedNumber(row.matchedScoreDelta || 0, 4)}
+                        </div>
+                        <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                          {getSignedWeightSnapshotEntries(row.matchedPerformanceDeltaBreakdown || {}).length ? (
+                            getSignedWeightSnapshotEntries(row.matchedPerformanceDeltaBreakdown || {}).map(([key, value]) => (
+                              <span className={`score-breakdown-compact-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`${row.recordType}-${row.recordId}-impact-${key}`}>
+                                <strong>{formatWeightDimensionLabel(key)}</strong>
+                                <span>{formatSignedNumber(value, 4)}</span>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="table-note">未找到更细的表现变化拆解</span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="archive-cell-stack">
+                        <div className="table-note">推理实验记录通常不直接沉淀为单条“表现层净变化”数值，而是通过反馈、延迟和三元组统计逐步作用到 Deployment 表现层。</div>
+                        <div className="tag-list">
+                          {row.impactSignals.map((item) => (
+                            <span className="tag" key={`${row.recordType}-${row.recordId}-signal-${item}`}>{item}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </td>
+                  <td className="limitation-cell">{row.note}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td className="table-note" colSpan="6">当前筛选条件下没有可展示的记录级影响明细。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <PaginationBar
+            currentPage={recordPagination.page}
+            totalPages={recordPagination.totalPages}
+            pageSize={recordPagination.pageSize}
+            totalItems={recordPagination.totalItems}
+            onChange={recordPagination.setPage}
           />
         </div>
       </section>
