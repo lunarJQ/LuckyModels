@@ -3664,132 +3664,6 @@ function TaskRoutingPage({
         </div>
       </section>
 
-      <section className="task-routing-summary-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="概念图" title="任务调度名词关系图" note="这张图回答这些名词是怎么串起来的。你可以把它理解成任务调度页的阅读地图。" />
-          <div className="task-routing-concept-flow">
-            <div className="task-routing-flow-node">
-              <strong>场景标识</strong>
-              <span>先限制候选 deployment 范围</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>目标偏好</strong>
-              <span>决定准确、覆盖、时延、资源的关注重点</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>权重信息</strong>
-              <span>由基础权重、Benchmark 修正、归档校准共同形成</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>执行路径</strong>
-              <span>决定单模型直出、多模型投票还是交叉校验</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>融合策略</strong>
-              <span>决定多个候选结果最终如何合成</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>统一输出</strong>
-              <span>形成最终三元组结果</span>
-            </div>
-          </div>
-          <div className="task-routing-concept-feedback">
-            <div className="task-routing-feedback-node">
-              <strong>Benchmark 证据</strong>
-              <span>修正不同 deployment 的排序依据</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-feedback-node">
-              <strong>结果反馈与反馈学习</strong>
-              <span>满意、漏抽多、误抽多、延迟高都会回流校准</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-feedback-node">
-              <strong>下一轮权重更新</strong>
-              <span>影响后续任务调度评分与路径选择</span>
-            </div>
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader
-            kicker="右侧实际记录"
-            title="当前执行路径与权重实例"
-            note="这里只展示本次刚运行出来的真实任务调度结果，不再混入历史累计记录。"
-          />
-          {taskRoutingResult ? (
-            <>
-              <div className="metrics">
-                <MetricCard title="记录来源" value={activeRecordSourceLabel} note={`决策编号 ${activeRecordDecisionId}`} />
-                <MetricCard title="执行路径" value={formatExecutionPathLabel(activeExecutionPathCode)} note={activeExecutionPathCode || "尚未生成路径代码"} />
-                <MetricCard title="融合策略" value={formatFusionPolicyLabel(activeFusionPolicyCode)} note={activeFusionPolicyCode || "尚未生成融合代码"} />
-                <MetricCard title="权重主项" value={activeTopWeightEntry?.[0] || "-"} note={activeTopWeightEntry ? `当前值 ${Number(activeTopWeightEntry[1]).toFixed(2)}` : "尚未形成权重快照"} />
-              </div>
-              {activeDecisionNote ? <div className="banner banner-muted">{activeDecisionNote}</div> : null}
-              <div className="relation-list">
-                <div className="relation-item">
-                  <strong>实际执行路径怎么看</strong>
-                  <br />
-                  当前记录显示为“{formatExecutionPathLabel(activeExecutionPathCode)}”。它决定平台本次是单模型直出，还是多模型交叉验证、多模型融合。
-                </div>
-                <div className="relation-item">
-                  <strong>实际融合策略怎么看</strong>
-                  <br />
-                  当前记录显示为“{formatFusionPolicyLabel(activeFusionPolicyCode)}”。它决定多个候选模型的结果最终如何合成为统一输出。
-                </div>
-                <div className="relation-item">
-                  <strong>当前参与模型</strong>
-                  <br />
-                  {activeSelectedModels.length ? activeSelectedModels.join(" / ") : "当前记录里还没有参与模型信息。"}
-                </div>
-                <div className="relation-item">
-                  <strong>记录留痕</strong>
-                  <br />
-                  归档编号：{activeRecordArchiveId}
-                  <br />
-                  记录时间：{activeRecordTime}
-                </div>
-              </div>
-              <div className="task-routing-weight-stack">
-                <div className="task-routing-weight-card">
-                  <strong>有效权重</strong>
-                  <span>{formatWeightSnapshot(activeWeightSnapshot)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>基准修正</strong>
-                  <span>{formatWeightSnapshot(activeBenchmarkAdjustments)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>无用户反馈校准修正</strong>
-                  <span>{formatWeightSnapshot(activeUnsupervisedAdjustments)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>有用户反馈校准修正</strong>
-                  <span>{formatWeightSnapshot(activeFeedbackAdjustments)}</span>
-                </div>
-              </div>
-              <div className="banner banner-muted">
-                这一块就是任务调度页的“实例翻译器”：左边解释名词，右边直接给出当前真实记录，方便你把术语和平台实际行为一一对上。
-              </div>
-            </>
-          ) : (
-            <>
-              <EmptyState icon="R" title="还没有本次调度记录" note="你还没有执行当前这次任务调度，所以这里不会预先展示历史执行路径或历史权重快照，避免和本次实时结果混淆。" />
-              <div className="actions">
-                <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
-                  查看历史调度记录
-                </NavLink>
-              </div>
-            </>
-          )}
-        </article>
-      </section>
-
       <section className="detail-grid page-shell">
         <article className="card detail-card">
           <SectionHeader kicker="操作区" title="运行参数" note="这是你每次真正需要填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。" />
@@ -4097,6 +3971,132 @@ function TaskRoutingPage({
           {!benchmarkEvidencePagination.totalItems ? (
             <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
           ) : null}
+        </article>
+      </section>
+
+      <section className="task-routing-summary-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="概念图" title="任务调度名词关系图" note="这张图回答这些名词是怎么串起来的。你可以把它理解成任务调度页的阅读地图。" />
+          <div className="task-routing-concept-flow">
+            <div className="task-routing-flow-node">
+              <strong>场景标识</strong>
+              <span>先限制候选 deployment 范围</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-flow-node">
+              <strong>目标偏好</strong>
+              <span>决定准确、覆盖、时延、资源的关注重点</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-flow-node">
+              <strong>权重信息</strong>
+              <span>由基础权重、Benchmark 修正、归档校准共同形成</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-flow-node">
+              <strong>执行路径</strong>
+              <span>决定单模型直出、多模型投票还是交叉校验</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-flow-node">
+              <strong>融合策略</strong>
+              <span>决定多个候选结果最终如何合成</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-flow-node">
+              <strong>统一输出</strong>
+              <span>形成最终三元组结果</span>
+            </div>
+          </div>
+          <div className="task-routing-concept-feedback">
+            <div className="task-routing-feedback-node">
+              <strong>Benchmark 证据</strong>
+              <span>修正不同 deployment 的排序依据</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-feedback-node">
+              <strong>结果反馈与反馈学习</strong>
+              <span>满意、漏抽多、误抽多、延迟高都会回流校准</span>
+            </div>
+            <div className="task-routing-flow-arrow">-&gt;</div>
+            <div className="task-routing-feedback-node">
+              <strong>下一轮权重更新</strong>
+              <span>影响后续任务调度评分与路径选择</span>
+            </div>
+          </div>
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader
+            kicker="右侧实际记录"
+            title="当前执行路径与权重实例"
+            note="这里只展示本次刚运行出来的真实任务调度结果，不再混入历史累计记录。"
+          />
+          {taskRoutingResult ? (
+            <>
+              <div className="metrics">
+                <MetricCard title="记录来源" value={activeRecordSourceLabel} note={`决策编号 ${activeRecordDecisionId}`} />
+                <MetricCard title="执行路径" value={formatExecutionPathLabel(activeExecutionPathCode)} note={activeExecutionPathCode || "尚未生成路径代码"} />
+                <MetricCard title="融合策略" value={formatFusionPolicyLabel(activeFusionPolicyCode)} note={activeFusionPolicyCode || "尚未生成融合代码"} />
+                <MetricCard title="权重主项" value={activeTopWeightEntry?.[0] || "-"} note={activeTopWeightEntry ? `当前值 ${Number(activeTopWeightEntry[1]).toFixed(2)}` : "尚未形成权重快照"} />
+              </div>
+              {activeDecisionNote ? <div className="banner banner-muted">{activeDecisionNote}</div> : null}
+              <div className="relation-list">
+                <div className="relation-item">
+                  <strong>实际执行路径怎么看</strong>
+                  <br />
+                  当前记录显示为“{formatExecutionPathLabel(activeExecutionPathCode)}”。它决定平台本次是单模型直出，还是多模型交叉验证、多模型融合。
+                </div>
+                <div className="relation-item">
+                  <strong>实际融合策略怎么看</strong>
+                  <br />
+                  当前记录显示为“{formatFusionPolicyLabel(activeFusionPolicyCode)}”。它决定多个候选模型的结果最终如何合成为统一输出。
+                </div>
+                <div className="relation-item">
+                  <strong>当前参与模型</strong>
+                  <br />
+                  {activeSelectedModels.length ? activeSelectedModels.join(" / ") : "当前记录里还没有参与模型信息。"}
+                </div>
+                <div className="relation-item">
+                  <strong>记录留痕</strong>
+                  <br />
+                  归档编号：{activeRecordArchiveId}
+                  <br />
+                  记录时间：{activeRecordTime}
+                </div>
+              </div>
+              <div className="task-routing-weight-stack">
+                <div className="task-routing-weight-card">
+                  <strong>有效权重</strong>
+                  <span>{formatWeightSnapshot(activeWeightSnapshot)}</span>
+                </div>
+                <div className="task-routing-weight-card">
+                  <strong>基准修正</strong>
+                  <span>{formatWeightSnapshot(activeBenchmarkAdjustments)}</span>
+                </div>
+                <div className="task-routing-weight-card">
+                  <strong>无用户反馈校准修正</strong>
+                  <span>{formatWeightSnapshot(activeUnsupervisedAdjustments)}</span>
+                </div>
+                <div className="task-routing-weight-card">
+                  <strong>有用户反馈校准修正</strong>
+                  <span>{formatWeightSnapshot(activeFeedbackAdjustments)}</span>
+                </div>
+              </div>
+              <div className="banner banner-muted">
+                这一块就是任务调度页的“实例翻译器”：左边解释名词，右边直接给出当前真实记录，方便你把术语和平台实际行为一一对上。
+              </div>
+            </>
+          ) : (
+            <>
+              <EmptyState icon="R" title="还没有本次调度记录" note="你还没有执行当前这次任务调度，所以这里不会预先展示历史执行路径或历史权重快照，避免和本次实时结果混淆。" />
+              <div className="actions">
+                <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
+                  查看历史调度记录
+                </NavLink>
+              </div>
+            </>
+          )}
         </article>
       </section>
 
