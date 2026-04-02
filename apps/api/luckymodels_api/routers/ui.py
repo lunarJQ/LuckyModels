@@ -12,6 +12,8 @@ FRONTEND_PATHS = [
     "/login",
     "/dashboard",
     "/experiments",
+    "/task-routing-history",
+    "/deployment-performance",
     "/access-control",
     "/admin-console",
     "/archive",

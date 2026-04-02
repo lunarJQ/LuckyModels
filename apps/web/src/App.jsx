@@ -430,6 +430,18 @@ function formatWeightDimensionLabel(value) {
   return labels[String(value || "").trim()] || value || "-";
 }
 
+function formatObjectiveLabel(value) {
+  const labels = {
+    accuracy: "高准确",
+    coverage: "高覆盖",
+    latency: "低时延",
+    balanced: "综合平衡",
+    resource: "低成本",
+    domain: "领域优先",
+  };
+  return labels[String(value || "").trim()] || value || "-";
+}
+
 function formatSignedNumber(value, digits = 4) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -4278,9 +4290,6 @@ function TaskRoutingHistoryPage({ derived }) {
     { value: "resource", label: "低成本" },
     { value: "domain", label: "领域优先" },
   ];
-  function formatObjectiveLabel(value) {
-    return objectiveOptions.find((item) => item.value === value)?.label || value || "-";
-  }
   const feedbackOverview = derived.taskRoutingFeedbackOverview || {
     total_decisions: 0,
     total_feedback: 0,
