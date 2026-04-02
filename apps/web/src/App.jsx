@@ -4466,7 +4466,7 @@ function TaskRoutingHistoryPage({ derived }) {
   const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
   const calibrationArchiveCount = derived.predictArchives.length;
   const [historyObjectiveFilter, setHistoryObjectiveFilter] = useState("all");
-  const [historyDecisionFilter, setHistoryDecisionFilter] = useState("");
+  const [historyDecisionFilter, setHistoryDecisionFilter] = useState("all");
   const historyObjectiveOptions = [
     { value: "all", label: "全部目标", count: feedbackOverview.total_decisions || 0 },
     ...objectiveOptions.map((item) => ({
@@ -4497,22 +4497,56 @@ function TaskRoutingHistoryPage({ derived }) {
   function getHistoryDecisionKey(item) {
     return String(item?.task_routing_decision_id || item?.archive_id || "").trim();
   }
+  const isAllHistoryDecisionSelected = historyDecisionFilter === "all";
   useEffect(() => {
     const availableKeys = filteredTaskRoutingHistoryRows.map((item) => getHistoryDecisionKey(item)).filter(Boolean);
+    if (historyDecisionFilter === "all") {
+      return;
+    }
     if (!availableKeys.length) {
-      if (historyDecisionFilter) {
-        setHistoryDecisionFilter("");
+      if (historyDecisionFilter !== "all") {
+        setHistoryDecisionFilter("all");
       }
       return;
     }
-    if (!historyDecisionFilter || !availableKeys.includes(historyDecisionFilter)) {
-      setHistoryDecisionFilter(availableKeys[0]);
+    if (!availableKeys.includes(historyDecisionFilter)) {
+      setHistoryDecisionFilter("all");
     }
   }, [filteredTaskRoutingHistoryRows, historyDecisionFilter]);
   const selectedHistoryDecision = useMemo(
-    () => filteredTaskRoutingHistoryRows.find((item) => getHistoryDecisionKey(item) === historyDecisionFilter) || null,
-    [filteredTaskRoutingHistoryRows, historyDecisionFilter],
+    () => (isAllHistoryDecisionSelected
+      ? null
+      : filteredTaskRoutingHistoryRows.find((item) => getHistoryDecisionKey(item) === historyDecisionFilter) || null),
+    [filteredTaskRoutingHistoryRows, historyDecisionFilter, isAllHistoryDecisionSelected],
   );
+  const filteredHistoryModelScoreRows = useMemo(() => {
+    let rows = [...(feedbackOverview.model_score_summaries || [])];
+    if (historyObjectiveFilter !== "all") {
+      rows = rows.filter((item) => String(item.objective || "").trim().toLowerCase() === historyObjectiveFilter);
+    }
+    if (selectedHistoryDecision) {
+      const selectedModels = new Set((selectedHistoryDecision.task_routing_selected_model_ids || []).map((item) => String(item || "").trim()).filter(Boolean));
+      const selectedScene = String(selectedHistoryDecision.scene || "").trim();
+      const selectedObjective = String(selectedHistoryDecision.task_routing_objective || "").trim().toLowerCase();
+      if (selectedObjective) {
+        rows = rows.filter((item) => String(item.objective || "").trim().toLowerCase() === selectedObjective);
+      }
+      if (selectedScene) {
+        rows = rows.filter((item) => String(item.scene || "").trim() === selectedScene);
+      }
+      if (selectedModels.size) {
+        rows = rows.filter((item) => selectedModels.has(String(item.model_id || "").trim()));
+      }
+    }
+    return rows.sort((left, right) => {
+      const rightDelta = Math.abs(Number(right.score_delta || 0));
+      const leftDelta = Math.abs(Number(left.score_delta || 0));
+      if (rightDelta !== leftDelta) {
+        return rightDelta - leftDelta;
+      }
+      return String(left.deployment_id || "").localeCompare(String(right.deployment_id || ""));
+    });
+  }, [feedbackOverview.model_score_summaries, historyObjectiveFilter, selectedHistoryDecision]);
   const filteredExecutionPathSummaries = useMemo(() => {
     const grouped = new Map();
     filteredTaskRoutingHistoryRows.forEach((item) => {
@@ -4550,6 +4584,7 @@ function TaskRoutingHistoryPage({ derived }) {
   }, [filteredTaskRoutingHistoryRows]);
   const objectiveSummaryPagination = useTablePagination(filteredObjectiveSummaries, 5);
   const weightProfilePagination = useTablePagination(filteredWeightProfiles, 5);
+  const historyModelScorePagination = useTablePagination(filteredHistoryModelScoreRows, 5);
   const executionPathPagination = useTablePagination(filteredExecutionPathSummaries, 5);
   const recentDecisionPagination = useTablePagination(filteredTaskRoutingHistoryRows, 5);
 
@@ -4586,6 +4621,7 @@ function TaskRoutingHistoryPage({ derived }) {
               onChange={(event) => setHistoryDecisionFilter(event.target.value)}
               value={historyDecisionFilter}
             >
+              <option value="all">全部记录</option>
               {filteredTaskRoutingHistoryRows.map((item) => {
                 const decisionKey = getHistoryDecisionKey(item);
                 return (
@@ -4596,7 +4632,7 @@ function TaskRoutingHistoryPage({ derived }) {
               })}
             </select>
             <small className="detail-note">
-              这里用于查看某一条真实决策记录。选中后，页面下方“单条决策详情”会同步展示该记录的执行路径、融合策略、选中模型与反馈状态。
+              这里用于查看某一条真实决策记录；也支持切回“全部记录”。选中单条后，页面下方会同步聚焦这条记录的执行路径、融合策略、选中模型，以及对应模型部署的表现变化。
             </small>
           </label>
         </div>
@@ -4951,10 +4987,122 @@ function TaskRoutingHistoryPage({ derived }) {
         ) : (
           <EmptyState
             icon="D"
-            title="当前没有可查看的决策详情"
-            note="先在上方选择一个任务调度目标分类，或等待平台产生至少一条任务调度历史记录。"
+            title={filteredTaskRoutingHistoryRows.length ? "当前处于全部记录视角" : "当前没有可查看的决策详情"}
+            note={filteredTaskRoutingHistoryRows.length
+              ? "你当前选择的是“全部记录”，因此这里不展开单条决策详情。若要查看某次任务调度的具体路径、融合策略和反馈状态，请在上方筛选器中选中某一条记录。"
+              : "先在上方选择一个任务调度目标分类，或等待平台产生至少一条任务调度历史记录。"}
           />
         )}
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="历史部署"
+          title="模型部署表现变化"
+          note={selectedHistoryDecision
+            ? "当前按单条调度记录过滤，只展示这次任务调度实际用到的模型所对应的部署表现变化。"
+            : "当前处于全部记录视角，展示当前目标分类下全部模型部署的历史表现变化。"}
+        />
+        <div className="banner banner-muted">
+          这张表看什么：看模型部署在历史学习后的评分变化。若上方选择“全部记录”，这里是当前目标分类下的全量 deployment；若选中某条决策记录，这里会缩成这次调度实际用到的模型部署。
+        </div>
+        <div className="table-wrap">
+          <table className="weight-profile-table score-evolution-table score-evolution-primary-table">
+            <thead>
+              <tr>
+                <th>Deployment / 模型</th>
+                <th>目标 / 场景</th>
+                <th>评分概览</th>
+                <th>当前得分拆解</th>
+                <th>表现层净变化</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historyModelScorePagination.pagedItems.length ? historyModelScorePagination.pagedItems.map((item) => {
+                const deltaPositive = Number(item.score_delta || 0) > 0;
+                const deltaNegative = Number(item.score_delta || 0) < 0;
+                return (
+                  <tr key={`history-model-score-${item.objective}-${item.scene}-${item.deployment_id}`}>
+                    <td className="score-evolution-cell-identity">
+                      <div className="archive-cell-stack">
+                        <strong className="archive-main">{item.deployment_id}</strong>
+                        <div className="table-note">{item.profile_name}</div>
+                        <div className="archive-main">{item.model_id}</div>
+                        <div className="table-note">{item.dataset_name || "-"}</div>
+                      </div>
+                    </td>
+                    <td>
+                      <div>{formatObjectiveLabel(item.objective)}</div>
+                      <div className="table-note">{item.scene || "-"}</div>
+                    </td>
+                    <td>
+                      <div className="score-overview-stack">
+                        <div className="score-overview-row">
+                          <span className="weight-snapshot-chip weight-snapshot-chip-baseline score-overview-chip">
+                            <strong>优化前</strong>
+                            <span>{Number(item.baseline_score || 0).toFixed(4)}</span>
+                          </span>
+                          <span className="weight-snapshot-chip score-overview-chip">
+                            <strong>当前</strong>
+                            <span>{Number(item.current_score || 0).toFixed(4)}</span>
+                          </span>
+                        </div>
+                        <span className={`score-delta-chip score-overview-delta ${deltaPositive ? "score-delta-positive" : deltaNegative ? "score-delta-negative" : ""}`}>
+                          变化 {formatSignedNumber(item.score_delta || 0, 4)}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                        {getWeightSnapshotEntries(item.current_breakdown || {}).length ? (
+                          getWeightSnapshotEntries(item.current_breakdown || {}).map(([key, value]) => (
+                            <span className="score-breakdown-compact-chip" key={`history-score-${item.deployment_id}-breakdown-${key}`}>
+                              <strong>{formatWeightDimensionLabel(key)}</strong>
+                              <span>{Number(value).toFixed(2)}</span>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="table-note">无</span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                        {getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).length ? (
+                          getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).map(([key, value]) => (
+                            <span className={`score-breakdown-compact-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`history-score-${item.deployment_id}-performance-${key}`}>
+                              <strong>{formatWeightDimensionLabel(key)}</strong>
+                              <span>{formatSignedNumber(value, 4)}</span>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="table-note">无变化</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="limitation-cell score-evolution-note-cell">{item.change_note || "暂无变化说明"}</td>
+                  </tr>
+                );
+              }) : (
+                <tr>
+                  <td className="table-note" colSpan="6">
+                    {selectedHistoryDecision
+                      ? "当前选中的这条调度记录下，还没有匹配到对应模型部署的表现变化数据。"
+                      : "当前筛选条件下，还没有可展示的模型部署表现变化数据。"}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <PaginationBar
+            currentPage={historyModelScorePagination.page}
+            totalPages={historyModelScorePagination.totalPages}
+            pageSize={historyModelScorePagination.pageSize}
+            totalItems={historyModelScorePagination.totalItems}
+            onChange={historyModelScorePagination.setPage}
+          />
+        </div>
       </section>
     </>
   );
