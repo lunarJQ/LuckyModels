@@ -471,6 +471,25 @@ function formatFusionPolicyNote(value) {
   return fusionPolicyNotes[String(value || "").trim()] || "该融合策略当前没有补充说明。";
 }
 
+function formatDeploymentPolicyActionLabel(value) {
+  const labels = {
+    scan_only: "策略扫描",
+    rebalance_only: "资源受限优化 · 局部重平衡",
+    rebalance_gpu: "资源受限优化 · GPU 重平衡",
+    migrate_to_cpu: "资源受限优化 · 迁移到 CPU",
+    skip_cpu_migration: "资源受限优化 · 跳过 CPU 迁移",
+    recover_to_gpu: "资源恢复优化 · 回迁到 GPU",
+    recover_profile: "资源恢复优化 · profile 优化",
+    restart_high_gpu_memory: "显存守护 · 自动重启",
+    gpu_pool_update: "GPU 范围变更",
+    gpu_pool_scope_change: "GPU 范围变更 · 忙碌保护",
+    gpu_pool_reassign_gpu: "GPU 范围变更 · 换卡迁移",
+    gpu_pool_fallback_cpu: "GPU 范围变更 · CPU 兜底",
+    gpu_pool_promote_gpu: "GPU 范围变更 · 回迁到 GPU",
+  };
+  return labels[String(value || "").trim()] || value || "-";
+}
+
 function buildPaginationItems(currentPage, totalPages) {
   const safeCurrentPage = Math.max(1, Math.min(currentPage, totalPages));
   const start = Math.max(1, safeCurrentPage - 2);
@@ -4677,13 +4696,26 @@ function DeploymentPolicyPage({
       const gpuChanged =
         Boolean(deployment.use_gpu) !== Boolean(recommendation.recommended_use_gpu) ||
         JSON.stringify(deployment.gpu_ids || []) !== JSON.stringify(recommendation.recommended_gpu_ids || []);
+      const isRecoveryToGpu = !deployment.use_gpu && recommendation.recommended_use_gpu;
+      const isConstraintToCpu =
+        deployment.use_gpu && !recommendation.recommended_use_gpu && recommendation.gpu_pressure_action === "migrate_to_cpu";
+      const isConstraintGpuRebalance =
+        deployment.use_gpu && recommendation.recommended_use_gpu && gpuChanged;
+      const isRecoveryProfile =
+        profileChanged &&
+        (
+          (!deployment.use_gpu && !recommendation.recommended_use_gpu) ||
+          (deployment.use_gpu && recommendation.recommended_use_gpu)
+        );
       let optimizationAction = "保持现状";
-      if (gpuChanged && recommendation.recommended_use_gpu) {
-        optimizationAction = "迁移到建议 GPU";
-      } else if (gpuChanged && !recommendation.recommended_use_gpu) {
-        optimizationAction = "转为 CPU";
-      } else if (profileChanged) {
-        optimizationAction = "调整 Profile";
+      if (isRecoveryToGpu) {
+        optimizationAction = "资源恢复优化：回迁到 GPU";
+      } else if (isConstraintToCpu) {
+        optimizationAction = "资源受限优化：迁移到 CPU";
+      } else if (isConstraintGpuRebalance) {
+        optimizationAction = "资源受限优化：换卡重平衡";
+      } else if (isRecoveryProfile) {
+        optimizationAction = "资源恢复优化：调整 Profile";
       }
       return {
         deployment,
@@ -4693,9 +4725,16 @@ function DeploymentPolicyPage({
         optimizationAction,
         profileChanged,
         gpuChanged,
+        isRecoveryToGpu,
+        isConstraintToCpu,
+        isConstraintGpuRebalance,
+        isRecoveryProfile,
       };
     })
     .filter(Boolean);
+  const resourceRecoveryCandidateCount = deploymentPlanRows.filter(
+    (row) => row.isRecoveryToGpu || row.isRecoveryProfile,
+  ).length;
   const policyActionPagination = useTablePagination(deploymentPolicyAutomation?.recent_actions || [], 5);
   const deploymentPlanPagination = useTablePagination(deploymentPlanRows, 5);
 
@@ -4880,7 +4919,9 @@ function DeploymentPolicyPage({
           <MetricCard title="最近优化" value={deploymentPolicyAutomation?.last_run_at || "-"} note={`累计 ${deploymentPolicyAutomation?.run_count || 0} 轮`} />
         </div>
         <div className="detail-note">
-          部署优化遵循两阶段规则：优先做 GPU 内部换卡与重平衡；仅当所有 GPU 都处于高压状态时，才把冷模型或低优先级 deployment 迁移到 CPU。
+          部署优化现在是双向闭环。
+          资源受限时，优先做 GPU 内部换卡与重平衡，必要时将低优先级 deployment 迁移到 CPU；
+          资源恢复后，会重新基于最新评分生成推荐，再执行 GPU 回迁与 profile 恢复优化，而不是回到历史旧状态。
         </div>
         {deploymentPolicyAutomation?.recent_actions?.length ? (
           <div className="table-wrap">
@@ -4898,10 +4939,11 @@ function DeploymentPolicyPage({
                 {policyActionPagination.pagedItems.map((item, index) => (
                   <tr key={`${item.created_at}-${item.model_id}-${index}`}>
                     <td>{item.created_at}</td>
-                    <td>{item.action_type}</td>
+                    <td>{formatDeploymentPolicyActionLabel(item.action_type)}</td>
                     <td>
                       <strong>{item.model_id}</strong>
                       <div className="table-note">{item.deployment_id || "-"}</div>
+                      <div className="table-note">{item.action_type}</div>
                     </td>
                     <td>{item.status}</td>
                     <td className="limitation-cell">{item.detail}</td>
@@ -4931,6 +4973,7 @@ function DeploymentPolicyPage({
             <MetricCard title="活跃进程" value={deploymentPolicy.gpu_snapshot.process_count || 0} note="nvidia-smi 检测到的活跃进程" />
             <MetricCard title="最空闲 GPU" value={freestGpu ? `GPU ${freestGpu.index}` : "-"} note="按显存余量估算" />
             <MetricCard title="CPU 迁移候选" value={gpuPressureModels.length} note="全局 GPU 高压时建议迁移到 CPU 的模型数" />
+            <MetricCard title="恢复优化候选" value={resourceRecoveryCandidateCount} note="资源恢复后可回迁 GPU 或恢复 profile 的 deployment 数" />
           </div>
         ) : (
           <EmptyState icon="G" title="还没有部署建议快照" note="点击上方“刷新部署建议”后，这里会展示实时 GPU 资源视图。" />
@@ -5039,6 +5082,13 @@ function DeploymentPolicyPage({
                       </div>
                       <div className="table-note">
                         {row.profileChanged ? `Profile 调整为 ${row.recommendation.recommended_profile_name}` : "Profile 保持不变"}
+                      </div>
+                      <div className="table-note">
+                        {row.isRecoveryToGpu || row.isRecoveryProfile
+                          ? "这是资源恢复后的最新推荐动作"
+                          : row.isConstraintToCpu || row.isConstraintGpuRebalance
+                            ? "这是资源受限时的压缩或重平衡动作"
+                            : "当前 deployment 已接近最新推荐方案"}
                       </div>
                       <div className="tag-list">
                         {(row.recommendation.policy_tags || []).map((tag) => (

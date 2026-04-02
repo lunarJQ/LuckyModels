@@ -2970,7 +2970,8 @@ def _build_deployment_policy_summary(
         f"{gpu_scope_note}平台当前共分析 {len(recommendations)} 个模型，其中热模型 {hot_count} 个、温模型 {warm_count} 个、冷模型 {cold_count} 个。"
         f"任务调度侧识别出 {cross_layer_priority_count} 个高价值模型，运行侧识别出 {high_risk_count} 个高风险模型；"
         f"建议常驻 {always_on_count} 个、保温 {keep_warm_count} 个、按需启动 {on_demand_count} 个；"
-        f"局部 GPU 压力时优先执行换卡重平衡；全局 GPU 高压时有 {cpu_fallback_count} 个低优先级模型建议迁移到 CPU 释放显存。"
+        f"局部 GPU 压力时优先执行换卡重平衡；全局 GPU 高压时有 {cpu_fallback_count} 个低优先级模型建议迁移到 CPU 释放显存；"
+        "当 GPU 资源恢复后，平台会重新基于最新评分生成部署推荐，并执行 GPU 回迁与 profile 恢复优化。"
     )
     return DeploymentPolicySummary(
         total_models=len(recommendations),
