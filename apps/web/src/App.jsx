@@ -4467,6 +4467,9 @@ function TaskRoutingHistoryPage({ derived }) {
   const calibrationArchiveCount = derived.predictArchives.length;
   const [historyObjectiveFilter, setHistoryObjectiveFilter] = useState("all");
   const [historyDecisionFilter, setHistoryDecisionFilter] = useState("all");
+  const [historyModelScoreObjectiveFilter, setHistoryModelScoreObjectiveFilter] = useState("all");
+  const [historyModelScoreSceneFilter, setHistoryModelScoreSceneFilter] = useState("all");
+  const [historyModelScoreModelFilter, setHistoryModelScoreModelFilter] = useState("all");
   const historyObjectiveOptions = [
     { value: "all", label: "全部目标", count: feedbackOverview.total_decisions || 0 },
     ...objectiveOptions.map((item) => ({
@@ -4519,7 +4522,7 @@ function TaskRoutingHistoryPage({ derived }) {
       : filteredTaskRoutingHistoryRows.find((item) => getHistoryDecisionKey(item) === historyDecisionFilter) || null),
     [filteredTaskRoutingHistoryRows, historyDecisionFilter, isAllHistoryDecisionSelected],
   );
-  const filteredHistoryModelScoreRows = useMemo(() => {
+  const baseHistoryModelScoreRows = useMemo(() => {
     let rows = [...(feedbackOverview.model_score_summaries || [])];
     if (historyObjectiveFilter !== "all") {
       rows = rows.filter((item) => String(item.objective || "").trim().toLowerCase() === historyObjectiveFilter);
@@ -4547,6 +4550,42 @@ function TaskRoutingHistoryPage({ derived }) {
       return String(left.deployment_id || "").localeCompare(String(right.deployment_id || ""));
     });
   }, [feedbackOverview.model_score_summaries, historyObjectiveFilter, selectedHistoryDecision]);
+  const historyModelScoreSceneOptions = useMemo(() => {
+    const uniqueScenes = Array.from(new Set(baseHistoryModelScoreRows.map((item) => String(item.scene || "").trim()).filter(Boolean)));
+    return ["all", ...uniqueScenes];
+  }, [baseHistoryModelScoreRows]);
+  const historyModelScoreModelOptions = useMemo(() => {
+    const uniqueModels = Array.from(new Set(baseHistoryModelScoreRows.map((item) => String(item.model_id || "").trim()).filter(Boolean)));
+    return ["all", ...uniqueModels];
+  }, [baseHistoryModelScoreRows]);
+  useEffect(() => {
+    if (historyModelScoreObjectiveFilter !== "all" && !objectiveOptions.some((item) => item.value === historyModelScoreObjectiveFilter)) {
+      setHistoryModelScoreObjectiveFilter("all");
+    }
+  }, [historyModelScoreObjectiveFilter, objectiveOptions]);
+  useEffect(() => {
+    if (historyModelScoreSceneFilter !== "all" && !historyModelScoreSceneOptions.includes(historyModelScoreSceneFilter)) {
+      setHistoryModelScoreSceneFilter("all");
+    }
+  }, [historyModelScoreSceneFilter, historyModelScoreSceneOptions]);
+  useEffect(() => {
+    if (historyModelScoreModelFilter !== "all" && !historyModelScoreModelOptions.includes(historyModelScoreModelFilter)) {
+      setHistoryModelScoreModelFilter("all");
+    }
+  }, [historyModelScoreModelFilter, historyModelScoreModelOptions]);
+  const filteredHistoryModelScoreRows = useMemo(() => {
+    let rows = [...baseHistoryModelScoreRows];
+    if (historyModelScoreObjectiveFilter !== "all") {
+      rows = rows.filter((item) => String(item.objective || "").trim().toLowerCase() === historyModelScoreObjectiveFilter);
+    }
+    if (historyModelScoreSceneFilter !== "all") {
+      rows = rows.filter((item) => String(item.scene || "").trim() === historyModelScoreSceneFilter);
+    }
+    if (historyModelScoreModelFilter !== "all") {
+      rows = rows.filter((item) => String(item.model_id || "").trim() === historyModelScoreModelFilter);
+    }
+    return rows;
+  }, [baseHistoryModelScoreRows, historyModelScoreModelFilter, historyModelScoreObjectiveFilter, historyModelScoreSceneFilter]);
   const filteredExecutionPathSummaries = useMemo(() => {
     const grouped = new Map();
     filteredTaskRoutingHistoryRows.forEach((item) => {
@@ -4636,7 +4675,7 @@ function TaskRoutingHistoryPage({ derived }) {
             </small>
           </label>
         </div>
-        <div className="banner banner-muted">阅读顺序建议：先看“各目标历史累计概览”，再看“各目标长期调度权重快照”；最后用“执行路径分布”和“最近决策记录”去验证这些长期统计确实对应真实任务调度行为。</div>
+        <div className="banner banner-muted">阅读顺序建议：先看“单条决策详情”，再看“各目标历史累计概览”和“长期调度评分权重快照”；随后看“历史部署表现变化”，最后再用“执行路径分布”和“最近决策记录”核对长期统计。</div>
         <div className="relation-list">
           {(feedbackOverview.insights || []).map((item, index) => (
             <div className="relation-item" key={`${item}-${index + 1}`}>
@@ -4644,6 +4683,103 @@ function TaskRoutingHistoryPage({ derived }) {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="单条记录"
+          title="单条决策详情"
+          note="这里专门展开上方筛选器当前选中的那一条任务调度记录，方便你单独核对这次调度到底用了什么路径、什么融合策略、选了哪些模型，以及后续有没有收到反馈。"
+        />
+        {selectedHistoryDecision ? (
+          <>
+            <div className="metrics">
+              <MetricCard
+                title="决策编号"
+                value={selectedHistoryDecision.task_routing_decision_id || selectedHistoryDecision.archive_id || "-"}
+                note={`时间 ${selectedHistoryDecision.created_at || "-"}`}
+              />
+              <MetricCard
+                title="任务调度目标"
+                value={formatObjectiveLabel(selectedHistoryDecision.task_routing_objective)}
+                note={`${selectedHistoryDecision.scene || "-"} / ${formatLanguageLabel(selectedHistoryDecision.inferred_language)}`}
+              />
+              <MetricCard
+                title="执行路径"
+                value={formatExecutionPathLabel(selectedHistoryDecision.task_routing_execution_path)}
+                note={selectedHistoryDecision.task_routing_execution_path || "-"}
+              />
+              <MetricCard
+                title="融合策略"
+                value={formatFusionPolicyLabel(selectedHistoryDecision.task_routing_fusion_policy)}
+                note={selectedHistoryDecision.task_routing_fusion_policy || "-"}
+              />
+            </div>
+            <div className="detail-grid">
+              <article className="card detail-card">
+                <div className="table-subhead">记录内容概览</div>
+                <div className="relation-list">
+                  <div className="relation-item">
+                    <strong>选中模型</strong>
+                    <br />
+                    {(selectedHistoryDecision.task_routing_selected_model_ids || []).join(" / ") || "当前记录未写入选中模型。"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>三元组产出</strong>
+                    <br />
+                    {`本次共输出 ${selectedHistoryDecision.triple_count || 0} 个三元组。`}
+                  </div>
+                  <div className="relation-item">
+                    <strong>执行路径说明</strong>
+                    <br />
+                    {formatExecutionPathNote(selectedHistoryDecision.task_routing_execution_path)}
+                  </div>
+                  <div className="relation-item">
+                    <strong>融合策略说明</strong>
+                    <br />
+                    {formatFusionPolicyNote(selectedHistoryDecision.task_routing_fusion_policy)}
+                  </div>
+                </div>
+              </article>
+
+              <article className="card detail-card">
+                <div className="table-subhead">反馈与留痕状态</div>
+                <div className="relation-list">
+                  <div className="relation-item">
+                    <strong>反馈状态</strong>
+                    <br />
+                    {formatPredictionFeedbackSummary(selectedHistoryDecision.feedback_status, selectedHistoryDecision.feedback_note)}
+                  </div>
+                  <div className="relation-item">
+                    <strong>不满意原因</strong>
+                    <br />
+                    {selectedHistoryDecision.feedback_note
+                      ? formatPredictionFeedbackReasonSummary(selectedHistoryDecision.feedback_note)
+                      : "当前记录还没有补充不满意原因。"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>归档编号</strong>
+                    <br />
+                    {selectedHistoryDecision.archive_id || "-"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>历史定位</strong>
+                    <br />
+                    这条记录来自任务调度真实留痕，可用于回看单次调度在长期学习过程中的具体输入证据。
+                  </div>
+                </div>
+              </article>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="D"
+            title={filteredTaskRoutingHistoryRows.length ? "当前处于全部记录视角" : "当前没有可查看的决策详情"}
+            note={filteredTaskRoutingHistoryRows.length
+              ? "你当前选择的是“全部记录”，因此这里不展开单条决策详情。若要查看某次任务调度的具体路径、融合策略和反馈状态，请在上方筛选器中选中某一条记录。"
+              : "先在上方选择一个任务调度目标分类，或等待平台产生至少一条任务调度历史记录。"}
+          />
+        )}
       </section>
 
       <section className="page-shell card section-shell score-evolution-section">
@@ -4801,200 +4937,6 @@ function TaskRoutingHistoryPage({ derived }) {
         </div>
       </section>
 
-      <section className="detail-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="历史路径" title="执行路径分布" note="这张表看的是平台长期更常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
-          <div className="banner banner-muted">一行就是一种执行路径。顶部如果选中了某个调度目标分类，这里就统计该目标下的路径分布；如果保持“全部目标”，则展示全平台的历史累计路径分布。</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>执行路径</th>
-                  <th>中文说明</th>
-                  <th>历史决策数</th>
-                  <th>历史反馈数</th>
-                  <th>关联目标分类</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                {executionPathPagination.pagedItems.map((item) => (
-                  <tr key={item.execution_path}>
-                    <td>{item.execution_path}</td>
-                    <td>{formatExecutionPathLabel(item.execution_path)}</td>
-                    <td>{item.decision_count}</td>
-                    <td>{item.feedback_count}</td>
-                    <td>{item.objective_labels?.join(" / ") || "-"}</td>
-                    <td className="limitation-cell">
-                      {item.decision_count > 0
-                        ? `该路径历史上已出现 ${item.decision_count} 次，可用于观察平台长期更偏好的执行组织方式。`
-                        : "暂无路径记录。"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <PaginationBar
-              currentPage={executionPathPagination.page}
-              totalPages={executionPathPagination.totalPages}
-              pageSize={executionPathPagination.pageSize}
-              totalItems={executionPathPagination.totalItems}
-              onChange={executionPathPagination.setPage}
-            />
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="历史样本" title="最近决策记录" note="一行就是一次真实任务调度记录，可直接对照目标、执行路径、融合策略和实际选中的模型。" />
-          <div className="banner banner-muted">这张表更偏“样本库”作用。顶部切换调度目标分类后，这里会同步只保留该目标下的最近真实决策样本。</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>决策</th>
-                  <th>目标 / 领域</th>
-                  <th>执行路径</th>
-                  <th>融合策略</th>
-                  <th>模型</th>
-                  <th>归档说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentDecisionPagination.pagedItems.map((item) => (
-                  <tr key={item.task_routing_decision_id || item.archive_id}>
-                    <td>
-                      <strong>{item.task_routing_decision_id || item.archive_id}</strong>
-                      <div className="table-note">{item.created_at}</div>
-                    </td>
-                    <td>
-                      <div>{formatObjectiveLabel(item.task_routing_objective)}</div>
-                      <div className="table-note">{item.scene || "-"} / {item.inferred_language || "-"}</div>
-                    </td>
-                    <td>
-                      <div>{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
-                      <div className="table-note">triples={item.triple_count || 0}</div>
-                    </td>
-                    <td>
-                      <div>{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
-                      <div className="table-note">{item.task_routing_fusion_policy || "-"}</div>
-                    </td>
-                    <td className="limitation-cell">{(item.task_routing_selected_model_ids || []).join("、") || "-"}</td>
-                    <td>
-                      <div>{normalizePredictionFeedbackStatus(item.feedback_status) === "pending" ? "自动任务调度留痕" : "已补充反馈"}</div>
-                      <div className="table-note">{formatExecutionPathNote(item.task_routing_execution_path)}</div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <PaginationBar
-              currentPage={recentDecisionPagination.page}
-              totalPages={recentDecisionPagination.totalPages}
-              pageSize={recentDecisionPagination.pageSize}
-              totalItems={recentDecisionPagination.totalItems}
-              onChange={recentDecisionPagination.setPage}
-            />
-          </div>
-        </article>
-      </section>
-
-      <section className="page-shell card section-shell score-evolution-section">
-        <SectionHeader
-          kicker="单条记录"
-          title="单条决策详情"
-          note="这里专门展开上方筛选器当前选中的那一条任务调度记录，方便你单独核对这次调度到底用了什么路径、什么融合策略、选了哪些模型，以及后续有没有收到反馈。"
-        />
-        {selectedHistoryDecision ? (
-          <>
-            <div className="metrics">
-              <MetricCard
-                title="决策编号"
-                value={selectedHistoryDecision.task_routing_decision_id || selectedHistoryDecision.archive_id || "-"}
-                note={`时间 ${selectedHistoryDecision.created_at || "-"}`}
-              />
-              <MetricCard
-                title="任务调度目标"
-                value={formatObjectiveLabel(selectedHistoryDecision.task_routing_objective)}
-                note={`${selectedHistoryDecision.scene || "-"} / ${formatLanguageLabel(selectedHistoryDecision.inferred_language)}`}
-              />
-              <MetricCard
-                title="执行路径"
-                value={formatExecutionPathLabel(selectedHistoryDecision.task_routing_execution_path)}
-                note={selectedHistoryDecision.task_routing_execution_path || "-"}
-              />
-              <MetricCard
-                title="融合策略"
-                value={formatFusionPolicyLabel(selectedHistoryDecision.task_routing_fusion_policy)}
-                note={selectedHistoryDecision.task_routing_fusion_policy || "-"}
-              />
-            </div>
-            <div className="detail-grid">
-              <article className="card detail-card">
-                <div className="table-subhead">记录内容概览</div>
-                <div className="relation-list">
-                  <div className="relation-item">
-                    <strong>选中模型</strong>
-                    <br />
-                    {(selectedHistoryDecision.task_routing_selected_model_ids || []).join(" / ") || "当前记录未写入选中模型。"}
-                  </div>
-                  <div className="relation-item">
-                    <strong>三元组产出</strong>
-                    <br />
-                    {`本次共输出 ${selectedHistoryDecision.triple_count || 0} 个三元组。`}
-                  </div>
-                  <div className="relation-item">
-                    <strong>执行路径说明</strong>
-                    <br />
-                    {formatExecutionPathNote(selectedHistoryDecision.task_routing_execution_path)}
-                  </div>
-                  <div className="relation-item">
-                    <strong>融合策略说明</strong>
-                    <br />
-                    {formatFusionPolicyNote(selectedHistoryDecision.task_routing_fusion_policy)}
-                  </div>
-                </div>
-              </article>
-
-              <article className="card detail-card">
-                <div className="table-subhead">反馈与留痕状态</div>
-                <div className="relation-list">
-                  <div className="relation-item">
-                    <strong>反馈状态</strong>
-                    <br />
-                    {formatPredictionFeedbackSummary(selectedHistoryDecision.feedback_status, selectedHistoryDecision.feedback_note)}
-                  </div>
-                  <div className="relation-item">
-                    <strong>不满意原因</strong>
-                    <br />
-                    {selectedHistoryDecision.feedback_note
-                      ? formatPredictionFeedbackReasonSummary(selectedHistoryDecision.feedback_note)
-                      : "当前记录还没有补充不满意原因。"}
-                  </div>
-                  <div className="relation-item">
-                    <strong>归档编号</strong>
-                    <br />
-                    {selectedHistoryDecision.archive_id || "-"}
-                  </div>
-                  <div className="relation-item">
-                    <strong>历史定位</strong>
-                    <br />
-                    这条记录来自任务调度真实留痕，可用于回看单次调度在长期学习过程中的具体输入证据。
-                  </div>
-                </div>
-              </article>
-            </div>
-          </>
-        ) : (
-          <EmptyState
-            icon="D"
-            title={filteredTaskRoutingHistoryRows.length ? "当前处于全部记录视角" : "当前没有可查看的决策详情"}
-            note={filteredTaskRoutingHistoryRows.length
-              ? "你当前选择的是“全部记录”，因此这里不展开单条决策详情。若要查看某次任务调度的具体路径、融合策略和反馈状态，请在上方筛选器中选中某一条记录。"
-              : "先在上方选择一个任务调度目标分类，或等待平台产生至少一条任务调度历史记录。"}
-          />
-        )}
-      </section>
-
       <section className="page-shell card section-shell score-evolution-section">
         <SectionHeader
           kicker="历史部署"
@@ -5005,6 +4947,50 @@ function TaskRoutingHistoryPage({ derived }) {
         />
         <div className="banner banner-muted">
           这张表看什么：看模型部署在历史学习后的评分变化。若上方选择“全部记录”，这里是当前目标分类下的全量 deployment；若选中某条决策记录，这里会缩成这次调度实际用到的模型部署。
+        </div>
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>目标 Filter</span>
+            <select
+              onChange={(event) => setHistoryModelScoreObjectiveFilter(event.target.value)}
+              value={historyModelScoreObjectiveFilter}
+            >
+              <option value="all">全部目标</option>
+              {objectiveOptions.map((item) => (
+                <option key={`history-model-score-objective-${item.value}`} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>场景 Filter</span>
+            <select
+              onChange={(event) => setHistoryModelScoreSceneFilter(event.target.value)}
+              value={historyModelScoreSceneFilter}
+            >
+              <option value="all">全部场景</option>
+              {historyModelScoreSceneOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`history-model-score-scene-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>模型 Filter</span>
+            <select
+              onChange={(event) => setHistoryModelScoreModelFilter(event.target.value)}
+              value={historyModelScoreModelFilter}
+            >
+              <option value="all">全部模型</option>
+              {historyModelScoreModelOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`history-model-score-model-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="table-wrap">
           <table className="weight-profile-table score-evolution-table score-evolution-primary-table">
@@ -5103,6 +5089,103 @@ function TaskRoutingHistoryPage({ derived }) {
             onChange={historyModelScorePagination.setPage}
           />
         </div>
+      </section>
+
+      <section className="detail-grid page-shell">
+        <article className="card detail-card">
+          <SectionHeader kicker="历史路径" title="执行路径分布" note="这张表看的是平台长期更常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
+          <div className="banner banner-muted">一行就是一种执行路径。顶部如果选中了某个调度目标分类，这里就统计该目标下的路径分布；如果保持“全部目标”，则展示全平台的历史累计路径分布。</div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>执行路径</th>
+                  <th>中文说明</th>
+                  <th>历史决策数</th>
+                  <th>历史反馈数</th>
+                  <th>关联目标分类</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {executionPathPagination.pagedItems.map((item) => (
+                  <tr key={item.execution_path}>
+                    <td>{item.execution_path}</td>
+                    <td>{formatExecutionPathLabel(item.execution_path)}</td>
+                    <td>{item.decision_count}</td>
+                    <td>{item.feedback_count}</td>
+                    <td>{item.objective_labels?.join(" / ") || "-"}</td>
+                    <td className="limitation-cell">
+                      {item.decision_count > 0
+                        ? `该路径历史上已出现 ${item.decision_count} 次，可用于观察平台长期更偏好的执行组织方式。`
+                        : "暂无路径记录。"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              currentPage={executionPathPagination.page}
+              totalPages={executionPathPagination.totalPages}
+              pageSize={executionPathPagination.pageSize}
+              totalItems={executionPathPagination.totalItems}
+              onChange={executionPathPagination.setPage}
+            />
+          </div>
+        </article>
+
+        <article className="card detail-card">
+          <SectionHeader kicker="历史样本" title="最近决策记录" note="一行就是一次真实任务调度记录，可直接对照目标、执行路径、融合策略和实际选中的模型。" />
+          <div className="banner banner-muted">这张表更偏“样本库”作用。顶部切换调度目标分类后，这里会同步只保留该目标下的最近真实决策样本。</div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>决策</th>
+                  <th>目标 / 领域</th>
+                  <th>执行路径</th>
+                  <th>融合策略</th>
+                  <th>模型</th>
+                  <th>归档说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentDecisionPagination.pagedItems.map((item) => (
+                  <tr key={item.task_routing_decision_id || item.archive_id}>
+                    <td>
+                      <strong>{item.task_routing_decision_id || item.archive_id}</strong>
+                      <div className="table-note">{item.created_at}</div>
+                    </td>
+                    <td>
+                      <div>{formatObjectiveLabel(item.task_routing_objective)}</div>
+                      <div className="table-note">{item.scene || "-"} / {item.inferred_language || "-"}</div>
+                    </td>
+                    <td>
+                      <div>{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
+                      <div className="table-note">triples={item.triple_count || 0}</div>
+                    </td>
+                    <td>
+                      <div>{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
+                      <div className="table-note">{item.task_routing_fusion_policy || "-"}</div>
+                    </td>
+                    <td className="limitation-cell">{(item.task_routing_selected_model_ids || []).join("、") || "-"}</td>
+                    <td>
+                      <div>{normalizePredictionFeedbackStatus(item.feedback_status) === "pending" ? "自动任务调度留痕" : "已补充反馈"}</div>
+                      <div className="table-note">{formatExecutionPathNote(item.task_routing_execution_path)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              currentPage={recentDecisionPagination.page}
+              totalPages={recentDecisionPagination.totalPages}
+              pageSize={recentDecisionPagination.pageSize}
+              totalItems={recentDecisionPagination.totalItems}
+              onChange={recentDecisionPagination.setPage}
+            />
+          </div>
+        </article>
       </section>
     </>
   );
