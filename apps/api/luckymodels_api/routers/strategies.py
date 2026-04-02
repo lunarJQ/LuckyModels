@@ -107,6 +107,8 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
             context_features=response.context_features,
             objective_weights=response.objective_weights,
             adaptive_adjustments=response.adaptive_adjustments,
+            adaptive_unsupervised_adjustments=response.adaptive_unsupervised_adjustments,
+            adaptive_feedback_adjustments=response.adaptive_feedback_adjustments,
             adaptation_reasons=response.adaptation_reasons,
             selected_deployments=response.selected_deployments,
             execution_results=response.execution_results,
@@ -131,6 +133,8 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         "fusion_policy": response.fusion_policy,
         "objective_weights": response.objective_weights,
         "adaptive_adjustments": response.adaptive_adjustments,
+        "adaptive_unsupervised_adjustments": response.adaptive_unsupervised_adjustments,
+        "adaptive_feedback_adjustments": response.adaptive_feedback_adjustments,
         "selected_model_ids": [item.model_id for item in response.selected_deployments],
     }
     archive = prediction_store.create(
@@ -150,6 +154,8 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         task_routing_fusion_policy=response.fusion_policy,
         task_routing_weight_snapshot=response.objective_weights,
         task_routing_adjustment_snapshot=response.adaptive_adjustments,
+        task_routing_unsupervised_adjustment_snapshot=response.adaptive_unsupervised_adjustments,
+        task_routing_feedback_adjustment_snapshot=response.adaptive_feedback_adjustments,
         task_routing_selected_model_ids=[item.model_id for item in response.selected_deployments],
     )
     response.archive_id = archive.archive_id

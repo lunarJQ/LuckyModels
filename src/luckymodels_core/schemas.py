@@ -290,6 +290,8 @@ class PredictionArchiveRecord(BaseModel):
     task_routing_fusion_policy: str | None = None
     task_routing_weight_snapshot: dict[str, float] = Field(default_factory=dict)
     task_routing_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
+    task_routing_unsupervised_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
+    task_routing_feedback_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
     task_routing_selected_model_ids: list[str] = Field(default_factory=list)
     feedback_status: str = "pending"
     feedback_note: str | None = None
@@ -355,6 +357,8 @@ class TaskRoutingResponse(BaseModel):
     context_features: dict[str, Any] = Field(default_factory=dict)
     objective_weights: dict[str, float] = Field(default_factory=dict)
     adaptive_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptive_unsupervised_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptive_feedback_adjustments: dict[str, float] = Field(default_factory=dict)
     adaptation_reasons: list[str] = Field(default_factory=list)
     decision_trace: list[str] = Field(default_factory=list)
     candidate_count: int = 0
@@ -378,6 +382,8 @@ class TaskRoutingDecisionRecord(BaseModel):
     context_features: dict[str, Any] = Field(default_factory=dict)
     objective_weights: dict[str, float] = Field(default_factory=dict)
     adaptive_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptive_unsupervised_adjustments: dict[str, float] = Field(default_factory=dict)
+    adaptive_feedback_adjustments: dict[str, float] = Field(default_factory=dict)
     adaptation_reasons: list[str] = Field(default_factory=list)
     selected_deployments: list[TaskRoutingCandidate] = Field(default_factory=list)
     execution_results: list[TaskRoutingExecution] = Field(default_factory=list)

@@ -67,7 +67,7 @@ def run_task_routing_strategy(
         requested_language=inferred_language,
         context_features=context_features,
     )
-    archive_adjustments, adaptation_reasons, _archive_unsupervised_adjustments, _archive_feedback_adjustments = _build_archive_weight_adjustments(
+    archive_adjustments, adaptation_reasons, archive_unsupervised_adjustments, archive_feedback_adjustments = _build_archive_weight_adjustments(
         models=models,
         deployments=deployments,
         prediction_archives=prediction_archives,
@@ -82,6 +82,10 @@ def run_task_routing_strategy(
         requested_language=inferred_language,
         context_features=context_features,
         base_weights=base_objective_weights,
+    )
+    current_feedback_adjustments = _sum_weight_adjustments(
+        archive_feedback_adjustments,
+        decision_feedback_adjustments,
     )
     objective_weights = _apply_adaptive_weight_adjustments(
         base_weights=base_objective_weights,
@@ -171,6 +175,8 @@ def run_task_routing_strategy(
             archive_adjustments,
             decision_feedback_adjustments,
         ),
+        adaptive_unsupervised_adjustments=archive_unsupervised_adjustments,
+        adaptive_feedback_adjustments=current_feedback_adjustments,
         adaptation_reasons=adaptation_reasons,
         decision_trace=decision_trace,
         candidate_count=len(candidates),
