@@ -820,10 +820,10 @@ function buildInitialTaskRoutingForm(report) {
     "";
   return {
     text: sampleText,
-    objective: "domain",
+    objective: "accuracy",
     language: "auto",
     maxModels: 3,
-    scene: "zh_industrial",
+    scene: "en_general",
     optionsJson: "{}",
   };
 }
@@ -4466,6 +4466,7 @@ function TaskRoutingHistoryPage({ derived }) {
   const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
   const calibrationArchiveCount = derived.predictArchives.length;
   const [historyObjectiveFilter, setHistoryObjectiveFilter] = useState("all");
+  const [historyDecisionFilter, setHistoryDecisionFilter] = useState("");
   const historyObjectiveOptions = [
     { value: "all", label: "全部目标", count: feedbackOverview.total_decisions || 0 },
     ...objectiveOptions.map((item) => ({
@@ -4492,6 +4493,25 @@ function TaskRoutingHistoryPage({ derived }) {
         ? taskRoutingHistoryRows
         : taskRoutingHistoryRows.filter((item) => String(item.task_routing_objective || "").trim().toLowerCase() === historyObjectiveFilter),
     [historyObjectiveFilter, taskRoutingHistoryRows],
+  );
+  function getHistoryDecisionKey(item) {
+    return String(item?.task_routing_decision_id || item?.archive_id || "").trim();
+  }
+  useEffect(() => {
+    const availableKeys = filteredTaskRoutingHistoryRows.map((item) => getHistoryDecisionKey(item)).filter(Boolean);
+    if (!availableKeys.length) {
+      if (historyDecisionFilter) {
+        setHistoryDecisionFilter("");
+      }
+      return;
+    }
+    if (!historyDecisionFilter || !availableKeys.includes(historyDecisionFilter)) {
+      setHistoryDecisionFilter(availableKeys[0]);
+    }
+  }, [filteredTaskRoutingHistoryRows, historyDecisionFilter]);
+  const selectedHistoryDecision = useMemo(
+    () => filteredTaskRoutingHistoryRows.find((item) => getHistoryDecisionKey(item) === historyDecisionFilter) || null,
+    [filteredTaskRoutingHistoryRows, historyDecisionFilter],
   );
   const filteredExecutionPathSummaries = useMemo(() => {
     const grouped = new Map();
@@ -4558,6 +4578,27 @@ function TaskRoutingHistoryPage({ derived }) {
               </button>
             ))}
           </div>
+        </div>
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>决策记录筛选</span>
+            <select
+              onChange={(event) => setHistoryDecisionFilter(event.target.value)}
+              value={historyDecisionFilter}
+            >
+              {filteredTaskRoutingHistoryRows.map((item) => {
+                const decisionKey = getHistoryDecisionKey(item);
+                return (
+                  <option key={`history-decision-${decisionKey}`} value={decisionKey}>
+                    {`${decisionKey} | ${formatObjectiveLabel(item.task_routing_objective)} | ${item.created_at || "-"}`}
+                  </option>
+                );
+              })}
+            </select>
+            <small className="detail-note">
+              这里用于查看某一条真实决策记录。选中后，页面下方“单条决策详情”会同步展示该记录的执行路径、融合策略、选中模型与反馈状态。
+            </small>
+          </label>
         </div>
         <div className="banner banner-muted">阅读顺序建议：先看“各目标历史累计概览”，再看“各目标长期调度权重快照”；最后用“执行路径分布”和“最近决策记录”去验证这些长期统计确实对应真实任务调度行为。</div>
         <div className="relation-list">
@@ -4819,6 +4860,101 @@ function TaskRoutingHistoryPage({ derived }) {
             />
           </div>
         </article>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="单条记录"
+          title="单条决策详情"
+          note="这里专门展开上方筛选器当前选中的那一条任务调度记录，方便你单独核对这次调度到底用了什么路径、什么融合策略、选了哪些模型，以及后续有没有收到反馈。"
+        />
+        {selectedHistoryDecision ? (
+          <>
+            <div className="metrics">
+              <MetricCard
+                title="决策编号"
+                value={selectedHistoryDecision.task_routing_decision_id || selectedHistoryDecision.archive_id || "-"}
+                note={`时间 ${selectedHistoryDecision.created_at || "-"}`}
+              />
+              <MetricCard
+                title="任务调度目标"
+                value={formatObjectiveLabel(selectedHistoryDecision.task_routing_objective)}
+                note={`${selectedHistoryDecision.scene || "-"} / ${formatLanguageLabel(selectedHistoryDecision.inferred_language)}`}
+              />
+              <MetricCard
+                title="执行路径"
+                value={formatExecutionPathLabel(selectedHistoryDecision.task_routing_execution_path)}
+                note={selectedHistoryDecision.task_routing_execution_path || "-"}
+              />
+              <MetricCard
+                title="融合策略"
+                value={formatFusionPolicyLabel(selectedHistoryDecision.task_routing_fusion_policy)}
+                note={selectedHistoryDecision.task_routing_fusion_policy || "-"}
+              />
+            </div>
+            <div className="detail-grid">
+              <article className="card detail-card">
+                <div className="table-subhead">记录内容概览</div>
+                <div className="relation-list">
+                  <div className="relation-item">
+                    <strong>选中模型</strong>
+                    <br />
+                    {(selectedHistoryDecision.task_routing_selected_model_ids || []).join(" / ") || "当前记录未写入选中模型。"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>三元组产出</strong>
+                    <br />
+                    {`本次共输出 ${selectedHistoryDecision.triple_count || 0} 个三元组。`}
+                  </div>
+                  <div className="relation-item">
+                    <strong>执行路径说明</strong>
+                    <br />
+                    {formatExecutionPathNote(selectedHistoryDecision.task_routing_execution_path)}
+                  </div>
+                  <div className="relation-item">
+                    <strong>融合策略说明</strong>
+                    <br />
+                    {formatFusionPolicyNote(selectedHistoryDecision.task_routing_fusion_policy)}
+                  </div>
+                </div>
+              </article>
+
+              <article className="card detail-card">
+                <div className="table-subhead">反馈与留痕状态</div>
+                <div className="relation-list">
+                  <div className="relation-item">
+                    <strong>反馈状态</strong>
+                    <br />
+                    {formatPredictionFeedbackSummary(selectedHistoryDecision.feedback_status, selectedHistoryDecision.feedback_note)}
+                  </div>
+                  <div className="relation-item">
+                    <strong>不满意原因</strong>
+                    <br />
+                    {selectedHistoryDecision.feedback_note
+                      ? formatPredictionFeedbackReasonSummary(selectedHistoryDecision.feedback_note)
+                      : "当前记录还没有补充不满意原因。"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>归档编号</strong>
+                    <br />
+                    {selectedHistoryDecision.archive_id || "-"}
+                  </div>
+                  <div className="relation-item">
+                    <strong>历史定位</strong>
+                    <br />
+                    这条记录来自任务调度真实留痕，可用于回看单次调度在长期学习过程中的具体输入证据。
+                  </div>
+                </div>
+              </article>
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="D"
+            title="当前没有可查看的决策详情"
+            note="先在上方选择一个任务调度目标分类，或等待平台产生至少一条任务调度历史记录。"
+          />
+        )}
       </section>
     </>
   );
