@@ -23,6 +23,7 @@ from .schemas import (
     utc_now,
 )
 from .settings import Settings
+from .task_routing_feedback_store import TaskRoutingFeedbackStore
 from .strategy_engine import build_deployment_policy
 
 
@@ -61,6 +62,7 @@ class DeploymentPolicyScheduler:
         get_deployment_store: Callable[[], DeploymentStore],
         get_benchmark_store: Callable[[], Any],
         get_prediction_store: Callable[[], Any],
+        get_task_routing_feedback_store: Callable[[], TaskRoutingFeedbackStore],
         get_policy_store: Callable[[], DeploymentPolicyAutomationStore],
         get_gpu_snapshot: Callable[[], dict[str, Any]],
         get_inference_activity_tracker: Callable[[], InferenceActivityTracker],
@@ -70,6 +72,7 @@ class DeploymentPolicyScheduler:
         self.get_deployment_store = get_deployment_store
         self.get_benchmark_store = get_benchmark_store
         self.get_prediction_store = get_prediction_store
+        self.get_task_routing_feedback_store = get_task_routing_feedback_store
         self.get_policy_store = get_policy_store
         self.get_gpu_snapshot = get_gpu_snapshot
         self.get_inference_activity_tracker = get_inference_activity_tracker
@@ -134,6 +137,7 @@ class DeploymentPolicyScheduler:
             deployment_store = self.get_deployment_store()
             benchmark_store = self.get_benchmark_store()
             prediction_store = self.get_prediction_store()
+            task_routing_feedback_store = self.get_task_routing_feedback_store()
             deployments = deployment_store.list()
             benchmarks: list[BenchmarkRecord] = benchmark_store.list()
             prediction_archives: list[PredictionArchiveRecord] = prediction_store.list()
@@ -146,6 +150,9 @@ class DeploymentPolicyScheduler:
                     benchmarks=benchmarks,
                     prediction_archives=prediction_archives,
                     gpu_snapshot=gpu_snapshot,
+                    decision_records=task_routing_feedback_store.list_decisions(),
+                    feedback_records=task_routing_feedback_store.list_feedback(),
+                    automation_actions=state.recent_actions,
                 )
 
             actions: list[DeploymentPolicyAutomationAction] = []

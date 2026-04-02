@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from .inference_activity_tracker import InferenceActivityTracker
 from .schemas import (
     BenchmarkRecord,
+    DeploymentPolicyAutomationAction,
     DeploymentPolicyRecommendation,
     DeploymentPolicyResponse,
     DeploymentPolicySummary,
@@ -29,6 +30,7 @@ from .schemas import (
     TaskRoutingFeedbackOverview,
     TaskRoutingFeedbackRecord,
     TaskRoutingModelAdoptionSummary,
+    TaskRoutingModelScoreSummary,
     TaskRoutingObjectiveFeedbackSummary,
     TaskRoutingRequest,
     TaskRoutingResponse,
@@ -65,12 +67,13 @@ def run_task_routing_strategy(
         requested_language=inferred_language,
         context_features=context_features,
     )
-    archive_adjustments, adaptation_reasons = _build_archive_weight_adjustments(
+    archive_adjustments, adaptation_reasons, _archive_unsupervised_adjustments, _archive_feedback_adjustments = _build_archive_weight_adjustments(
         models=models,
         deployments=deployments,
         prediction_archives=prediction_archives,
         context_features=context_features,
         requested_language=inferred_language,
+        objective=request.objective,
     )
     decision_feedback_adjustments, decision_feedback_reasons = _build_decision_feedback_weight_adjustments(
         decision_records=decision_records,
@@ -185,8 +188,14 @@ def build_deployment_policy(
     benchmarks: list[BenchmarkRecord],
     prediction_archives: list[PredictionArchiveRecord],
     gpu_snapshot: dict[str, Any],
+    decision_records: list[TaskRoutingDecisionRecord] | None = None,
+    feedback_records: list[TaskRoutingFeedbackRecord] | None = None,
+    automation_actions: list[DeploymentPolicyAutomationAction] | None = None,
 ) -> DeploymentPolicyResponse:
     recommendations: list[DeploymentPolicyRecommendation] = []
+    decision_records = list(decision_records or [])
+    feedback_records = list(feedback_records or [])
+    automation_actions = list(automation_actions or [])
     benchmark_by_model = _group_completed_benchmarks_by_model(benchmarks)
     archives_by_model = _group_prediction_archives_by_model(prediction_archives)
     active_deployments_by_model: dict[str, list[DeploymentRecord]] = defaultdict(list)
@@ -246,16 +255,42 @@ def build_deployment_policy(
             ],
         }
 
-    sorted_scores = sorted(demand_scores.values())
+    routing_signals = _build_task_routing_model_signal_map(
+        models=models,
+        deployments=deployments,
+        benchmarks=benchmarks,
+        prediction_archives=prediction_archives,
+        decision_records=decision_records,
+        feedback_records=feedback_records,
+    )
+    automation_signals = _build_automation_history_signal_map(automation_actions)
+    collaborative_scores: dict[str, float] = {}
+    for model in models:
+        model_id = model.model_id
+        base_demand_score = demand_scores.get(model_id, 0.0)
+        routing_value_score = float((routing_signals.get(model_id) or {}).get("routing_value_score") or 0.0)
+        operational_risk_score = float((automation_signals.get(model_id) or {}).get("operational_risk_score") or 0.0)
+        collaborative_scores[model_id] = round(
+            max(0.0, base_demand_score + routing_value_score - operational_risk_score * 0.65),
+            6,
+        )
+
+    sorted_scores = sorted(collaborative_scores.values())
     high_bar = _quantile(sorted_scores, 0.67) if sorted_scores else 0.0
     medium_bar = _quantile(sorted_scores, 0.34) if sorted_scores else 0.0
-    busiest_model_id = _pick_busiest_model(metrics_by_model, demand_scores)
+    busiest_model_id = _pick_busiest_model(metrics_by_model, collaborative_scores)
 
     for model in models:
+        model_id = model.model_id
         metrics = metrics_by_model.get(model.model_id, {})
+        routing_signal = routing_signals.get(model_id, {})
+        automation_signal = automation_signals.get(model_id, {})
         benchmark_items = list(metrics.get("benchmark_items") or [])
         running_count = int(metrics.get("running_count") or 0)
-        score = demand_scores.get(model.model_id, 0.0)
+        base_demand_score = demand_scores.get(model_id, 0.0)
+        collaborative_priority_score = collaborative_scores.get(model_id, 0.0)
+        routing_value_score = float(routing_signal.get("routing_value_score") or 0.0)
+        operational_risk_score = float(automation_signal.get("operational_risk_score") or 0.0)
         recent_request_count = int(metrics.get("recent_request_count") or 0)
         total_request_count = int(metrics.get("total_request_count") or 0)
         avg_p95 = _mean_numeric(item.p95_latency_ms for item in benchmark_items)
@@ -266,7 +301,7 @@ def build_deployment_policy(
         active_deployment_ids = list(metrics.get("active_deployment_ids") or [])
 
         service_tier = _classify_service_tier(
-            demand_score=score,
+            demand_score=collaborative_priority_score,
             recent_request_count=recent_request_count,
             running_count=running_count,
             high_bar=high_bar,
@@ -305,6 +340,41 @@ def build_deployment_policy(
                 recommended_use_gpu=recommended_use_gpu,
             )
         )
+        (
+            service_tier,
+            demand_level,
+            residency_mode,
+            recommended_profile,
+            recommended_instance_count,
+            recommended_use_gpu,
+            recommended_gpu_ids,
+            device_label,
+            gpu_pressure_action,
+            fallback_profile_name,
+            fallback_use_gpu,
+            fallback_device_label,
+            cross_layer_tags,
+            coordination_note,
+        ) = _apply_cross_layer_policy_adjustments(
+            model=model,
+            service_tier=service_tier,
+            demand_level=demand_level,
+            residency_mode=residency_mode,
+            recommended_profile_name=recommended_profile,
+            recommended_instance_count=recommended_instance_count,
+            recommended_use_gpu=recommended_use_gpu,
+            recommended_gpu_ids=recommended_gpu_ids,
+            recommended_device_label=device_label,
+            gpu_pressure_action=gpu_pressure_action,
+            fallback_profile_name=fallback_profile_name,
+            fallback_use_gpu=fallback_use_gpu,
+            fallback_device_label=fallback_device_label,
+            cold_start_risk=cold_start_risk,
+            gpu_snapshot=gpu_snapshot,
+            routing_signal=routing_signal,
+            automation_signal=automation_signal,
+            collaborative_priority_score=collaborative_priority_score,
+        )
         policy_tags = _build_policy_tags(
             service_tier=service_tier,
             residency_mode=residency_mode,
@@ -312,6 +382,7 @@ def build_deployment_policy(
             recommended_use_gpu=recommended_use_gpu,
             gpu_pressure_action=gpu_pressure_action,
         )
+        policy_tags.extend(tag for tag in cross_layer_tags if tag and tag not in policy_tags)
         rationale = build_deployment_rationale(
             service_tier=service_tier,
             residency_mode=residency_mode,
@@ -331,7 +402,11 @@ def build_deployment_policy(
                 model_name=model.model_name,
                 language=model.language,
                 demand_level=demand_level,
-                demand_score=round(score, 3),
+                demand_score=round(collaborative_priority_score, 3),
+                base_demand_score=round(base_demand_score, 3),
+                routing_value_score=round(routing_value_score, 3),
+                operational_risk_score=round(operational_risk_score, 3),
+                collaborative_priority_score=round(collaborative_priority_score, 3),
                 service_tier=service_tier,
                 residency_mode=residency_mode,
                 recent_request_count=recent_request_count,
@@ -354,12 +429,28 @@ def build_deployment_policy(
                 fallback_profile_name=fallback_profile_name,
                 fallback_use_gpu=fallback_use_gpu,
                 fallback_device_label=fallback_device_label,
+                routing_selected_count=int(routing_signal.get("selected_count") or 0),
+                routing_feedback_count=int(routing_signal.get("feedback_count") or 0),
+                routing_adopted_count=int(routing_signal.get("adopted_count") or 0),
+                routing_acceptance_rate=_safe_float(routing_signal.get("acceptance_rate")),
+                avg_routing_current_score=_safe_float(routing_signal.get("avg_current_score")),
+                routing_dimension_signals={
+                    key: round(float(value), 6)
+                    for key, value in dict(routing_signal.get("dimension_signals") or {}).items()
+                    if abs(float(value)) > 0.000001
+                },
+                routing_focus_dimensions=list(routing_signal.get("focus_dimensions") or []),
+                restart_history_count=int(automation_signal.get("restart_count") or 0),
+                rebalance_history_count=int(automation_signal.get("rebalance_count") or 0),
+                cpu_migration_history_count=int(automation_signal.get("cpu_migration_count") or 0),
+                failed_action_history_count=int(automation_signal.get("failed_count") or 0),
                 policy_tags=policy_tags,
+                coordination_note=coordination_note,
                 rationale=rationale,
             )
         )
 
-    recommendations.sort(key=lambda item: (-item.demand_score, item.model_id))
+    recommendations.sort(key=lambda item: (-item.collaborative_priority_score, -item.base_demand_score, item.model_id))
     summary = _build_deployment_policy_summary(
         recommendations=recommendations,
         recent_window_days=recent_window_days,
@@ -515,6 +606,73 @@ def _zero_weight_vector() -> dict[str, float]:
     }
 
 
+def _progressive_evidence_scale(
+    evidence_count: int,
+    *,
+    target_count: int = 30,
+) -> float:
+    if evidence_count <= 0:
+        return 0.0
+    if target_count <= 1:
+        return 1.0
+    return round(min(1.0, evidence_count / target_count), 6)
+
+
+def _objective_feedback_gain(objective: str, key: str) -> float:
+    normalized_objective = str(objective or "balanced").strip().lower()
+    gain_table = {
+        "accuracy": {
+            "accuracy": 1.3,
+            "stability": 1.2,
+            "coverage": 0.9,
+            "latency": 0.85,
+            "resource": 0.85,
+            "domain": 1.0,
+        },
+        "coverage": {
+            "accuracy": 0.95,
+            "stability": 1.0,
+            "coverage": 1.35,
+            "latency": 0.85,
+            "resource": 0.85,
+            "domain": 1.15,
+        },
+        "latency": {
+            "accuracy": 0.85,
+            "stability": 0.95,
+            "coverage": 0.8,
+            "latency": 1.4,
+            "resource": 1.2,
+            "domain": 0.85,
+        },
+        "balanced": {
+            "accuracy": 1.0,
+            "stability": 1.0,
+            "coverage": 1.0,
+            "latency": 1.0,
+            "resource": 1.0,
+            "domain": 1.0,
+        },
+        "resource": {
+            "accuracy": 0.9,
+            "stability": 0.95,
+            "coverage": 0.85,
+            "latency": 1.1,
+            "resource": 1.35,
+            "domain": 0.9,
+        },
+        "domain": {
+            "accuracy": 1.05,
+            "stability": 1.0,
+            "coverage": 1.15,
+            "latency": 0.85,
+            "resource": 0.85,
+            "domain": 1.4,
+        },
+    }
+    return gain_table.get(normalized_objective, gain_table["balanced"]).get(key, 1.0)
+
+
 def _build_benchmark_weight_adjustments(
     *,
     models: list[ModelSummary],
@@ -585,7 +743,8 @@ def _build_archive_weight_adjustments(
     prediction_archives: list[PredictionArchiveRecord],
     context_features: dict[str, Any],
     requested_language: str,
-) -> tuple[dict[str, float], list[str]]:
+    objective: str = "balanced",
+) -> tuple[dict[str, float], list[str], dict[str, float], dict[str, float]]:
     model_lookup = {item.model_id: item for item in models}
     deployment_lookup = {item.deployment_id: item for item in deployments}
     request_domain = str(context_features.get("domain") or "general")
@@ -606,13 +765,14 @@ def _build_archive_weight_adjustments(
             continue
         matched_archives.append(archive)
 
-    adjustments = _zero_weight_vector()
+    unsupervised_adjustments = _zero_weight_vector()
+    feedback_adjustments = _zero_weight_vector()
     reasons: list[str] = []
     if not matched_archives:
-        adjustments["accuracy"] += 0.02
-        adjustments["stability"] += 0.03
+        unsupervised_adjustments["accuracy"] += 0.02
+        unsupervised_adjustments["stability"] += 0.03
         reasons.append("当前缺少可直接复用的在线归档证据，系统临时提升准确与稳定权重。")
-        return adjustments, reasons
+        return _sum_weight_adjustments(unsupervised_adjustments, feedback_adjustments), reasons, unsupervised_adjustments, feedback_adjustments
 
     archive_count = len(matched_archives)
     empty_count = sum(1 for item in matched_archives if not int(item.triple_count or 0))
@@ -641,75 +801,80 @@ def _build_archive_weight_adjustments(
         and "latency_high" in _parse_archive_feedback_reasons(item.feedback_note)
     )
 
+    archive_scale = _progressive_evidence_scale(archive_count, target_count=30)
+    feedback_scale = _progressive_evidence_scale(effective_feedback_count, target_count=10)
+
     if empty_rate >= 0.45:
-        adjustments["accuracy"] += 0.05
-        adjustments["stability"] += 0.05
-        adjustments["coverage"] -= 0.02
+        unsupervised_adjustments["accuracy"] += (0.02 + 0.03 * empty_rate) * max(archive_scale, 0.25)
+        unsupervised_adjustments["stability"] += (0.02 + 0.02 * empty_rate) * max(archive_scale, 0.25)
+        unsupervised_adjustments["coverage"] -= (0.008 + 0.012 * empty_rate) * max(archive_scale, 0.25)
         reasons.append(f"近期在线归档空结果率约为 {empty_rate * 100:.1f}%，系统提升准确与稳定权重。")
     elif empty_rate <= 0.18 and (avg_triple_count or 0.0) >= 2.5:
-        adjustments["coverage"] += 0.04
-        adjustments["domain"] += 0.02
+        unsupervised_adjustments["coverage"] += (0.01 + 0.03 * min(1.0, (avg_triple_count or 0.0) / 6.0)) * max(archive_scale, 0.2)
+        unsupervised_adjustments["domain"] += 0.015 * max(archive_scale, 0.2)
         reasons.append("近期在线归档结果较稳定且三元组非空率较高，系统适度提升覆盖与领域权重。")
 
     if avg_latency is not None and avg_latency > 180:
-        adjustments["latency"] += 0.04
-        adjustments["resource"] += 0.01
+        unsupervised_adjustments["latency"] += (0.015 + 0.02 * min(1.0, avg_latency / 400.0)) * max(archive_scale, 0.2)
+        unsupervised_adjustments["resource"] += 0.01 * max(archive_scale, 0.2)
         reasons.append(f"近期在线归档平均时延约为 {avg_latency:.1f} ms，系统适度提升时延与资源权重。")
     elif avg_latency is not None and avg_latency < 90 and empty_rate <= 0.25:
-        adjustments["coverage"] += 0.01
+        unsupervised_adjustments["coverage"] += 0.008 * max(archive_scale, 0.2)
 
     if effective_feedback_count >= 1:
         satisfied_rate = satisfied_count / effective_feedback_count
-        evidence_scale = min(1.0, effective_feedback_count / 4.0)
         if satisfied_rate >= 0.7:
-            adjustments["accuracy"] += 0.02 + 0.02 * evidence_scale
-            adjustments["coverage"] += 0.01 + 0.01 * evidence_scale
+            feedback_adjustments["accuracy"] += (0.008 + 0.018 * satisfied_rate) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")
+            feedback_adjustments["coverage"] += (0.006 + 0.012 * satisfied_rate) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")
             reasons.append(
                 f"近期同类在线归档收到 {satisfied_count} 条满意反馈、{unsatisfied_count} 条不满意反馈，系统提升准确与覆盖权重。"
             )
         elif satisfied_rate <= 0.4:
-            adjustments["accuracy"] += 0.04 + 0.02 * evidence_scale
-            adjustments["stability"] += 0.03 + 0.02 * evidence_scale
-            adjustments["coverage"] -= 0.01 + 0.01 * evidence_scale
+            feedback_adjustments["accuracy"] += (0.012 + 0.02 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")
+            feedback_adjustments["stability"] += (0.01 + 0.018 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")
+            feedback_adjustments["coverage"] -= (0.004 + 0.01 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")
             reasons.append(
                 f"近期同类在线归档中不满意反馈占比较高（{unsatisfied_count}/{effective_feedback_count}），系统提升准确与稳定权重。"
             )
 
     if unsatisfied_count >= 1 and missing_too_many_count:
         missing_ratio = missing_too_many_count / unsatisfied_count
-        adjustments["coverage"] += 0.02 + 0.03 * missing_ratio
-        adjustments["domain"] += 0.01 * missing_ratio
+        signal_scale = max(feedback_scale, 0.1)
+        feedback_adjustments["coverage"] += (0.01 + 0.025 * missing_ratio) * signal_scale * _objective_feedback_gain(objective, "coverage")
+        feedback_adjustments["domain"] += (0.004 + 0.01 * missing_ratio) * signal_scale * _objective_feedback_gain(objective, "domain")
         reasons.append(
             f"不满意反馈中有 {missing_too_many_count} 条指出“漏抽多”，系统提升覆盖与领域权重。"
         )
 
     if unsatisfied_count >= 1 and false_positive_too_many_count:
         false_positive_ratio = false_positive_too_many_count / unsatisfied_count
-        adjustments["accuracy"] += 0.02 + 0.03 * false_positive_ratio
-        adjustments["stability"] += 0.02 + 0.02 * false_positive_ratio
-        adjustments["coverage"] -= 0.01 * false_positive_ratio
+        signal_scale = max(feedback_scale, 0.1)
+        feedback_adjustments["accuracy"] += (0.01 + 0.022 * false_positive_ratio) * signal_scale * _objective_feedback_gain(objective, "accuracy")
+        feedback_adjustments["stability"] += (0.008 + 0.018 * false_positive_ratio) * signal_scale * _objective_feedback_gain(objective, "stability")
+        feedback_adjustments["coverage"] -= 0.006 * false_positive_ratio * signal_scale * _objective_feedback_gain(objective, "coverage")
         reasons.append(
             f"不满意反馈中有 {false_positive_too_many_count} 条指出“误抽多”，系统提升准确与稳定权重。"
         )
 
     if unsatisfied_count >= 1 and latency_high_count:
         latency_high_ratio = latency_high_count / unsatisfied_count
-        adjustments["latency"] += 0.03 + 0.03 * latency_high_ratio
-        adjustments["resource"] += 0.01 + 0.02 * latency_high_ratio
+        signal_scale = max(feedback_scale, 0.1)
+        feedback_adjustments["latency"] += (0.01 + 0.022 * latency_high_ratio) * signal_scale * _objective_feedback_gain(objective, "latency")
+        feedback_adjustments["resource"] += (0.004 + 0.012 * latency_high_ratio) * signal_scale * _objective_feedback_gain(objective, "resource")
         reasons.append(
             f"不满意反馈中有 {latency_high_count} 条指出“延迟高”，系统提升时延与资源权重。"
         )
 
     if request_domain != "general" and unsatisfied_count >= 1 and (missing_too_many_count or false_positive_too_many_count):
         domain_mismatch_ratio = min(1.0, (missing_too_many_count + false_positive_too_many_count) / unsatisfied_count)
-        adjustments["domain"] += 0.02 + 0.02 * domain_mismatch_ratio
+        feedback_adjustments["domain"] += (0.008 + 0.016 * domain_mismatch_ratio) * max(feedback_scale, 0.1) * _objective_feedback_gain(objective, "domain")
         reasons.append("在当前领域场景下，漏抽或误抽反馈偏多，系统进一步提升领域权重并优先考虑领域专用模型。")
 
     if archive_count < 5:
-        adjustments["stability"] += 0.02
+        unsupervised_adjustments["stability"] += 0.02
         reasons.append("当前同类在线归档样本较少，系统适度提升稳定性权重。")
     elif archive_count >= 12:
-        adjustments["domain"] += 0.01
+        unsupervised_adjustments["domain"] += 0.01
         reasons.append(f"当前已有 {archive_count} 条同类在线归档证据，系统增强场景与领域相关性。")
 
     if request_domain != "general":
@@ -721,10 +886,12 @@ def _build_archive_weight_adjustments(
             if infer_domain(text=str(model.dataset_name or ""), scene=model.dataset_name) == request_domain:
                 domain_matches += 1
         if domain_matches >= max(2, archive_count // 2):
-            adjustments["domain"] += 0.02
+            unsupervised_adjustments["domain"] += 0.02
 
-    adjustments = {key: round(max(min(value, 0.08), -0.08), 4) for key, value in adjustments.items()}
-    return adjustments, reasons
+    unsupervised_adjustments = {key: round(max(min(value, 0.05), -0.05), 4) for key, value in unsupervised_adjustments.items()}
+    feedback_adjustments = {key: round(max(min(value, 0.05), -0.05), 4) for key, value in feedback_adjustments.items()}
+    combined_adjustments = _sum_weight_adjustments(unsupervised_adjustments, feedback_adjustments)
+    return combined_adjustments, reasons, unsupervised_adjustments, feedback_adjustments
 
 
 def _build_decision_feedback_weight_adjustments(
@@ -773,17 +940,17 @@ def _build_decision_feedback_weight_adjustments(
 
     reasons: list[str] = []
     evidence_count = len(accepted_vectors) + len(rejected_vectors)
-    evidence_scale = min(1.0, evidence_count / 4.0)
+    evidence_scale = _progressive_evidence_scale(evidence_count, target_count=10)
     accepted_avg = _average_weight_vectors(accepted_vectors)
     rejected_avg = _average_weight_vectors(rejected_vectors)
 
     for key in adjustments:
         delta = 0.0
         if accepted_avg:
-            delta += (accepted_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.5 * evidence_scale
+            delta += (accepted_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.32 * evidence_scale * _objective_feedback_gain(objective, key)
         if rejected_avg:
-            delta -= (rejected_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.35 * evidence_scale
-        adjustments[key] = round(max(min(delta, 0.06), -0.06), 4)
+            delta -= (rejected_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.24 * evidence_scale * _objective_feedback_gain(objective, key)
+        adjustments[key] = round(max(min(delta, 0.035), -0.035), 4)
 
     non_zero = {key: value for key, value in adjustments.items() if abs(value) > 0.0001}
     if non_zero:
@@ -1086,6 +1253,7 @@ def _build_task_candidates(
         )
         archive_feedback_summary = _build_candidate_archive_feedback_summary(candidate_archives)
         score_breakdown = _selection_score_breakdown(
+            objective=objective,
             success_rate=avg_success,
             p95_latency_ms=avg_p95,
             recent_request_count=recent_requests,
@@ -1139,6 +1307,7 @@ def _build_task_candidates(
 
 def _selection_score_breakdown(
     *,
+    objective: str,
     success_rate: float | None,
     p95_latency_ms: float | None,
     recent_request_count: int,
@@ -1157,34 +1326,36 @@ def _selection_score_breakdown(
         effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
         satisfied_rate = archive_feedback_summary.get("satisfied_rate")
         empty_rate = float(archive_feedback_summary.get("empty_rate") or 0.0)
+        archive_count = int(archive_feedback_summary.get("archive_count") or 0)
         archive_avg_latency = archive_feedback_summary.get("avg_latency_ms")
         missing_too_many_count = int(archive_feedback_summary.get("missing_too_many_count") or 0)
         false_positive_too_many_count = int(archive_feedback_summary.get("false_positive_too_many_count") or 0)
         latency_high_count = int(archive_feedback_summary.get("latency_high_count") or 0)
-        evidence_scale = min(0.18, 0.05 * effective_feedback_count) if effective_feedback_count else 0.0
+        archive_scale = _progressive_evidence_scale(archive_count, target_count=30)
+        feedback_scale = _progressive_evidence_scale(effective_feedback_count, target_count=10)
         if satisfied_rate is not None and effective_feedback_count:
             centered_rate = float(satisfied_rate) - 0.5
-            accuracy_score = min(1.0, max(0.0, accuracy_score + centered_rate * (0.24 + evidence_scale)))
-            stability_score = min(1.0, max(0.0, stability_score + centered_rate * (0.20 + evidence_scale)))
+            accuracy_score = min(1.0, max(0.0, accuracy_score + centered_rate * (0.08 + 0.12 * feedback_scale) * _objective_feedback_gain(objective, "accuracy")))
+            stability_score = min(1.0, max(0.0, stability_score + centered_rate * (0.06 + 0.10 * feedback_scale) * _objective_feedback_gain(objective, "stability")))
             if centered_rate > 0 and (archive_feedback_summary.get("avg_triple_count") or 0.0) >= 1.0:
-                coverage_score = min(1.0, coverage_score + centered_rate * 0.10)
+                coverage_score = min(1.0, coverage_score + centered_rate * (0.03 + 0.05 * feedback_scale) * _objective_feedback_gain(objective, "coverage"))
             elif centered_rate < 0:
-                coverage_score = max(0.0, coverage_score + centered_rate * 0.08)
+                coverage_score = max(0.0, coverage_score + centered_rate * (0.02 + 0.04 * feedback_scale) * _objective_feedback_gain(objective, "coverage"))
         if empty_rate >= 0.4:
-            coverage_score = max(0.0, coverage_score - min(0.16, empty_rate * 0.18))
-            stability_score = max(0.0, stability_score - min(0.12, empty_rate * 0.12))
+            coverage_score = max(0.0, coverage_score - min(0.10, empty_rate * 0.10 * max(archive_scale, 0.2)))
+            stability_score = max(0.0, stability_score - min(0.08, empty_rate * 0.08 * max(archive_scale, 0.2)))
         if effective_feedback_count and missing_too_many_count:
             missing_ratio = missing_too_many_count / effective_feedback_count
-            coverage_score = max(0.0, coverage_score - min(0.2, 0.06 + missing_ratio * 0.12))
+            coverage_score = max(0.0, coverage_score - min(0.12, (0.02 + missing_ratio * 0.08) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")))
         if effective_feedback_count and false_positive_too_many_count:
             false_positive_ratio = false_positive_too_many_count / effective_feedback_count
-            accuracy_score = max(0.0, accuracy_score - min(0.22, 0.08 + false_positive_ratio * 0.12))
-            stability_score = max(0.0, stability_score - min(0.18, 0.05 + false_positive_ratio * 0.10))
-            coverage_score = max(0.0, coverage_score - min(0.08, false_positive_ratio * 0.06))
+            accuracy_score = max(0.0, accuracy_score - min(0.12, (0.03 + false_positive_ratio * 0.07) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")))
+            stability_score = max(0.0, stability_score - min(0.10, (0.02 + false_positive_ratio * 0.06) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")))
+            coverage_score = max(0.0, coverage_score - min(0.05, false_positive_ratio * 0.04 * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")))
         if effective_feedback_count and latency_high_count:
             latency_high_ratio = latency_high_count / effective_feedback_count
-            latency_score = max(0.0, latency_score - min(0.24, 0.08 + latency_high_ratio * 0.14))
-            resource_score = max(0.0, resource_score - min(0.12, 0.04 + latency_high_ratio * 0.08))
+            latency_score = max(0.0, latency_score - min(0.14, (0.03 + latency_high_ratio * 0.08) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "latency")))
+            resource_score = max(0.0, resource_score - min(0.08, (0.02 + latency_high_ratio * 0.05) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "resource")))
         if p95_latency_ms is None and archive_avg_latency is not None:
             latency_score = max(0.0, 1.0 - min(float(archive_avg_latency), 1500.0) / 1500.0)
     return {
@@ -1740,6 +1911,262 @@ def _group_prediction_archives_by_model(
     return grouped
 
 
+def _scene_context(scene: str) -> tuple[str, dict[str, Any]]:
+    normalized_scene = _normalize_scene(scene)
+    if normalized_scene == "en_general":
+        return ("en", {"domain": "general", "language": "en", "scene": normalized_scene})
+    if normalized_scene == "zh_industrial":
+        return ("zh", {"domain": "industrial", "language": "zh", "scene": normalized_scene})
+    return ("zh", {"domain": "general", "language": "zh", "scene": normalized_scene or "zh_general"})
+
+
+def _build_model_score_summaries(
+    *,
+    models: list[ModelSummary],
+    deployments: list[DeploymentRecord],
+    benchmarks: list[BenchmarkRecord],
+    prediction_archives: list[PredictionArchiveRecord],
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
+) -> list[TaskRoutingModelScoreSummary]:
+    model_lookup = {item.model_id: item for item in models}
+    completed_benchmarks = [item for item in benchmarks if item.status == "completed"]
+    benchmark_by_deployment = defaultdict(list)
+    benchmark_by_model = defaultdict(list)
+    for item in completed_benchmarks:
+        benchmark_by_deployment[item.deployment_id].append(item)
+        benchmark_by_model[item.model_id].append(item)
+
+    archives_by_deployment = defaultdict(list)
+    archives_by_model = defaultdict(list)
+    for item in prediction_archives:
+        archives_by_deployment[item.deployment_id].append(item)
+        archives_by_model[item.model_id].append(item)
+
+    objective_order = ["accuracy", "coverage", "latency", "balanced", "resource", "domain"]
+    scene_order = ["en_general", "zh_general", "zh_industrial"]
+    summaries: list[TaskRoutingModelScoreSummary] = []
+
+    for objective in objective_order:
+        for scene in scene_order:
+            requested_language, context_features = _scene_context(scene)
+            base_weights = _build_objective_weights(
+                objective=objective,
+                difficulty="medium",
+                context_features=context_features,
+            )
+            benchmark_adjustments = _build_benchmark_weight_adjustments(
+                models=models,
+                deployments=deployments,
+                benchmarks=benchmarks,
+                requested_language=requested_language,
+                context_features=context_features,
+            )
+            archive_adjustments, _archive_reasons, _unsupervised_adjustments, _archive_feedback_adjustments = _build_archive_weight_adjustments(
+                models=models,
+                deployments=deployments,
+                prediction_archives=prediction_archives,
+                context_features=context_features,
+                requested_language=requested_language,
+                objective=objective,
+            )
+            decision_feedback_adjustments, _decision_feedback_reasons = _build_decision_feedback_weight_adjustments(
+                decision_records=decision_records,
+                feedback_records=feedback_records,
+                objective=objective,
+                requested_language=requested_language,
+                context_features=context_features,
+                base_weights=base_weights,
+            )
+            feedback_adjustments = _sum_weight_adjustments(
+                _archive_feedback_adjustments,
+                decision_feedback_adjustments,
+            )
+            adjusted_weights = _apply_adaptive_weight_adjustments(
+                base_weights=base_weights,
+                benchmark_adjustments=benchmark_adjustments,
+                archive_adjustments=archive_adjustments,
+                decision_feedback_adjustments=decision_feedback_adjustments,
+            )
+
+            for deployment in deployments:
+                if deployment.status != "running" or not deployment.service_url:
+                    continue
+                model = model_lookup.get(deployment.model_id)
+                if model is None:
+                    continue
+                if model.language != requested_language:
+                    continue
+                if not _scene_matches_model(scene, model):
+                    continue
+
+                deployment_benchmarks = benchmark_by_deployment.get(deployment.deployment_id) or benchmark_by_model.get(deployment.model_id, [])
+                avg_p95 = _mean_numeric(item.p95_latency_ms for item in deployment_benchmarks)
+                avg_success = _mean_numeric(
+                    (
+                        item.success_count / item.total_requests
+                        if item.total_requests
+                        else None
+                    )
+                    for item in deployment_benchmarks
+                )
+                recent_requests = len(archives_by_deployment.get(deployment.deployment_id, []))
+                avg_triple_count = _mean_numeric(
+                    item.triple_count for item in archives_by_deployment.get(deployment.deployment_id, [])
+                )
+                domain_match = _candidate_domain_match(context_features.get("domain"), model.dataset_name)
+                candidate_archives = _match_candidate_archives(
+                    deployment=deployment,
+                    model=model,
+                    deployment_archives=archives_by_deployment.get(deployment.deployment_id, []),
+                    model_archives=archives_by_model.get(deployment.model_id, []),
+                    request_scene=scene,
+                    request_domain=str(context_features.get("domain") or "general"),
+                    requested_language=requested_language,
+                )
+                archive_feedback_summary = _build_candidate_archive_feedback_summary(candidate_archives)
+                baseline_breakdown = _selection_score_breakdown(
+                    objective=objective,
+                    success_rate=avg_success,
+                    p95_latency_ms=avg_p95,
+                    recent_request_count=recent_requests,
+                    avg_triple_count=avg_triple_count,
+                    domain_match=domain_match,
+                    deployment=deployment,
+                    archive_feedback_summary=None,
+                )
+                adjusted_breakdown = _selection_score_breakdown(
+                    objective=objective,
+                    success_rate=avg_success,
+                    p95_latency_ms=avg_p95,
+                    recent_request_count=recent_requests,
+                    avg_triple_count=avg_triple_count,
+                    domain_match=domain_match,
+                    deployment=deployment,
+                    archive_feedback_summary=archive_feedback_summary,
+                )
+                baseline_score = sum(
+                    baseline_breakdown.get(key, 0.0) * base_weights.get(key, 0.0)
+                    for key in base_weights
+                )
+                current_score = sum(
+                    adjusted_breakdown.get(key, 0.0) * adjusted_weights.get(key, 0.0)
+                    for key in adjusted_weights
+                )
+                contribution_delta = {
+                    key: (adjusted_breakdown.get(key, 0.0) * adjusted_weights.get(key, 0.0))
+                    - (baseline_breakdown.get(key, 0.0) * base_weights.get(key, 0.0))
+                    for key in base_weights
+                }
+                performance_score_breakdown = {
+                    key: (adjusted_breakdown.get(key, 0.0) - baseline_breakdown.get(key, 0.0))
+                    * base_weights.get(key, 0.0)
+                    for key in base_weights
+                    if abs(
+                        (adjusted_breakdown.get(key, 0.0) - baseline_breakdown.get(key, 0.0))
+                        * base_weights.get(key, 0.0)
+                    ) > 0.000001
+                }
+                weight_shift_score_breakdown = {
+                    key: adjusted_breakdown.get(key, 0.0)
+                    * (adjusted_weights.get(key, 0.0) - base_weights.get(key, 0.0))
+                    for key in base_weights
+                    if abs(
+                        adjusted_breakdown.get(key, 0.0)
+                        * (adjusted_weights.get(key, 0.0) - base_weights.get(key, 0.0))
+                    ) > 0.000001
+                }
+                performance_delta_breakdown = {
+                    key: adjusted_breakdown.get(key, 0.0) - baseline_breakdown.get(key, 0.0)
+                    for key in base_weights
+                    if abs(adjusted_breakdown.get(key, 0.0) - baseline_breakdown.get(key, 0.0)) > 0.000001
+                }
+                benchmark_score_breakdown = {
+                    key: adjusted_breakdown.get(key, 0.0) * benchmark_adjustments.get(key, 0.0)
+                    for key in adjusted_breakdown
+                    if abs(adjusted_breakdown.get(key, 0.0) * benchmark_adjustments.get(key, 0.0)) > 0.000001
+                }
+                no_feedback_score_breakdown = {
+                    key: adjusted_breakdown.get(key, 0.0) * _unsupervised_adjustments.get(key, 0.0)
+                    for key in adjusted_breakdown
+                    if abs(adjusted_breakdown.get(key, 0.0) * _unsupervised_adjustments.get(key, 0.0)) > 0.000001
+                }
+                feedback_score_breakdown = {
+                    key: adjusted_breakdown.get(key, 0.0) * feedback_adjustments.get(key, 0.0)
+                    for key in adjusted_breakdown
+                    if abs(adjusted_breakdown.get(key, 0.0) * feedback_adjustments.get(key, 0.0)) > 0.000001
+                }
+                benchmark_score_delta = sum(
+                    benchmark_score_breakdown.values()
+                )
+                no_feedback_score_delta = sum(
+                    no_feedback_score_breakdown.values()
+                )
+                feedback_score_delta = sum(
+                    feedback_score_breakdown.values()
+                )
+                performance_score_delta = sum(
+                    performance_score_breakdown.values()
+                )
+                weight_shift_score_delta = sum(
+                    weight_shift_score_breakdown.values()
+                )
+                dominant_dimension, dominant_delta = max(
+                    contribution_delta.items(),
+                    key=lambda item: abs(item[1]),
+                    default=(None, 0.0),
+                )
+                score_delta = current_score - baseline_score
+                if dominant_dimension:
+                    if dominant_delta >= 0:
+                        change_note = f"{dominant_dimension} 维度抬升最明显，带动当前评分上移。"
+                    else:
+                        change_note = f"{dominant_dimension} 维度下降最明显，拉低了当前评分。"
+                else:
+                    change_note = "当前评分变化较小。"
+                summaries.append(
+                    TaskRoutingModelScoreSummary(
+                        objective=objective,
+                        scene=scene,
+                        deployment_id=deployment.deployment_id,
+                        model_id=deployment.model_id,
+                        profile_name=deployment.profile_name,
+                        language=model.language,
+                        dataset_name=model.dataset_name,
+                        baseline_score=round(baseline_score, 6),
+                        current_score=round(current_score, 6),
+                        score_delta=round(score_delta, 6),
+                        benchmark_score_delta=round(benchmark_score_delta, 6),
+                        no_feedback_score_delta=round(no_feedback_score_delta, 6),
+                        feedback_score_delta=round(feedback_score_delta, 6),
+                        performance_score_delta=round(performance_score_delta, 6),
+                        weight_shift_score_delta=round(weight_shift_score_delta, 6),
+                        benchmark_score_breakdown={key: round(value, 6) for key, value in benchmark_score_breakdown.items()},
+                        no_feedback_score_breakdown={key: round(value, 6) for key, value in no_feedback_score_breakdown.items()},
+                        feedback_score_breakdown={key: round(value, 6) for key, value in feedback_score_breakdown.items()},
+                        performance_score_breakdown={key: round(value, 6) for key, value in performance_score_breakdown.items()},
+                        weight_shift_score_breakdown={key: round(value, 6) for key, value in weight_shift_score_breakdown.items()},
+                        baseline_breakdown={key: round(value, 4) for key, value in baseline_breakdown.items()},
+                        current_breakdown={key: round(value, 4) for key, value in adjusted_breakdown.items()},
+                        performance_delta_breakdown={key: round(value, 6) for key, value in performance_delta_breakdown.items()},
+                        dominant_dimension=dominant_dimension,
+                        dominant_delta=round(dominant_delta, 6) if dominant_dimension is not None else None,
+                        change_note=change_note,
+                    )
+                )
+
+    summaries.sort(
+        key=lambda item: (
+            item.objective,
+            item.scene,
+            -abs(item.score_delta),
+            -(item.current_score or 0.0),
+            item.model_id,
+        )
+    )
+    return summaries
+
+
 def build_task_routing_feedback_overview(
     *,
     models: list[ModelSummary],
@@ -1833,12 +2260,13 @@ def build_task_routing_feedback_overview(
             requested_language="",
             context_features={"domain": "general", "language": ""},
         )
-        archive_adjustments, reasons = _build_archive_weight_adjustments(
+        archive_adjustments, reasons, unsupervised_adjustments, archive_feedback_adjustments = _build_archive_weight_adjustments(
             models=models,
             deployments=deployments,
             prediction_archives=prediction_archives,
             context_features={"domain": "general", "language": "", "scene": ""},
             requested_language="",
+            objective=objective,
         )
         decision_feedback_adjustments, decision_feedback_reasons = _build_decision_feedback_weight_adjustments(
             decision_records=decision_records,
@@ -1861,6 +2289,16 @@ def build_task_routing_feedback_overview(
                 archive_adjustments={
                     key: round(value, 4)
                     for key, value in _sum_weight_adjustments(archive_adjustments, decision_feedback_adjustments).items()
+                    if abs(value) > 0.0001
+                },
+                unsupervised_adjustments={
+                    key: round(value, 4)
+                    for key, value in unsupervised_adjustments.items()
+                    if abs(value) > 0.0001
+                },
+                feedback_adjustments={
+                    key: round(value, 4)
+                    for key, value in _sum_weight_adjustments(archive_feedback_adjustments, decision_feedback_adjustments).items()
                     if abs(value) > 0.0001
                 },
                 reasons=_merge_adaptation_reasons(
@@ -1905,6 +2343,14 @@ def build_task_routing_feedback_overview(
         execution_path_summaries=execution_path_summaries,
         model_adoption_summaries=model_adoption_summaries,
     )
+    model_score_summaries = _build_model_score_summaries(
+        models=models,
+        deployments=deployments,
+        benchmarks=benchmarks,
+        prediction_archives=prediction_archives,
+        decision_records=decision_records,
+        feedback_records=feedback_records,
+    )
 
     return TaskRoutingFeedbackOverview(
         total_decisions=len(decision_records),
@@ -1919,6 +2365,7 @@ def build_task_routing_feedback_overview(
         objective_summaries=objective_summaries,
         execution_path_summaries=execution_path_summaries[:8],
         model_adoption_summaries=model_adoption_summaries,
+        model_score_summaries=model_score_summaries,
         weight_profiles=weight_profiles,
         recent_decisions=recent_decisions,
         insights=insights,
@@ -1944,6 +2391,7 @@ def _build_feedback_insights(
         insights.append(
             f"当前策略校准主要依赖 {benchmark_count} 条 benchmark 与 {archive_count} 条在线归档证据；归档中已补充 {archive_feedback_total} 条满意度反馈，作为辅助修正信号。"
         )
+        insights.append("当前在线学习采用渐进式校准机制：无用户反馈校准更偏稳健，通常需更长样本窗口；有用户反馈校准会更快响应，累计约 10 条同类反馈后更容易观察到明显变化。")
     if objective_summaries:
         best_objective = sorted(
             objective_summaries,
@@ -1962,19 +2410,166 @@ def _build_feedback_insights(
     return insights[:4]
 
 
-def _recommend_device_allocation(
+def _build_task_routing_model_signal_map(
     *,
-    model_id: str,
-    service_tier: str,
-    residency_mode: str,
-    cold_start_risk: str,
-    package_size_mb: float | None,
-    avg_p95_latency_ms: float | None,
-    gpu_snapshot: dict[str, Any],
-) -> tuple[bool, list[int], str]:
+    models: list[ModelSummary],
+    deployments: list[DeploymentRecord],
+    benchmarks: list[BenchmarkRecord],
+    prediction_archives: list[PredictionArchiveRecord],
+    decision_records: list[TaskRoutingDecisionRecord],
+    feedback_records: list[TaskRoutingFeedbackRecord],
+) -> dict[str, dict[str, Any]]:
+    selected_counts: Counter[str] = Counter()
+    recent_selected_counts: Counter[str] = Counter()
+    feedback_counters: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "feedback_count": 0,
+            "accepted_count": 0,
+            "rejected_count": 0,
+            "adopted_count": 0,
+        }
+    )
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    for record in decision_records:
+        selected_model_ids = {item.model_id for item in record.selected_deployments if item.model_id}
+        record_created_at = _parse_iso_datetime(record.created_at)
+        for model_id in selected_model_ids:
+            selected_counts[model_id] += 1
+            if record_created_at is not None and record_created_at >= recent_cutoff:
+                recent_selected_counts[model_id] += 1
+
+    for record in feedback_records:
+        selected_model_ids = set(record.selected_model_ids or [])
+        if record.adopted_model_id:
+            selected_model_ids.add(record.adopted_model_id)
+            feedback_counters[record.adopted_model_id]["adopted_count"] += 1
+        for model_id in selected_model_ids:
+            feedback_counters[model_id]["feedback_count"] += 1
+            if record.accepted:
+                feedback_counters[model_id]["accepted_count"] += 1
+            else:
+                feedback_counters[model_id]["rejected_count"] += 1
+
+    model_score_summaries = _build_model_score_summaries(
+        models=models,
+        deployments=deployments,
+        benchmarks=benchmarks,
+        prediction_archives=prediction_archives,
+        decision_records=decision_records,
+        feedback_records=feedback_records,
+    )
+    scores_by_model: dict[str, list[TaskRoutingModelScoreSummary]] = defaultdict(list)
+    for item in model_score_summaries:
+        scores_by_model[item.model_id].append(item)
+
+    signals: dict[str, dict[str, Any]] = {}
+    model_ids = {item.model_id for item in models}
+    for model_id in model_ids:
+        model_scores = scores_by_model.get(model_id, [])
+        current_scores = [float(item.current_score or 0.0) for item in model_scores]
+        dimension_signals: dict[str, float] = defaultdict(float)
+        for item in model_scores:
+            for breakdown in (
+                item.benchmark_score_breakdown,
+                item.no_feedback_score_breakdown,
+                item.feedback_score_breakdown,
+            ):
+                for key, value in (breakdown or {}).items():
+                    numeric_value = float(value or 0.0)
+                    if numeric_value > 0:
+                        dimension_signals[key] += numeric_value
+
+        focus_dimensions = [
+            key
+            for key, value in sorted(
+                dimension_signals.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:3]
+            if value > 0.0001
+        ]
+        feedback_count = int(feedback_counters[model_id]["feedback_count"])
+        accepted_count = int(feedback_counters[model_id]["accepted_count"])
+        acceptance_rate = (accepted_count / feedback_count) if feedback_count else None
+        avg_current_score = _mean_numeric(current_scores)
+        selected_count = int(selected_counts.get(model_id, 0))
+        recent_selected_count = int(recent_selected_counts.get(model_id, 0))
+        adopted_count = int(feedback_counters[model_id]["adopted_count"])
+        routing_value_score = (
+            min(18.0, recent_selected_count * 4.0 + max(0, selected_count - recent_selected_count) * 1.2)
+            + min(12.0, adopted_count * 5.0)
+            + min(16.0, float(avg_current_score or 0.0) * 16.0)
+            + min(8.0, (acceptance_rate or 0.0) * 8.0 if feedback_count else 0.0)
+            + min(10.0, sum(dimension_signals.values()) * 35.0)
+        )
+        signals[model_id] = {
+            "selected_count": selected_count,
+            "recent_selected_count": recent_selected_count,
+            "feedback_count": feedback_count,
+            "accepted_count": accepted_count,
+            "rejected_count": int(feedback_counters[model_id]["rejected_count"]),
+            "adopted_count": adopted_count,
+            "acceptance_rate": round(acceptance_rate, 4) if acceptance_rate is not None else None,
+            "avg_current_score": avg_current_score,
+            "routing_value_score": round(routing_value_score, 6),
+            "dimension_signals": {key: round(value, 6) for key, value in dimension_signals.items() if value > 0.000001},
+            "focus_dimensions": focus_dimensions,
+        }
+    return signals
+
+
+def _build_automation_history_signal_map(
+    automation_actions: list[DeploymentPolicyAutomationAction],
+) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, dict[str, float]] = defaultdict(
+        lambda: {
+            "restart_count": 0.0,
+            "busy_restart_count": 0.0,
+            "rebalance_count": 0.0,
+            "cpu_migration_count": 0.0,
+            "failed_count": 0.0,
+        }
+    )
+    for action in automation_actions:
+        model_id = str(action.model_id or "").strip()
+        if not model_id or model_id == "-":
+            continue
+        if action.action_type == "restart_high_gpu_memory" and action.status in {"restarted", "failed", "busy"}:
+            grouped[model_id]["restart_count"] += 1.0
+            if action.status == "busy":
+                grouped[model_id]["busy_restart_count"] += 1.0
+        if action.action_type == "rebalance_gpu" and action.status in {"migrated", "applied"}:
+            grouped[model_id]["rebalance_count"] += 1.0
+        if action.action_type == "migrate_to_cpu" and action.status in {"migrated", "applied"}:
+            grouped[model_id]["cpu_migration_count"] += 1.0
+        if action.status == "failed":
+            grouped[model_id]["failed_count"] += 1.0
+
+    signals: dict[str, dict[str, Any]] = {}
+    for model_id, values in grouped.items():
+        operational_risk_score = min(
+            24.0,
+            values["restart_count"] * 4.5
+            + values["failed_count"] * 4.0
+            + values["cpu_migration_count"] * 2.5
+            + max(values["rebalance_count"] - 1.0, 0.0) * 0.8
+            + values["busy_restart_count"] * 1.2,
+        )
+        signals[model_id] = {
+            "restart_count": int(values["restart_count"]),
+            "busy_restart_count": int(values["busy_restart_count"]),
+            "rebalance_count": int(values["rebalance_count"]),
+            "cpu_migration_count": int(values["cpu_migration_count"]),
+            "failed_count": int(values["failed_count"]),
+            "operational_risk_score": round(operational_risk_score, 6),
+        }
+    return signals
+
+
+def _rank_gpu_devices(gpu_snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     devices = list(gpu_snapshot.get("devices") or [])
     if not gpu_snapshot.get("available") or not devices:
-        return (False, [], "CPU")
+        return ([], [])
 
     def _device_free_mb(item: dict[str, Any]) -> float:
         return max(float(item.get("memory_total_mb") or 0.0) - float(item.get("memory_used_mb") or 0.0), 0.0)
@@ -1983,7 +2578,7 @@ def _recommend_device_allocation(
         devices,
         key=lambda item: (
             -_device_free_mb(item),
-            float(item.get("utilization_gpu_pct") or 0),
+            float(item.get("utilization_gpu_pct") or 0.0),
             len(item.get("active_processes") or []),
         ),
     )
@@ -1997,27 +2592,182 @@ def _recommend_device_allocation(
         eligible.append(item)
     if not eligible:
         eligible = ranked
+    return (ranked, eligible)
 
+
+def _pick_gpu_device(
+    pool: list[dict[str, Any]],
+    *,
+    model_id: str,
+    prefer_first: bool = False,
+) -> dict[str, Any] | None:
+    if not pool:
+        return None
+    if prefer_first:
+        return pool[0]
     hash_seed = sum(ord(ch) for ch in str(model_id or ""))
+    return pool[hash_seed % len(pool)]
 
-    def _pick(pool: list[dict[str, Any]]) -> dict[str, Any]:
-        if not pool:
-            return ranked[0]
-        return pool[hash_seed % len(pool)]
+
+def _apply_cross_layer_policy_adjustments(
+    *,
+    model: ModelSummary,
+    service_tier: str,
+    demand_level: str,
+    residency_mode: str,
+    recommended_profile_name: str,
+    recommended_instance_count: int,
+    recommended_use_gpu: bool,
+    recommended_gpu_ids: list[int],
+    recommended_device_label: str,
+    gpu_pressure_action: str,
+    fallback_profile_name: str,
+    fallback_use_gpu: bool,
+    fallback_device_label: str,
+    cold_start_risk: str,
+    gpu_snapshot: dict[str, Any],
+    routing_signal: dict[str, Any],
+    automation_signal: dict[str, Any],
+    collaborative_priority_score: float,
+) -> tuple[str, str, str, str, int, bool, list[int], str, str, str, bool, str, list[str], str]:
+    routing_value_score = float(routing_signal.get("routing_value_score") or 0.0)
+    selected_count = int(routing_signal.get("selected_count") or 0)
+    dimension_signals = dict(routing_signal.get("dimension_signals") or {})
+    focus_dimensions = list(routing_signal.get("focus_dimensions") or [])
+    operational_risk_score = float(automation_signal.get("operational_risk_score") or 0.0)
+    restart_count = int(automation_signal.get("restart_count") or 0)
+    cpu_migration_count = int(automation_signal.get("cpu_migration_count") or 0)
+
+    latency_priority = float(dimension_signals.get("latency") or 0.0)
+    domain_priority = float(dimension_signals.get("domain") or 0.0)
+    coverage_priority = float(dimension_signals.get("coverage") or 0.0)
+
+    high_value = collaborative_priority_score >= 26.0 or routing_value_score >= 18.0 or selected_count >= 3
+    very_high_value = collaborative_priority_score >= 38.0 or routing_value_score >= 28.0
+    high_risk = operational_risk_score >= 8.0 or restart_count >= 2
+    very_high_risk = operational_risk_score >= 14.0 or restart_count >= 3
+
+    tags: list[str] = []
+    if high_value:
+        tags.append("调度高价值")
+    if domain_priority >= 0.01:
+        tags.append("领域优先")
+    elif latency_priority >= 0.01:
+        tags.append("时延优先")
+    elif coverage_priority >= 0.01:
+        tags.append("覆盖补全")
+    if restart_count > 0:
+        tags.append(f"重启{restart_count}次")
+    if cpu_migration_count > 0:
+        tags.append("有 CPU 回退史")
+
+    if high_value and service_tier == "cold":
+        service_tier = "warm"
+        demand_level = "medium"
+    if high_value and residency_mode == "on_demand" and cold_start_risk in {"medium", "high"}:
+        residency_mode = "keep_warm"
+    if very_high_value and recommended_instance_count < 2:
+        recommended_instance_count = 2
+
+    ranked, eligible = _rank_gpu_devices(gpu_snapshot)
+    prefer_stable_gpu = very_high_value or (high_value and (latency_priority >= 0.01 or domain_priority >= 0.01))
+    if high_value and not recommended_use_gpu and ranked and service_tier != "cold":
+        selected = _pick_gpu_device(
+            eligible[: min(2 if prefer_stable_gpu else 3, len(eligible))] or ranked[:1],
+            model_id=model.model_id,
+            prefer_first=prefer_stable_gpu,
+        )
+        if selected is not None:
+            recommended_use_gpu = True
+            recommended_gpu_ids = [int(selected.get("index"))]
+            recommended_device_label = f"GPU {selected.get('index')}（协同优先）"
+
+    if high_risk:
+        tags.append("运行风险高")
+        if not high_value and service_tier in {"warm", "cold"}:
+            recommended_use_gpu = False
+            recommended_gpu_ids = []
+            recommended_device_label = "CPU（风险降级）"
+            recommended_profile_name = "default" if service_tier == "warm" else "memory"
+            gpu_pressure_action = "migrate_to_cpu"
+            coordination_note = (
+                f"任务调度价值一般，但最近存在 {restart_count} 次显存重启 / "
+                f"{cpu_migration_count} 次 CPU 回退记录，部署层优先降级到 CPU 以降低抖动。"
+            )
+        else:
+            if ranked and recommended_use_gpu:
+                selected = _pick_gpu_device(
+                    eligible[: min(2, len(eligible))] or ranked[:1],
+                    model_id=model.model_id,
+                    prefer_first=True,
+                )
+                if selected is not None:
+                    recommended_gpu_ids = [int(selected.get("index"))]
+                    recommended_device_label = f"GPU {selected.get('index')}（高价值稳态）"
+            if recommended_profile_name == "memory":
+                recommended_profile_name = "default"
+            coordination_note = (
+                f"该模型在任务调度中价值较高，重点维度为 {', '.join(focus_dimensions or ['balanced'])}，"
+                f"但近期存在 {restart_count} 次显存重启记录；部署层保留 GPU，并优先分配到更空闲设备。"
+            )
+    elif high_value:
+        coordination_note = (
+            f"任务调度侧显示该模型近期被选中 {selected_count} 次，"
+            f"重点维度为 {', '.join(focus_dimensions or ['balanced'])}，部署层上调其保障优先级。"
+        )
+    else:
+        coordination_note = "当前推荐综合了基础需求热度、冷启动风险、GPU 压力与跨层协同信号。"
+
+    if very_high_risk and not high_value:
+        fallback_profile_name = "memory"
+        fallback_use_gpu = False
+        fallback_device_label = "CPU"
+
+    return (
+        service_tier,
+        demand_level,
+        residency_mode,
+        recommended_profile_name,
+        recommended_instance_count,
+        recommended_use_gpu,
+        recommended_gpu_ids,
+        recommended_device_label,
+        gpu_pressure_action,
+        fallback_profile_name,
+        fallback_use_gpu,
+        fallback_device_label,
+        tags,
+        coordination_note,
+    )
+
+
+def _recommend_device_allocation(
+    *,
+    model_id: str,
+    service_tier: str,
+    residency_mode: str,
+    cold_start_risk: str,
+    package_size_mb: float | None,
+    avg_p95_latency_ms: float | None,
+    gpu_snapshot: dict[str, Any],
+) -> tuple[bool, list[int], str]:
+    ranked, eligible = _rank_gpu_devices(gpu_snapshot)
+    if not ranked:
+        return (False, [], "CPU")
 
     if service_tier == "hot":
-        selected = _pick(eligible[: min(2, len(eligible))])
+        selected = _pick_gpu_device(eligible[: min(2, len(eligible))] or ranked[:1], model_id=model_id)
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（优先常驻）")
     if service_tier == "warm":
         if residency_mode == "on_demand" and cold_start_risk == "low":
             return (False, [], "CPU")
-        selected = _pick(eligible[: min(2, len(eligible))])
+        selected = _pick_gpu_device(eligible[: min(2, len(eligible))] or ranked[:1], model_id=model_id)
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（共享保温）")
     if cold_start_risk == "high" and (package_size_mb or 0.0) >= 150:
-        selected = _pick(eligible[: min(3, len(eligible))])
+        selected = _pick_gpu_device(eligible[: min(3, len(eligible))] or ranked[:1], model_id=model_id)
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（共享）")
     if avg_p95_latency_ms is not None and avg_p95_latency_ms > 250 and len(ranked) >= 2:
-        selected = _pick(eligible[: min(3, len(eligible))])
+        selected = _pick_gpu_device(eligible[: min(3, len(eligible))] or ranked[:1], model_id=model_id)
         return (True, [int(selected.get("index"))], f"GPU {selected.get('index')}（低优先级共享）")
     return (False, [], "CPU")
 
@@ -2202,8 +2952,11 @@ def _build_deployment_policy_summary(
     gpu_recommended_count = sum(1 for item in recommendations if item.recommended_use_gpu)
     cpu_recommended_count = len(recommendations) - gpu_recommended_count
     cpu_fallback_count = sum(1 for item in recommendations if item.gpu_pressure_action == "migrate_to_cpu")
+    cross_layer_priority_count = sum(1 for item in recommendations if item.routing_value_score >= 18.0)
+    high_risk_count = sum(1 for item in recommendations if item.operational_risk_score >= 8.0)
     strategy_overview = (
         f"平台当前共分析 {len(recommendations)} 个模型，其中热模型 {hot_count} 个、温模型 {warm_count} 个、冷模型 {cold_count} 个。"
+        f"任务调度侧识别出 {cross_layer_priority_count} 个高价值模型，运行侧识别出 {high_risk_count} 个高风险模型；"
         f"建议常驻 {always_on_count} 个、保温 {keep_warm_count} 个、按需启动 {on_demand_count} 个；"
         f"局部 GPU 压力时优先执行换卡重平衡；全局 GPU 高压时有 {cpu_fallback_count} 个低优先级模型建议迁移到 CPU 释放显存。"
     )

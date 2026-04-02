@@ -49,6 +49,7 @@ def start_strategy_scheduler() -> None:
         get_deployment_store=get_deployment_store,
         get_benchmark_store=get_benchmark_store,
         get_prediction_store=get_prediction_store,
+        get_task_routing_feedback_store=get_task_routing_feedback_store,
         get_policy_store=get_deployment_policy_store,
         get_gpu_snapshot=collect_gpu_status,
         get_inference_activity_tracker=get_inference_activity_tracker,
@@ -201,6 +202,8 @@ def get_deployment_policy() -> DeploymentPolicyResponse:
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
     prediction_store = get_prediction_store()
+    feedback_store = get_task_routing_feedback_store()
+    policy_store = get_deployment_policy_store()
     gpu_snapshot = collect_gpu_status()
     return build_deployment_policy(
         models=registry.list_models(),
@@ -208,6 +211,9 @@ def get_deployment_policy() -> DeploymentPolicyResponse:
         benchmarks=benchmark_store.list(),
         prediction_archives=prediction_store.list(),
         gpu_snapshot=gpu_snapshot,
+        decision_records=feedback_store.list_decisions(),
+        feedback_records=feedback_store.list_feedback(),
+        automation_actions=policy_store.get().recent_actions,
     )
 
 

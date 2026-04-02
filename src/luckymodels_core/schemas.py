@@ -431,11 +431,42 @@ class TaskRoutingModelAdoptionSummary(BaseModel):
     adopted_share: float | None = None
 
 
+class TaskRoutingModelScoreSummary(BaseModel):
+    objective: str
+    scene: str
+    deployment_id: str
+    model_id: str
+    profile_name: str
+    language: str
+    dataset_name: str | None = None
+    baseline_score: float = 0.0
+    current_score: float = 0.0
+    score_delta: float = 0.0
+    benchmark_score_delta: float = 0.0
+    no_feedback_score_delta: float = 0.0
+    feedback_score_delta: float = 0.0
+    benchmark_score_breakdown: dict[str, float] = Field(default_factory=dict)
+    no_feedback_score_breakdown: dict[str, float] = Field(default_factory=dict)
+    feedback_score_breakdown: dict[str, float] = Field(default_factory=dict)
+    performance_score_delta: float = 0.0
+    weight_shift_score_delta: float = 0.0
+    performance_score_breakdown: dict[str, float] = Field(default_factory=dict)
+    weight_shift_score_breakdown: dict[str, float] = Field(default_factory=dict)
+    baseline_breakdown: dict[str, float] = Field(default_factory=dict)
+    current_breakdown: dict[str, float] = Field(default_factory=dict)
+    performance_delta_breakdown: dict[str, float] = Field(default_factory=dict)
+    dominant_dimension: str | None = None
+    dominant_delta: float | None = None
+    change_note: str | None = None
+
+
 class TaskRoutingAdaptiveWeightProfile(BaseModel):
     objective: str
     effective_weights: dict[str, float] = Field(default_factory=dict)
     benchmark_adjustments: dict[str, float] = Field(default_factory=dict)
     archive_adjustments: dict[str, float] = Field(default_factory=dict)
+    unsupervised_adjustments: dict[str, float] = Field(default_factory=dict)
+    feedback_adjustments: dict[str, float] = Field(default_factory=dict)
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -452,6 +483,7 @@ class TaskRoutingFeedbackOverview(BaseModel):
     objective_summaries: list[TaskRoutingObjectiveFeedbackSummary] = Field(default_factory=list)
     execution_path_summaries: list[TaskRoutingExecutionPathSummary] = Field(default_factory=list)
     model_adoption_summaries: list[TaskRoutingModelAdoptionSummary] = Field(default_factory=list)
+    model_score_summaries: list[TaskRoutingModelScoreSummary] = Field(default_factory=list)
     weight_profiles: list[TaskRoutingAdaptiveWeightProfile] = Field(default_factory=list)
     recent_decisions: list[TaskRoutingDecisionSummary] = Field(default_factory=list)
     insights: list[str] = Field(default_factory=list)
@@ -463,6 +495,10 @@ class DeploymentPolicyRecommendation(BaseModel):
     language: str
     demand_level: str
     demand_score: float
+    base_demand_score: float = 0.0
+    routing_value_score: float = 0.0
+    operational_risk_score: float = 0.0
+    collaborative_priority_score: float = 0.0
     service_tier: str = "cold"
     residency_mode: str = "on_demand"
     recent_request_count: int = 0
@@ -485,7 +521,19 @@ class DeploymentPolicyRecommendation(BaseModel):
     fallback_profile_name: str = "memory"
     fallback_use_gpu: bool = False
     fallback_device_label: str = "CPU"
+    routing_selected_count: int = 0
+    routing_feedback_count: int = 0
+    routing_adopted_count: int = 0
+    routing_acceptance_rate: float | None = None
+    avg_routing_current_score: float | None = None
+    routing_dimension_signals: dict[str, float] = Field(default_factory=dict)
+    routing_focus_dimensions: list[str] = Field(default_factory=list)
+    restart_history_count: int = 0
+    rebalance_history_count: int = 0
+    cpu_migration_history_count: int = 0
+    failed_action_history_count: int = 0
     policy_tags: list[str] = Field(default_factory=list)
+    coordination_note: str = ""
     rationale: str
 
 
