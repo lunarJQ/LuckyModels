@@ -1023,6 +1023,18 @@ button:disabled {
   margin-top: 8px;
 }
 
+.archive-feedback-save-row {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.archive-feedback-save-row button {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .archive-feedback-cell {
   min-width: 320px;
 }

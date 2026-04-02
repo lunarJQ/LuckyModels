@@ -784,6 +784,13 @@ def _build_archive_weight_adjustments(
     satisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "satisfied")
     unsatisfied_count = sum(1 for item in matched_archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
     effective_feedback_count = satisfied_count + unsatisfied_count
+    unsatisfied_with_reason_count = sum(
+        1
+        for item in matched_archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    unsatisfied_without_reason_count = max(0, unsatisfied_count - unsatisfied_with_reason_count)
     missing_too_many_count = sum(
         1
         for item in matched_archives
@@ -831,16 +838,18 @@ def _build_archive_weight_adjustments(
             reasons.append(
                 f"近期同类在线归档收到 {satisfied_count} 条满意反馈、{unsatisfied_count} 条不满意反馈，系统提升准确与覆盖权重。"
             )
-        elif satisfied_rate <= 0.4:
-            feedback_adjustments["accuracy"] += (0.012 + 0.02 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")
-            feedback_adjustments["stability"] += (0.01 + 0.018 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")
-            feedback_adjustments["coverage"] -= (0.004 + 0.01 * (1.0 - satisfied_rate)) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")
+        if unsatisfied_without_reason_count:
+            generic_unsatisfied_rate = unsatisfied_without_reason_count / effective_feedback_count
+            feedback_adjustments["accuracy"] += (0.006 + 0.014 * generic_unsatisfied_rate) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")
+            feedback_adjustments["stability"] += (0.005 + 0.012 * generic_unsatisfied_rate) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")
             reasons.append(
-                f"近期同类在线归档中不满意反馈占比较高（{unsatisfied_count}/{effective_feedback_count}），系统提升准确与稳定权重。"
+                f"近期同类在线归档中有 {unsatisfied_without_reason_count} 条不满意反馈未填写原因，系统轻度提升准确与稳定权重。"
             )
 
-    if unsatisfied_count >= 1 and missing_too_many_count:
-        missing_ratio = missing_too_many_count / unsatisfied_count
+    explicit_reason_denominator = max(1, unsatisfied_with_reason_count)
+
+    if unsatisfied_with_reason_count >= 1 and missing_too_many_count:
+        missing_ratio = missing_too_many_count / explicit_reason_denominator
         signal_scale = max(feedback_scale, 0.1)
         feedback_adjustments["coverage"] += (0.01 + 0.025 * missing_ratio) * signal_scale * _objective_feedback_gain(objective, "coverage")
         feedback_adjustments["domain"] += (0.004 + 0.01 * missing_ratio) * signal_scale * _objective_feedback_gain(objective, "domain")
@@ -848,8 +857,8 @@ def _build_archive_weight_adjustments(
             f"不满意反馈中有 {missing_too_many_count} 条指出“漏抽多”，系统提升覆盖与领域权重。"
         )
 
-    if unsatisfied_count >= 1 and false_positive_too_many_count:
-        false_positive_ratio = false_positive_too_many_count / unsatisfied_count
+    if unsatisfied_with_reason_count >= 1 and false_positive_too_many_count:
+        false_positive_ratio = false_positive_too_many_count / explicit_reason_denominator
         signal_scale = max(feedback_scale, 0.1)
         feedback_adjustments["accuracy"] += (0.01 + 0.022 * false_positive_ratio) * signal_scale * _objective_feedback_gain(objective, "accuracy")
         feedback_adjustments["stability"] += (0.008 + 0.018 * false_positive_ratio) * signal_scale * _objective_feedback_gain(objective, "stability")
@@ -858,8 +867,8 @@ def _build_archive_weight_adjustments(
             f"不满意反馈中有 {false_positive_too_many_count} 条指出“误抽多”，系统提升准确与稳定权重。"
         )
 
-    if unsatisfied_count >= 1 and latency_high_count:
-        latency_high_ratio = latency_high_count / unsatisfied_count
+    if unsatisfied_with_reason_count >= 1 and latency_high_count:
+        latency_high_ratio = latency_high_count / explicit_reason_denominator
         signal_scale = max(feedback_scale, 0.1)
         feedback_adjustments["latency"] += (0.01 + 0.022 * latency_high_ratio) * signal_scale * _objective_feedback_gain(objective, "latency")
         feedback_adjustments["resource"] += (0.004 + 0.012 * latency_high_ratio) * signal_scale * _objective_feedback_gain(objective, "resource")
@@ -867,8 +876,8 @@ def _build_archive_weight_adjustments(
             f"不满意反馈中有 {latency_high_count} 条指出“延迟高”，系统提升时延与资源权重。"
         )
 
-    if request_domain != "general" and unsatisfied_count >= 1 and (missing_too_many_count or false_positive_too_many_count):
-        domain_mismatch_ratio = min(1.0, (missing_too_many_count + false_positive_too_many_count) / unsatisfied_count)
+    if request_domain != "general" and unsatisfied_with_reason_count >= 1 and (missing_too_many_count or false_positive_too_many_count):
+        domain_mismatch_ratio = min(1.0, (missing_too_many_count + false_positive_too_many_count) / explicit_reason_denominator)
         feedback_adjustments["domain"] += (0.008 + 0.016 * domain_mismatch_ratio) * max(feedback_scale, 0.1) * _objective_feedback_gain(objective, "domain")
         reasons.append("在当前领域场景下，漏抽或误抽反馈偏多，系统进一步提升领域权重并优先考虑领域专用模型。")
 
@@ -1326,36 +1335,41 @@ def _selection_score_breakdown(
     domain_score = {"high": 1.0, "medium": 0.65, "low": 0.3}.get(domain_match, 0.45)
     if archive_feedback_summary:
         effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
-        satisfied_rate = archive_feedback_summary.get("satisfied_rate")
         empty_rate = float(archive_feedback_summary.get("empty_rate") or 0.0)
         archive_count = int(archive_feedback_summary.get("archive_count") or 0)
         archive_avg_latency = archive_feedback_summary.get("avg_latency_ms")
+        satisfied_count = int(archive_feedback_summary.get("satisfied_count") or 0)
+        unsatisfied_with_reason_count = int(archive_feedback_summary.get("unsatisfied_with_reason_count") or 0)
+        unsatisfied_without_reason_count = int(archive_feedback_summary.get("unsatisfied_without_reason_count") or 0)
         missing_too_many_count = int(archive_feedback_summary.get("missing_too_many_count") or 0)
         false_positive_too_many_count = int(archive_feedback_summary.get("false_positive_too_many_count") or 0)
         latency_high_count = int(archive_feedback_summary.get("latency_high_count") or 0)
         archive_scale = _progressive_evidence_scale(archive_count, target_count=30)
         feedback_scale = _progressive_evidence_scale(effective_feedback_count, target_count=10)
-        if satisfied_rate is not None and effective_feedback_count:
-            centered_rate = float(satisfied_rate) - 0.5
-            accuracy_score = min(1.0, max(0.0, accuracy_score + centered_rate * (0.08 + 0.12 * feedback_scale) * _objective_feedback_gain(objective, "accuracy")))
-            stability_score = min(1.0, max(0.0, stability_score + centered_rate * (0.06 + 0.10 * feedback_scale) * _objective_feedback_gain(objective, "stability")))
-            if centered_rate > 0 and (archive_feedback_summary.get("avg_triple_count") or 0.0) >= 1.0:
-                coverage_score = min(1.0, coverage_score + centered_rate * (0.03 + 0.05 * feedback_scale) * _objective_feedback_gain(objective, "coverage"))
-            elif centered_rate < 0:
-                coverage_score = max(0.0, coverage_score + centered_rate * (0.02 + 0.04 * feedback_scale) * _objective_feedback_gain(objective, "coverage"))
+        if satisfied_count and effective_feedback_count:
+            satisfied_signal = satisfied_count / effective_feedback_count
+            accuracy_score = min(1.0, max(0.0, accuracy_score + satisfied_signal * (0.03 + 0.07 * feedback_scale) * _objective_feedback_gain(objective, "accuracy")))
+            stability_score = min(1.0, max(0.0, stability_score + satisfied_signal * (0.025 + 0.06 * feedback_scale) * _objective_feedback_gain(objective, "stability")))
+            if (archive_feedback_summary.get("avg_triple_count") or 0.0) >= 1.0:
+                coverage_score = min(1.0, max(0.0, coverage_score + satisfied_signal * (0.015 + 0.035 * feedback_scale) * _objective_feedback_gain(objective, "coverage")))
+        if unsatisfied_without_reason_count and effective_feedback_count:
+            generic_unsatisfied_signal = unsatisfied_without_reason_count / effective_feedback_count
+            accuracy_score = max(0.0, accuracy_score - min(0.08, (0.015 + generic_unsatisfied_signal * 0.05) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")))
+            stability_score = max(0.0, stability_score - min(0.07, (0.012 + generic_unsatisfied_signal * 0.045) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")))
         if empty_rate >= 0.4:
             coverage_score = max(0.0, coverage_score - min(0.10, empty_rate * 0.10 * max(archive_scale, 0.2)))
             stability_score = max(0.0, stability_score - min(0.08, empty_rate * 0.08 * max(archive_scale, 0.2)))
-        if effective_feedback_count and missing_too_many_count:
-            missing_ratio = missing_too_many_count / effective_feedback_count
+        explicit_reason_denominator = max(1, unsatisfied_with_reason_count)
+        if unsatisfied_with_reason_count and missing_too_many_count:
+            missing_ratio = missing_too_many_count / explicit_reason_denominator
             coverage_score = max(0.0, coverage_score - min(0.12, (0.02 + missing_ratio * 0.08) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")))
-        if effective_feedback_count and false_positive_too_many_count:
-            false_positive_ratio = false_positive_too_many_count / effective_feedback_count
+        if unsatisfied_with_reason_count and false_positive_too_many_count:
+            false_positive_ratio = false_positive_too_many_count / explicit_reason_denominator
             accuracy_score = max(0.0, accuracy_score - min(0.12, (0.03 + false_positive_ratio * 0.07) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")))
             stability_score = max(0.0, stability_score - min(0.10, (0.02 + false_positive_ratio * 0.06) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "stability")))
             coverage_score = max(0.0, coverage_score - min(0.05, false_positive_ratio * 0.04 * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")))
-        if effective_feedback_count and latency_high_count:
-            latency_high_ratio = latency_high_count / effective_feedback_count
+        if unsatisfied_with_reason_count and latency_high_count:
+            latency_high_ratio = latency_high_count / explicit_reason_denominator
             latency_score = max(0.0, latency_score - min(0.14, (0.03 + latency_high_ratio * 0.08) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "latency")))
             resource_score = max(0.0, resource_score - min(0.08, (0.02 + latency_high_ratio * 0.05) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "resource")))
         if p95_latency_ms is None and archive_avg_latency is not None:
@@ -1465,6 +1479,8 @@ def _build_candidate_archive_feedback_summary(
             "effective_feedback_count": 0,
             "satisfied_count": 0,
             "unsatisfied_count": 0,
+            "unsatisfied_with_reason_count": 0,
+            "unsatisfied_without_reason_count": 0,
             "missing_too_many_count": 0,
             "false_positive_too_many_count": 0,
             "latency_high_count": 0,
@@ -1477,6 +1493,13 @@ def _build_candidate_archive_feedback_summary(
     unsatisfied_count = sum(1 for item in archives if str(item.feedback_status or "pending").strip().lower() == "unsatisfied")
     effective_feedback_count = satisfied_count + unsatisfied_count
     empty_count = sum(1 for item in archives if not int(item.triple_count or 0))
+    unsatisfied_with_reason_count = sum(
+        1
+        for item in archives
+        if str(item.feedback_status or "pending").strip().lower() == "unsatisfied"
+        and _parse_archive_feedback_reasons(item.feedback_note)
+    )
+    unsatisfied_without_reason_count = max(0, unsatisfied_count - unsatisfied_with_reason_count)
     missing_too_many_count = sum(
         1
         for item in archives
@@ -1500,6 +1523,8 @@ def _build_candidate_archive_feedback_summary(
         "effective_feedback_count": effective_feedback_count,
         "satisfied_count": satisfied_count,
         "unsatisfied_count": unsatisfied_count,
+        "unsatisfied_with_reason_count": unsatisfied_with_reason_count,
+        "unsatisfied_without_reason_count": unsatisfied_without_reason_count,
         "missing_too_many_count": missing_too_many_count,
         "false_positive_too_many_count": false_positive_too_many_count,
         "latency_high_count": latency_high_count,
@@ -1519,6 +1544,8 @@ def _build_archive_feedback_reason_text(
     effective_feedback_count = int(archive_feedback_summary.get("effective_feedback_count") or 0)
     satisfied_count = int(archive_feedback_summary.get("satisfied_count") or 0)
     unsatisfied_count = int(archive_feedback_summary.get("unsatisfied_count") or 0)
+    unsatisfied_with_reason_count = int(archive_feedback_summary.get("unsatisfied_with_reason_count") or 0)
+    unsatisfied_without_reason_count = int(archive_feedback_summary.get("unsatisfied_without_reason_count") or 0)
     missing_too_many_count = int(archive_feedback_summary.get("missing_too_many_count") or 0)
     false_positive_too_many_count = int(archive_feedback_summary.get("false_positive_too_many_count") or 0)
     latency_high_count = int(archive_feedback_summary.get("latency_high_count") or 0)
@@ -1526,6 +1553,10 @@ def _build_archive_feedback_reason_text(
         return "当前暂无同类在线归档反馈。"
     if effective_feedback_count:
         detail_parts = []
+        if unsatisfied_with_reason_count:
+            detail_parts.append(f"已说明原因 {unsatisfied_with_reason_count} 条")
+        if unsatisfied_without_reason_count:
+            detail_parts.append(f"未说明原因 {unsatisfied_without_reason_count} 条")
         if missing_too_many_count:
             detail_parts.append(f"漏抽偏多 {missing_too_many_count} 条")
         if false_positive_too_many_count:
@@ -1535,7 +1566,7 @@ def _build_archive_feedback_reason_text(
         detail_text = f"；其中{'，'.join(detail_parts)}" if detail_parts else ""
         return (
             f"同类在线归档 {archive_count} 条，其中满意 {satisfied_count} 条、不满意 {unsatisfied_count} 条，"
-            f"{detail_text}，这些记录会直接参与本次候选评分。"
+            f"{detail_text}；这些记录会直接参与本次候选评分。"
         )
     return f"当前已有同类在线归档 {archive_count} 条，但尚无明确满意度反馈，平台暂以运行结果作为辅助证据。"
 

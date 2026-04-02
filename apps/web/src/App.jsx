@@ -2648,6 +2648,9 @@ function PredictionGraphCard({ predictResult }) {
 function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
   const currentStatus = normalizePredictionFeedbackStatus(archive?.feedback_status);
   const currentReasons = parsePredictionFeedbackReasons(archive?.feedback_note);
+  const currentReasonKey = serializePredictionFeedbackReasons(currentReasons);
+  const [draftStatus, setDraftStatus] = useState(currentStatus);
+  const [draftReasons, setDraftReasons] = useState(currentReasons);
   const options = [
     { value: "satisfied", label: "满意" },
     { value: "unsatisfied", label: "不满意" },
@@ -2658,6 +2661,17 @@ function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
     { value: "false_positive_too_many", label: "误抽多" },
     { value: "latency_high", label: "延迟高" },
   ];
+  const busy = actionBusy?.[`prediction-feedback-${archive.archive_id}`];
+  const draftReasonKey = serializePredictionFeedbackReasons(draftReasons);
+  const dirty =
+    draftStatus !== currentStatus ||
+    (draftStatus === "unsatisfied" && draftReasonKey !== currentReasonKey) ||
+    (currentStatus === "unsatisfied" && draftStatus !== "unsatisfied");
+
+  useEffect(() => {
+    setDraftStatus(currentStatus);
+    setDraftReasons(currentReasons);
+  }, [archive?.archive_id, currentStatus, currentReasonKey]);
 
   return (
     <div className="archive-feedback-panel">
@@ -2665,35 +2679,35 @@ function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
         {options.map((item) => (
           <button
             key={item.value}
-            className={currentStatus === item.value ? "button-active" : ""}
-            disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
-            onClick={() =>
-              void onUpdate(
-                archive.archive_id,
-                item.value,
-                item.value === "unsatisfied" ? currentReasons : null,
-              )
-            }
+            className={draftStatus === item.value ? "button-active" : ""}
+            disabled={busy}
+            onClick={() => {
+              setDraftStatus(item.value);
+              if (item.value !== "unsatisfied") {
+                setDraftReasons([]);
+              }
+            }}
             type="button"
           >
             {item.label}
           </button>
         ))}
       </div>
-      {currentStatus === "unsatisfied" ? (
+      {draftStatus === "unsatisfied" ? (
         <div className="archive-feedback-reason-shell">
-          <div className="table-note">不满意原因：</div>
+          <div className="table-note">不满意原因（可多选，可留空）：</div>
           <div className="actions archive-feedback-reason-actions">
             {unsatisfiedReasonOptions.map((item) => (
               <button
                 key={item.value}
-                className={currentReasons.includes(item.value) ? "button-active" : ""}
-                disabled={actionBusy?.[`prediction-feedback-${archive.archive_id}`]}
+                className={draftReasons.includes(item.value) ? "button-active" : ""}
+                disabled={busy}
                 onClick={() => {
-                  const nextReasons = currentReasons.includes(item.value)
-                    ? currentReasons.filter((reason) => reason !== item.value)
-                    : [...currentReasons, item.value];
-                  void onUpdate(archive.archive_id, "unsatisfied", nextReasons);
+                  setDraftReasons((current) =>
+                    current.includes(item.value)
+                      ? current.filter((reason) => reason !== item.value)
+                      : [...current, item.value],
+                  );
                 }}
                 type="button"
               >
@@ -2703,6 +2717,26 @@ function PredictionArchiveFeedbackControls({ actionBusy, archive, onUpdate }) {
           </div>
         </div>
       ) : null}
+      <div className="actions archive-feedback-save-row">
+        <button
+          className="btn-primary"
+          disabled={busy || !dirty}
+          onClick={() => void onUpdate(archive.archive_id, draftStatus, draftStatus === "unsatisfied" ? draftReasons : null)}
+          type="button"
+        >
+          保存反馈
+        </button>
+        <button
+          disabled={busy || !dirty}
+          onClick={() => {
+            setDraftStatus(currentStatus);
+            setDraftReasons(currentReasons);
+          }}
+          type="button"
+        >
+          恢复当前值
+        </button>
+      </div>
     </div>
   );
 }
