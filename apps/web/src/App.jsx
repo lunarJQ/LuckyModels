@@ -109,6 +109,10 @@ const pageMeta = {
     title: "任务调度",
     note: "根据目标偏好、文本难度、领域信息以及 benchmark 与样本回放证据，在单模型与多模型抽取之间自适应切换并做轻量自校准。",
   },
+  "/task-routing-history": {
+    title: "调度历史",
+    note: "集中查看任务调度的历史累计统计、各目标长期权重、执行路径分布与最近决策记录。",
+  },
   "/deployment-policy": {
     title: "部署策略",
     note: "根据热温冷分层、冷启动风险与 GPU 压力，生成自适应部署建议，并支持定时自动优化。",
@@ -2287,6 +2291,12 @@ function Shell(props) {
               />,
             )}
             {renderGuardedRoute(
+              "/task-routing-history",
+              <TaskRoutingHistoryPage
+                derived={derived}
+              />,
+            )}
+            {renderGuardedRoute(
               "/deployment-policy",
               <DeploymentPolicyPage
                 actionBusy={actionBusy}
@@ -3443,20 +3453,24 @@ function TaskRoutingPage({
   const calibrationArchiveCount = derived.predictArchives.length;
   const selectedObjective = candidateOptions.find((item) => item.value === taskRoutingForm.objective) || candidateOptions[0];
   const selectedScene = sceneOptions.find((item) => item.value === taskRoutingForm.scene) || sceneOptions[2];
+  const hasCurrentRun = Boolean(taskRoutingResult);
   const selectedDeployments = taskRoutingResult?.selected_deployments || [];
   const fusedTriples = taskRoutingResult?.fused_result?.triples || [];
   const topWeightEntry = Object.entries(taskRoutingResult?.objective_weights || {}).sort((a, b) => b[1] - a[1])[0];
-  const latestDecisionRecord = feedbackOverview.recent_decisions?.[0] || null;
   const currentWeightProfile = useMemo(
     () => (feedbackOverview.weight_profiles || []).find((item) => item.objective === taskRoutingForm.objective) || null,
     [feedbackOverview.weight_profiles, taskRoutingForm.objective],
   );
   const currentModelScoreSummaries = useMemo(
-    () =>
-      (feedbackOverview.model_score_summaries || [])
+    () => {
+      if (!hasCurrentRun) {
+        return [];
+      }
+      return (feedbackOverview.model_score_summaries || [])
         .filter((item) => item.objective === taskRoutingForm.objective)
-        .filter((item) => item.scene === selectedScene.value),
-    [feedbackOverview.model_score_summaries, selectedScene.value, taskRoutingForm.objective],
+        .filter((item) => item.scene === selectedScene.value);
+    },
+    [feedbackOverview.model_score_summaries, hasCurrentRun, selectedScene.value, taskRoutingForm.objective],
   );
   const sceneMatchedArchives = useMemo(
     () => sortByCreatedDesc(derived.predictArchives).filter((item) => archiveMatchesTaskRoutingScene(item, selectedScene.value)),
@@ -3562,8 +3576,8 @@ function TaskRoutingPage({
     "先看“调度结果”：这里直接回答平台最终选了什么执行路径，融合出了哪些三元组。",
     "再看“候选部署与执行明细”：这里解释为什么选中这些 deployment，而不是别的 deployment。",
     "接着看“运行证据与基准概览”：这里展示最近 benchmark 如何支撑本次调度选择。",
-    "最后看“策略校准总览”和“权重快照”：这里说明调度层如何根据 benchmark 与归档记录做轻量自校准。",
-    "如果要截图或追溯历史，直接看“最近决策记录”：一行就是一次真实任务调度。",
+    "再看“当前操作如何作用到评分”：这里解释当前目标和场景为什么会把某些 deployment 抬高或压低。",
+    "如果要截图或追溯长期统计，直接进入“调度历史”页：那里专门放历史累计、执行路径分布和最近决策记录。",
   ];
   const executionPathGuideItems = Object.entries(executionPathLabels)
     .filter(([key]) => key !== "none")
@@ -3579,9 +3593,9 @@ function TaskRoutingPage({
       label,
       note: formatFusionPolicyNote(key),
     }));
-  const activeExecutionPathCode = taskRoutingResult?.execution_path || latestDecisionRecord?.execution_path || "";
-  const activeFusionPolicyCode = taskRoutingResult?.fusion_policy || latestDecisionRecord?.fusion_policy || "";
-  const activeWeightSnapshot = taskRoutingResult?.objective_weights || currentWeightProfile?.effective_weights || {};
+  const activeExecutionPathCode = taskRoutingResult?.execution_path || "";
+  const activeFusionPolicyCode = taskRoutingResult?.fusion_policy || "";
+  const activeWeightSnapshot = taskRoutingResult?.objective_weights || {};
   const activeWeightEntries = Object.entries(activeWeightSnapshot).sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0));
   const activeTopWeightEntry = activeWeightEntries[0];
   const activeBenchmarkAdjustments = currentWeightProfile?.benchmark_adjustments || {};
@@ -3590,16 +3604,12 @@ function TaskRoutingPage({
   const taskResultSelectedModels = Array.isArray(taskRoutingResult?.selected_model_ids)
     ? taskRoutingResult.selected_model_ids
     : selectedDeployments.map((item) => item.model_id).filter(Boolean);
-  const activeSelectedModels = taskResultSelectedModels.length
-    ? taskResultSelectedModels
-    : (latestDecisionRecord?.selected_model_ids || []);
-  const activeRecordSourceLabel = taskRoutingResult ? "本次实时记录" : latestDecisionRecord ? "最近一次历史记录" : "等待首次运行";
-  const activeRecordDecisionId = taskRoutingResult?.decision_id || latestDecisionRecord?.decision_id || "-";
-  const activeRecordArchiveId = taskRoutingResult?.archive_id || latestDecisionRecord?.archive_id || "-";
-  const activeRecordTime = taskRoutingResult?.created_at || latestDecisionRecord?.created_at || "-";
-  const activeDecisionNote = taskRoutingResult?.explanation || (latestDecisionRecord
-    ? `最近一次历史记录采用“${formatExecutionPathLabel(latestDecisionRecord.execution_path)}”路径，融合策略为“${formatFusionPolicyLabel(latestDecisionRecord.fusion_policy)}”。`
-    : "");
+  const activeSelectedModels = taskResultSelectedModels;
+  const activeRecordSourceLabel = taskRoutingResult ? "本次实时记录" : "等待本次运行";
+  const activeRecordDecisionId = taskRoutingResult?.decision_id || "-";
+  const activeRecordArchiveId = taskRoutingResult?.archive_id || "-";
+  const activeRecordTime = taskRoutingResult?.created_at || "-";
+  const activeDecisionNote = taskRoutingResult?.explanation || "";
 
   return (
     <>
@@ -3710,9 +3720,9 @@ function TaskRoutingPage({
           <SectionHeader
             kicker="右侧实际记录"
             title="当前执行路径与权重实例"
-            note={taskRoutingResult ? "优先展示你刚刚运行出来的真实任务调度结果；没有本次结果时，自动退回到最近一次历史任务调度记录。" : "当前还没有本次实时结果，因此这里先回看最近一次历史任务调度记录。"}
+            note="这里只展示本次刚运行出来的真实任务调度结果，不再混入历史累计记录。"
           />
-          {(taskRoutingResult || latestDecisionRecord) ? (
+          {taskRoutingResult ? (
             <>
               <div className="metrics">
                 <MetricCard title="记录来源" value={activeRecordSourceLabel} note={`决策编号 ${activeRecordDecisionId}`} />
@@ -3768,7 +3778,14 @@ function TaskRoutingPage({
               </div>
             </>
           ) : (
-            <EmptyState icon="R" title="还没有实际记录" note="先运行一次任务调度，右边就会显示执行路径、融合策略和权重快照的真实例子。" />
+            <>
+              <EmptyState icon="R" title="还没有本次调度记录" note="你还没有执行当前这次任务调度，所以这里不会预先展示历史执行路径或历史权重快照，避免和本次实时结果混淆。" />
+              <div className="actions">
+                <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
+                  查看历史调度记录
+                </NavLink>
+              </div>
+            </>
           )}
         </article>
       </section>
@@ -4083,62 +4100,536 @@ function TaskRoutingPage({
         </article>
       </section>
 
-      <section className="detail-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="左侧介绍" title="权重信息怎么看" note="左边讲清楚权重表每一列是什么意思，右边紧挨着就看真实权重快照，这样不会只看到一堆数。" />
-          <div className="relation-list">
-            <div className="relation-item">
-              <strong>有效权重</strong>
-              <br />
-              表示当前真正参与调度打分的权重。哪一项更高，平台就越重视哪一项，例如准确、覆盖、时延、领域或资源。
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="当前操作上下文" title="本次调度现在按什么规则打分" note="这块只保留当前操作必需的信息，不再展开长期累计表格。长期统计、各目标权重和执行路径分布已经独立到“调度历史”页。" />
+        {hasCurrentRun ? (
+          <>
+            <div className="metrics">
+              <MetricCard title="当前目标" value={selectedObjective.label} note={selectedObjective.note} />
+              <MetricCard title="当前场景" value={selectedScene.label} note="当前表单默认就是下面评分表的上下文" />
+              <MetricCard title="场景样本" value={sceneFeedbackSummary.archiveCount} note="只统计当前场景可复用的结果反馈记录" />
+              <MetricCard title="权重主项" value={activeTopWeightEntry?.[0] || "-"} note={activeTopWeightEntry ? `当前值 ${Number(activeTopWeightEntry[1]).toFixed(2)}` : "尚未形成权重快照"} />
             </div>
-            <div className="relation-item">
-              <strong>基准修正</strong>
-              <br />
-              来自 benchmark 结果。某个 deployment 最近 P95 更低或成功率更稳时，会推动对应目标下的评分倾向发生变化。
-            </div>
-            <div className="relation-item">
-              <strong>无用户反馈校准修正</strong>
-              <br />
-              来自自动归档统计，不依赖显式用户反馈。它主要吸收空结果率、平均时延、非空三元组产出和样本规模这些运行信号。
-            </div>
-            <div className="relation-item">
-              <strong>有用户反馈校准修正</strong>
-              <br />
-              来自满意 / 不满意 / 漏抽多 / 误抽多 / 延迟高这类显式反馈。它反映真实使用者对结果质量和体验的直接评价。
-            </div>
-            <div className="relation-item">
-              <strong>阅读顺序</strong>
-              <br />
-              先看右表里当前目标的有效权重，再看它背后更主要是被 benchmark 影响，还是被无用户反馈校准和有用户反馈校准推动。
-            </div>
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="分析区" title="调度评分权重快照" note="这张表不是模型训练权重，而是调度层评分权重。它说明不同目标下，平台更看重准确、覆盖、时延、领域还是资源成本。" />
-          <div className="metrics">
-            <MetricCard title="场景归档样本" value={sceneFeedbackSummary.archiveCount} note={selectedScene.label} />
-            <MetricCard title="漏抽多" value={sceneFeedbackSummary.missingTooManyCount} note="会推动覆盖与领域权重上调" />
-            <MetricCard title="误抽多" value={sceneFeedbackSummary.falsePositiveTooManyCount} note="会推动准确率与稳定性权重上调" />
-            <MetricCard title="延迟高" value={sceneFeedbackSummary.latencyHighCount} note="会推动时延与资源权重上调" />
-          </div>
-          <div className="relation-list">
-            {sceneCalibrationNarratives.map((item, index) => (
-              <div className="relation-item" key={`${item}-${index + 1}`}>
-                {item}
+            <div className="task-routing-weight-stack">
+              <div className="task-routing-weight-card">
+                <strong>当前有效权重</strong>
+                <span>{formatWeightSnapshot(activeWeightSnapshot)}</span>
               </div>
+              <div className="task-routing-weight-card">
+                <strong>Benchmark 修正</strong>
+                <span>{formatWeightSnapshot(activeBenchmarkAdjustments)}</span>
+              </div>
+              <div className="task-routing-weight-card">
+                <strong>无用户反馈校准修正</strong>
+                <span>{formatWeightSnapshot(activeUnsupervisedAdjustments)}</span>
+              </div>
+              <div className="task-routing-weight-card">
+                <strong>有用户反馈校准修正</strong>
+                <span>{formatWeightSnapshot(activeFeedbackAdjustments)}</span>
+              </div>
+            </div>
+            <div className="relation-list">
+              {sceneCalibrationNarratives.map((item, index) => (
+                <div className="relation-item" key={`${item}-${index + 1}`}>
+                  {item}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="W"
+            title="尚未生成本次评分上下文"
+            note="你还没有执行本次任务调度，因此这里不会提前代入历史权重或历史评分结果。运行一次任务调度后，这里才会展示本次真正使用的权重快照与校准说明。"
+          />
+        )}
+        <div className="actions">
+          <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
+            查看长期历史统计
+          </NavLink>
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader kicker="分析区" title="模型评分变化快照" note={`当前展示“${selectedObjective.label} + ${selectedScene.label}”下可参与调度的 deployment。说明区与表格已合并到同一块区域，便于连续阅读。`} />
+        {hasCurrentRun ? (
+          <>
+            <div className="score-evolution-guide-grid">
+              <div className="relation-item">
+                <strong>先看评分概览</strong>
+                <br />
+                `评分概览` 把优化前评分、当前评分和评分变化合到一起。它先回答 deployment 在当前目标与场景下是被抬高了还是被压低了。
+              </div>
+              <div className="relation-item">
+                <strong>总分先拆成两层</strong>
+                <br />
+                当前页面先把总分变化拆成 `表现层影响 + 权重层影响`。其中表现层影响是精确拆分，权重层影响反映当前权重整体相对初始权重的变化。
+              </div>
+              <div className="relation-item">
+                <strong>表现层净变化从哪来</strong>
+                <br />
+                `表现层净变化 = 当前表现分 - 初始表现分`。初始表现分来自成功率、P95 时延、最近请求数、平均三元组数、资源效率和领域匹配；当前表现分则在此基础上继续叠加归档中的 `满意 / 漏抽多 / 误抽多 / 延迟高` 等反馈修正。
+              </div>
+              <div className="relation-item">
+                <strong>当前得分拆解看的是表现层</strong>
+                <br />
+                `当前得分拆解` 展示 deployment 当前六维表现分，不是调度权重，更适合解释“这个模型最近为什么更稳”或者“为什么最近被拉低了”。
+              </div>
+              <div className="relation-item">
+                <strong>这些数据确实来自在线校准</strong>
+                <br />
+                Benchmark、结果反馈、满意度反馈和历史调度记录都会实时进入调度权重修正与表现分修正，所以这里不是静态展示，而是真正参与任务调度的在线校准结果。
+              </div>
+              <div className="relation-item">
+                <strong>权重来源再往下看</strong>
+                <br />
+                表 2 的 `基准 / 无用户反馈 / 有用户反馈` 三类权重贡献，说明的是权重层为何偏向某个 deployment。它们是权重层来源分解，不直接等于总分变化完整拆账。
+              </div>
+            </div>
+            <div className="banner banner-muted">这块拆成两张表：上面先看“评分概览与表现层”，下面再看“权重层来源”。其中 `总分变化 = 表现层影响 + 权重层影响`；而 `表现层净变化` 展示的是六维表现分本身的变化，不是权重变化。</div>
+
+            <div className="score-evolution-block">
+              <div className="table-subhead">表 1：评分概览与表现层</div>
+              <div className="banner banner-muted">这张表看什么：先判断每个 deployment 的总分是上升还是下降，再看 `总分构成` 里究竟是表现层还是权重层在主导变化，最后结合当前得分拆解、表现层净变化和总分变化主因定位原因。</div>
+              <div className="table-wrap">
+                <table className="weight-profile-table score-evolution-table score-evolution-primary-table">
+                  <thead>
+                    <tr>
+                      <th>Deployment / 模型</th>
+                      <th>评分概览</th>
+                      <th>当前得分拆解</th>
+                      <th>表现层净变化</th>
+                      <th>总分变化主因</th>
+                      <th>说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modelScoreSummaryPagination.pagedItems.length ? modelScoreSummaryPagination.pagedItems.map((item) => {
+                      const deltaPositive = Number(item.score_delta || 0) > 0;
+                      const deltaNegative = Number(item.score_delta || 0) < 0;
+                      return (
+                        <tr key={`primary-${item.objective}-${item.scene}-${item.deployment_id}`}>
+                          <td className="score-evolution-cell-identity">
+                            <div className="archive-cell-stack">
+                              <strong className="archive-main">{item.deployment_id}</strong>
+                              <div className="table-note">{item.profile_name}</div>
+                              <div className="archive-main">{item.model_id}</div>
+                              <div className="table-note">{item.dataset_name || "-"}</div>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="score-overview-stack">
+                              <div className="score-overview-row">
+                                <span className="weight-snapshot-chip weight-snapshot-chip-baseline score-overview-chip">
+                                  <strong>优化前</strong>
+                                  <span>{Number(item.baseline_score || 0).toFixed(4)}</span>
+                                </span>
+                                <span className="weight-snapshot-chip score-overview-chip">
+                                  <strong>当前</strong>
+                                  <span>{Number(item.current_score || 0).toFixed(4)}</span>
+                                </span>
+                              </div>
+                              <span className={`score-delta-chip score-overview-delta ${deltaPositive ? "score-delta-positive" : deltaNegative ? "score-delta-negative" : ""}`}>
+                                变化 {formatSignedNumber(item.score_delta || 0, 4)}
+                              </span>
+                              <div className="score-composition-summary">
+                                <div className="table-note score-composition-title">总分构成</div>
+                                <div className="score-composition-grid">
+                                  <span className={`score-adjustment-breakdown-chip ${Number(item.performance_score_delta || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(item.performance_score_delta || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`}>
+                                    <strong>表现层影响</strong>
+                                    <span>{formatSignedNumber(item.performance_score_delta || 0, 4)}</span>
+                                  </span>
+                                  <span className={`score-adjustment-breakdown-chip ${Number(item.weight_shift_score_delta || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(item.weight_shift_score_delta || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`}>
+                                    <strong>权重层影响</strong>
+                                    <span>{formatSignedNumber(item.weight_shift_score_delta || 0, 4)}</span>
+                                  </span>
+                                </div>
+                                <div className="table-note">优化前评分 = 初始表现分 × 初始权重；当前评分 = 当前表现分 × 当前权重。</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                              {getWeightSnapshotEntries(item.current_breakdown || {}).length ? (
+                                getWeightSnapshotEntries(item.current_breakdown || {}).map(([key, value]) => (
+                                  <span className="score-breakdown-compact-chip" key={`primary-${item.objective}-${item.scene}-${item.deployment_id}-breakdown-${key}`}>
+                                    <strong>{formatWeightDimensionLabel(key)}</strong>
+                                    <span>{Number(value).toFixed(2)}</span>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="table-note">无</span>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                              {getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).length ? (
+                                getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).map(([key, value]) => (
+                                  <span className={`score-breakdown-compact-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`primary-${item.objective}-${item.scene}-${item.deployment_id}-performance-delta-${key}`}>
+                                    <strong>{formatWeightDimensionLabel(key)}</strong>
+                                    <span>{formatSignedNumber(value, 4)}</span>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="table-note">无变化</span>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="archive-cell-stack">
+                              <div className="archive-main">{formatWeightDimensionLabel(item.dominant_dimension)}</div>
+                              <div className="table-note">{formatSignedNumber(item.dominant_delta || 0, 4)}</div>
+                            </div>
+                          </td>
+                          <td className="limitation-cell score-evolution-note-cell">{item.change_note || "暂无变化说明"}</td>
+                        </tr>
+                      );
+                    }) : (
+                      <tr>
+                        <td className="table-note" colSpan="6">当前目标与场景下还没有可展示的模型评分变化记录。</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="score-evolution-block">
+              <div className="table-subhead">表 2：权重层来源分解</div>
+              <div className="banner banner-muted">这张表看什么：看 benchmark、无用户反馈统计和有用户反馈，分别通过哪些维度推动权重层向上或向下调整。它解释的是“权重为何变化”，不是总分变化的唯一来源。</div>
+              <div className="table-wrap">
+                <table className="weight-profile-table score-evolution-table score-evolution-contrib-table">
+                  <thead>
+                    <tr>
+                      <th>Deployment / 模型</th>
+                      <th>基准权重贡献</th>
+                      <th>无用户反馈权重贡献</th>
+                      <th>有用户反馈权重贡献</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modelScoreSummaryPagination.pagedItems.length ? modelScoreSummaryPagination.pagedItems.map((item) => (
+                      <tr key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}`}>
+                        <td className="score-evolution-cell-identity">
+                          <div className="archive-cell-stack">
+                            <strong className="archive-main">{item.deployment_id}</strong>
+                            <div className="table-note">{item.profile_name}</div>
+                            <div className="archive-main">{item.model_id}</div>
+                            <div className="table-note">{item.dataset_name || "-"}</div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="score-adjustment-stack">
+                            <div className="score-adjustment-heading">基准</div>
+                            <span className={`score-delta-chip ${Number(item.benchmark_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.benchmark_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
+                              {formatSignedNumber(item.benchmark_score_delta || 0, 4)}
+                            </span>
+                            <div className="score-adjustment-breakdown-grid">
+                              {getSignedWeightSnapshotEntries(item.benchmark_score_breakdown || {}).length ? (
+                                getSignedWeightSnapshotEntries(item.benchmark_score_breakdown || {}).map(([key, value]) => (
+                                  <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-benchmark-${key}`}>
+                                    <strong>{formatWeightDimensionLabel(key)}</strong>
+                                    <span>{formatSignedNumber(value, 4)}</span>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="table-note">无拆分</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="score-adjustment-stack">
+                            <div className="score-adjustment-heading">无用户反馈</div>
+                            <span className={`score-delta-chip ${Number(item.no_feedback_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.no_feedback_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
+                              {formatSignedNumber(item.no_feedback_score_delta || 0, 4)}
+                            </span>
+                            <div className="score-adjustment-breakdown-grid">
+                              {getSignedWeightSnapshotEntries(item.no_feedback_score_breakdown || {}).length ? (
+                                getSignedWeightSnapshotEntries(item.no_feedback_score_breakdown || {}).map(([key, value]) => (
+                                  <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-no-feedback-${key}`}>
+                                    <strong>{formatWeightDimensionLabel(key)}</strong>
+                                    <span>{formatSignedNumber(value, 4)}</span>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="table-note">无拆分</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="score-adjustment-stack">
+                            <div className="score-adjustment-heading">有用户反馈</div>
+                            <span className={`score-delta-chip ${Number(item.feedback_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.feedback_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
+                              {formatSignedNumber(item.feedback_score_delta || 0, 4)}
+                            </span>
+                            <div className="score-adjustment-breakdown-grid">
+                              {getSignedWeightSnapshotEntries(item.feedback_score_breakdown || {}).length ? (
+                                getSignedWeightSnapshotEntries(item.feedback_score_breakdown || {}).map(([key, value]) => (
+                                  <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-feedback-${key}`}>
+                                    <strong>{formatWeightDimensionLabel(key)}</strong>
+                                    <span>{formatSignedNumber(value, 4)}</span>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="table-note">无拆分</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td className="table-note" colSpan="4">当前目标与场景下还没有可展示的权重贡献记录。</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <PaginationBar
+              currentPage={modelScoreSummaryPagination.page}
+              totalPages={modelScoreSummaryPagination.totalPages}
+              pageSize={modelScoreSummaryPagination.pageSize}
+              totalItems={modelScoreSummaryPagination.totalItems}
+              onChange={modelScoreSummaryPagination.setPage}
+            />
+          </>
+        ) : (
+          <>
+            <EmptyState
+              icon="S"
+              title="尚未生成本次模型评分快照"
+              note="下方两张表只用于解释“本次刚执行的任务调度”如何影响模型评分。你还没运行本次调度时，这里不会再展示历史评分数据；历史累计请去“调度历史”页查看。"
+            />
+            <div className="actions">
+              <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
+                打开调度历史页
+              </NavLink>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="历史入口" title="长期统计已拆到独立页面" note="主任务调度页现在只保留当前操作与本次评分作用。执行路径分布、最近决策记录、各目标长期权重和历史累计统计，统一移动到“调度历史”页。" />
+        <div className="metrics">
+          <MetricCard title="执行路径术语" value={executionPathGuideItems.length} note="历史页中有完整解释与分布统计" />
+          <MetricCard title="融合策略术语" value={fusionPolicyGuideItems.length} note="历史页中有真实样本对照" />
+          <MetricCard title="历史累计决策" value={feedbackOverview.total_decisions || 0} note="点击后可查看长期趋势" />
+          <MetricCard title="最近历史记录" value={feedbackOverview.recent_decisions?.[0]?.decision_id || "-"} note="历史页中可查看完整列表" />
+        </div>
+        <div className="banner banner-muted">如果你现在关心的是“本次为什么这样选”，继续留在本页即可；如果你想看“平台长期学成了什么样”，请进入“调度历史”页。</div>
+        <div className="actions">
+          <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
+            打开调度历史页
+          </NavLink>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function TaskRoutingHistoryPage({ derived }) {
+  const objectiveOptions = [
+    { value: "accuracy", label: "高准确" },
+    { value: "coverage", label: "高覆盖" },
+    { value: "latency", label: "低时延" },
+    { value: "balanced", label: "综合平衡" },
+    { value: "resource", label: "低成本" },
+    { value: "domain", label: "领域优先" },
+  ];
+  function formatObjectiveLabel(value) {
+    return objectiveOptions.find((item) => item.value === value)?.label || value || "-";
+  }
+  const feedbackOverview = derived.taskRoutingFeedbackOverview || {
+    total_decisions: 0,
+    total_feedback: 0,
+    acceptance_rate: null,
+    pending_feedback_count: 0,
+    last_feedback_at: null,
+    archive_feedback_total: 0,
+    archive_satisfied_count: 0,
+    archive_unsatisfied_count: 0,
+    archive_pending_count: 0,
+    objective_summaries: [],
+    execution_path_summaries: [],
+    model_adoption_summaries: [],
+    model_score_summaries: [],
+    weight_profiles: [],
+    recent_decisions: [],
+    insights: [],
+  };
+  const completedBenchmarks = sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed");
+  const calibrationArchiveCount = derived.predictArchives.length;
+  const [historyObjectiveFilter, setHistoryObjectiveFilter] = useState("all");
+  const historyObjectiveOptions = [
+    { value: "all", label: "全部目标", count: feedbackOverview.total_decisions || 0 },
+    ...objectiveOptions.map((item) => ({
+      ...item,
+      count: (feedbackOverview.objective_summaries || []).find((summary) => summary.objective === item.value)?.decision_count || 0,
+    })),
+  ];
+  const filteredObjectiveSummaries = historyObjectiveFilter === "all"
+    ? (feedbackOverview.objective_summaries || [])
+    : (feedbackOverview.objective_summaries || []).filter((item) => item.objective === historyObjectiveFilter);
+  const filteredWeightProfiles = historyObjectiveFilter === "all"
+    ? (feedbackOverview.weight_profiles || [])
+    : (feedbackOverview.weight_profiles || []).filter((item) => item.objective === historyObjectiveFilter);
+  const taskRoutingHistoryRows = useMemo(
+    () =>
+      sortByCreatedDesc(
+        (derived.predictArchives || []).filter((item) => String(item.task_routing_decision_id || "").trim()),
+      ),
+    [derived.predictArchives],
+  );
+  const filteredTaskRoutingHistoryRows = useMemo(
+    () =>
+      historyObjectiveFilter === "all"
+        ? taskRoutingHistoryRows
+        : taskRoutingHistoryRows.filter((item) => String(item.task_routing_objective || "").trim().toLowerCase() === historyObjectiveFilter),
+    [historyObjectiveFilter, taskRoutingHistoryRows],
+  );
+  const filteredExecutionPathSummaries = useMemo(() => {
+    const grouped = new Map();
+    filteredTaskRoutingHistoryRows.forEach((item) => {
+      const key = String(item.task_routing_execution_path || "").trim();
+      if (!key) {
+        return;
+      }
+      const current = grouped.get(key) || {
+        execution_path: key,
+        decision_count: 0,
+        feedback_count: 0,
+        objective_counter: new Map(),
+      };
+      current.decision_count += 1;
+      if (normalizePredictionFeedbackStatus(item.feedback_status) !== "pending") {
+        current.feedback_count += 1;
+      }
+      const objectiveKey = String(item.task_routing_objective || "").trim().toLowerCase();
+      if (objectiveKey) {
+        current.objective_counter.set(objectiveKey, (current.objective_counter.get(objectiveKey) || 0) + 1);
+      }
+      grouped.set(key, current);
+    });
+    return Array.from(grouped.values())
+      .map((item) => ({
+        execution_path: item.execution_path,
+        decision_count: item.decision_count,
+        feedback_count: item.feedback_count,
+        objective_labels: Array.from(item.objective_counter.entries())
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 3)
+          .map(([objective, count]) => `${formatObjectiveLabel(objective)} ${count}`),
+      }))
+      .sort((left, right) => right.decision_count - left.decision_count || right.feedback_count - left.feedback_count || left.execution_path.localeCompare(right.execution_path));
+  }, [filteredTaskRoutingHistoryRows]);
+  const objectiveSummaryPagination = useTablePagination(filteredObjectiveSummaries, 5);
+  const weightProfilePagination = useTablePagination(filteredWeightProfiles, 5);
+  const executionPathPagination = useTablePagination(filteredExecutionPathSummaries, 5);
+  const recentDecisionPagination = useTablePagination(filteredTaskRoutingHistoryRows, 5);
+
+  return (
+    <>
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader kicker="历史累计视角" title="任务调度历史累计总览" note="这一页只看长期沉淀，不看本次临时输入。它回答平台长期在哪些目标下运行更多、已经形成了怎样的调度权重，以及常见执行路径与最近真实决策长什么样。" />
+        <div className="metrics">
+          <MetricCard title="历史决策总数" value={feedbackOverview.total_decisions || 0} note="累计沉淀的任务调度记录" />
+          <MetricCard title="历史反馈总数" value={feedbackOverview.total_feedback || 0} note="任务调度反馈与结果反馈共同支撑长期校准" />
+          <MetricCard title="Benchmark 证据" value={completedBenchmarks.length} note="长期参与权重修正的基准记录" />
+          <MetricCard title="结果反馈证据" value={calibrationArchiveCount} note="自动留痕与用户反馈形成的历史样本" />
+        </div>
+        <div className="objective-filter-shell">
+          <div className="table-note">调度目标分类：</div>
+          <div className="actions objective-filter-actions">
+            {historyObjectiveOptions.map((item) => (
+              <button
+                key={`history-objective-${item.value}`}
+                className={historyObjectiveFilter === item.value ? "button-active" : ""}
+                onClick={() => setHistoryObjectiveFilter(item.value)}
+                type="button"
+              >
+                {item.label}
+                <span className="objective-filter-count">{item.count}</span>
+              </button>
             ))}
           </div>
-          <div className="banner banner-muted">这张表看什么：看调度层“现在按什么规则打分”。如果某一列权重大，说明当前目标下平台更重视这一项。</div>
-          <div className="banner banner-muted">术语提示：`有效权重` 是当前真正参与打分的权重；`基准修正` 来自 benchmark；`无用户反馈校准修正` 来自自动归档统计；`有用户反馈校准修正` 来自满意 / 不满意及原因反馈。工业场景下“漏抽多 / 误抽多”通常也会被系统解释为领域匹配不足，从而进一步提升领域权重。</div>
+        </div>
+        <div className="banner banner-muted">阅读顺序建议：先看“各目标历史累计概览”，再看“各目标长期调度权重快照”；最后用“执行路径分布”和“最近决策记录”去验证这些长期统计确实对应真实任务调度行为。</div>
+        <div className="relation-list">
+          {(feedbackOverview.insights || []).map((item, index) => (
+            <div className="relation-item" key={`${item}-${index + 1}`}>
+              {item}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <div className="score-evolution-block">
+          <div className="table-subhead">表 1：各目标历史累计概览</div>
+          <div className="banner banner-muted">这张表看什么：一行就是一个任务调度目标。顶部切到某个目标分类后，这里会只保留该目标的历史累计结果；切回“全部目标”则恢复全量目标对比。</div>
           <div className="table-wrap">
             <table className="weight-profile-table">
               <thead>
                 <tr>
-                  <th>目标</th>
-                  <th>有效权重</th>
-                  <th>基准修正</th>
+                  <th>任务调度目标</th>
+                  <th>历史决策数</th>
+                  <th>历史反馈数</th>
+                  <th>接受率</th>
+                  <th>主参考执行路径</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {objectiveSummaryPagination.pagedItems.map((item) => (
+                  <tr key={item.objective}>
+                    <td>
+                      <div className="archive-cell-stack">
+                        <div className="archive-main">{formatObjectiveLabel(item.objective)}</div>
+                        <div className="table-note">{item.objective}</div>
+                      </div>
+                    </td>
+                    <td>{item.decision_count}</td>
+                    <td>{item.feedback_count}</td>
+                    <td>{formatPercent(item.acceptance_rate)}</td>
+                    <td>
+                      <div>{formatExecutionPathLabel(item.best_execution_path)}</div>
+                      <div className="table-note">{item.best_execution_path || "-"}</div>
+                    </td>
+                    <td className="limitation-cell">
+                      {item.decision_count > 0
+                        ? `该目标已有 ${item.decision_count} 条历史调度记录，长期主要参考“${formatExecutionPathLabel(item.best_execution_path)}”路径。`
+                        : "当前还没有该目标的历史调度记录。"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationBar
+              currentPage={objectiveSummaryPagination.page}
+              totalPages={objectiveSummaryPagination.totalPages}
+              pageSize={objectiveSummaryPagination.pageSize}
+              totalItems={objectiveSummaryPagination.totalItems}
+              onChange={objectiveSummaryPagination.setPage}
+            />
+          </div>
+        </div>
+
+        <div className="score-evolution-block">
+          <div className="table-subhead">表 2：各目标长期调度评分权重快照</div>
+          <div className="banner banner-muted">这张表看什么：一行还是一个任务调度目标。顶部如果选择了某个调度目标分类，这里就只展示该目标长期学到的权重；如果保持“全部目标”，就能横向比较六类目标的长期打分规则差异。</div>
+          <div className="table-wrap">
+            <table className="weight-profile-table">
+              <thead>
+                <tr>
+                  <th>任务调度目标</th>
+                  <th>当前有效权重</th>
+                  <th>Benchmark 修正</th>
                   <th>无用户反馈校准修正</th>
                   <th>有用户反馈校准修正</th>
                 </tr>
@@ -4146,7 +4637,12 @@ function TaskRoutingPage({
               <tbody>
                 {weightProfilePagination.pagedItems.map((item) => (
                   <tr key={item.objective}>
-                    <td>{item.objective}</td>
+                    <td>
+                      <div className="archive-cell-stack">
+                        <div className="archive-main">{formatObjectiveLabel(item.objective)}</div>
+                        <div className="table-note">{item.objective}</div>
+                      </div>
+                    </td>
                     <td>
                       <div className="weight-snapshot-grid">
                         {getWeightSnapshotEntries(item.effective_weights || {}).length ? (
@@ -4225,285 +4721,22 @@ function TaskRoutingPage({
               onChange={weightProfilePagination.setPage}
             />
           </div>
-          <div className="banner banner-muted">结果映射提示：上面这张权重快照说明“打分规则”如何变化；下一块“模型评分变化快照”会继续说明这些规则变化具体怎样落到各 deployment 的模型评分上。</div>
-        </article>
-      </section>
-
-      <section className="page-shell card section-shell score-evolution-section">
-        <SectionHeader kicker="分析区" title="模型评分变化快照" note={`当前展示“${selectedObjective.label} + ${selectedScene.label}”下可参与调度的 deployment。说明区与表格已合并到同一块区域，便于连续阅读。`} />
-        <div className="score-evolution-guide-grid">
-          <div className="relation-item">
-            <strong>先看评分概览</strong>
-            <br />
-            `评分概览` 把优化前评分、当前评分和评分变化合到一起。它先回答 deployment 在当前目标与场景下是被抬高了还是被压低了。
-          </div>
-          <div className="relation-item">
-            <strong>总分先拆成两层</strong>
-            <br />
-            当前页面先把总分变化拆成 `表现层影响 + 权重层影响`。其中表现层影响是精确拆分，权重层影响反映当前权重整体相对初始权重的变化。
-          </div>
-          <div className="relation-item">
-            <strong>表现层净变化从哪来</strong>
-            <br />
-            `表现层净变化 = 当前表现分 - 初始表现分`。初始表现分来自成功率、P95 时延、最近请求数、平均三元组数、资源效率和领域匹配；当前表现分则在此基础上继续叠加归档中的 `满意 / 漏抽多 / 误抽多 / 延迟高` 等反馈修正。
-          </div>
-          <div className="relation-item">
-            <strong>当前得分拆解看的是表现层</strong>
-            <br />
-            `当前得分拆解` 展示 deployment 当前六维表现分，不是调度权重，更适合解释“这个模型最近为什么更稳”或者“为什么最近被拉低了”。
-          </div>
-          <div className="relation-item">
-            <strong>这些数据确实来自在线校准</strong>
-            <br />
-            Benchmark、结果反馈、满意度反馈和历史调度记录都会实时进入调度权重修正与表现分修正，所以这里不是静态展示，而是真正参与任务调度的在线校准结果。
-          </div>
-          <div className="relation-item">
-            <strong>权重来源再往下看</strong>
-            <br />
-            表 2 的 `基准 / 无用户反馈 / 有用户反馈` 三类权重贡献，说明的是权重层为何偏向某个 deployment。它们是权重层来源分解，不直接等于总分变化完整拆账。
-          </div>
         </div>
-        <div className="banner banner-muted">这块拆成两张表：上面先看“评分概览与表现层”，下面再看“权重层来源”。其中 `总分变化 = 表现层影响 + 权重层影响`；而 `表现层净变化` 展示的是六维表现分本身的变化，不是权重变化。</div>
-
-        <div className="score-evolution-block">
-          <div className="table-subhead">表 1：评分概览与表现层</div>
-          <div className="banner banner-muted">这张表看什么：先判断每个 deployment 的总分是上升还是下降，再看 `总分构成` 里究竟是表现层还是权重层在主导变化，最后结合当前得分拆解、表现层净变化和总分变化主因定位原因。</div>
-          <div className="table-wrap">
-            <table className="weight-profile-table score-evolution-table score-evolution-primary-table">
-              <thead>
-                <tr>
-                  <th>Deployment / 模型</th>
-                  <th>评分概览</th>
-                  <th>当前得分拆解</th>
-                  <th>表现层净变化</th>
-                  <th>总分变化主因</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                {modelScoreSummaryPagination.pagedItems.length ? modelScoreSummaryPagination.pagedItems.map((item) => {
-                  const deltaPositive = Number(item.score_delta || 0) > 0;
-                  const deltaNegative = Number(item.score_delta || 0) < 0;
-                  return (
-                    <tr key={`primary-${item.objective}-${item.scene}-${item.deployment_id}`}>
-                      <td className="score-evolution-cell-identity">
-                        <div className="archive-cell-stack">
-                          <strong className="archive-main">{item.deployment_id}</strong>
-                          <div className="table-note">{item.profile_name}</div>
-                          <div className="archive-main">{item.model_id}</div>
-                          <div className="table-note">{item.dataset_name || "-"}</div>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="score-overview-stack">
-                          <div className="score-overview-row">
-                            <span className="weight-snapshot-chip weight-snapshot-chip-baseline score-overview-chip">
-                              <strong>优化前</strong>
-                              <span>{Number(item.baseline_score || 0).toFixed(4)}</span>
-                            </span>
-                            <span className="weight-snapshot-chip score-overview-chip">
-                              <strong>当前</strong>
-                              <span>{Number(item.current_score || 0).toFixed(4)}</span>
-                            </span>
-                          </div>
-                          <span className={`score-delta-chip score-overview-delta ${deltaPositive ? "score-delta-positive" : deltaNegative ? "score-delta-negative" : ""}`}>
-                            变化 {formatSignedNumber(item.score_delta || 0, 4)}
-                          </span>
-                          <div className="score-composition-summary">
-                            <div className="table-note score-composition-title">总分构成</div>
-                            <div className="score-composition-grid">
-                              <span className={`score-adjustment-breakdown-chip ${Number(item.performance_score_delta || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(item.performance_score_delta || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`}>
-                                <strong>表现层影响</strong>
-                                <span>{formatSignedNumber(item.performance_score_delta || 0, 4)}</span>
-                              </span>
-                              <span className={`score-adjustment-breakdown-chip ${Number(item.weight_shift_score_delta || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(item.weight_shift_score_delta || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`}>
-                                <strong>权重层影响</strong>
-                                <span>{formatSignedNumber(item.weight_shift_score_delta || 0, 4)}</span>
-                              </span>
-                            </div>
-                            <div className="table-note">优化前评分 = 初始表现分 × 初始权重；当前评分 = 当前表现分 × 当前权重。</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
-                          {getWeightSnapshotEntries(item.current_breakdown || {}).length ? (
-                            getWeightSnapshotEntries(item.current_breakdown || {}).map(([key, value]) => (
-                              <span className="score-breakdown-compact-chip" key={`primary-${item.objective}-${item.scene}-${item.deployment_id}-breakdown-${key}`}>
-                                <strong>{formatWeightDimensionLabel(key)}</strong>
-                                <span>{Number(value).toFixed(2)}</span>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="table-note">无</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
-                          {getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).length ? (
-                            getSignedWeightSnapshotEntries(item.performance_delta_breakdown || {}).map(([key, value]) => (
-                              <span className={`score-breakdown-compact-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`primary-${item.objective}-${item.scene}-${item.deployment_id}-performance-delta-${key}`}>
-                                <strong>{formatWeightDimensionLabel(key)}</strong>
-                                <span>{formatSignedNumber(value, 4)}</span>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="table-note">无变化</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <div className="archive-main">{formatWeightDimensionLabel(item.dominant_dimension)}</div>
-                          <div className="table-note">{formatSignedNumber(item.dominant_delta || 0, 4)}</div>
-                        </div>
-                      </td>
-                      <td className="limitation-cell score-evolution-note-cell">{item.change_note || "暂无变化说明"}</td>
-                    </tr>
-                  );
-                }) : (
-                  <tr>
-                    <td className="table-note" colSpan="6">当前目标与场景下还没有可展示的模型评分变化记录。</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="score-evolution-block">
-          <div className="table-subhead">表 2：权重层来源分解</div>
-          <div className="banner banner-muted">这张表看什么：看 benchmark、无用户反馈统计和有用户反馈，分别通过哪些维度推动权重层向上或向下调整。它解释的是“权重为何变化”，不是总分变化的唯一来源。</div>
-          <div className="table-wrap">
-            <table className="weight-profile-table score-evolution-table score-evolution-contrib-table">
-              <thead>
-                <tr>
-                  <th>Deployment / 模型</th>
-                  <th>基准权重贡献</th>
-                  <th>无用户反馈权重贡献</th>
-                  <th>有用户反馈权重贡献</th>
-                </tr>
-              </thead>
-              <tbody>
-                {modelScoreSummaryPagination.pagedItems.length ? modelScoreSummaryPagination.pagedItems.map((item) => (
-                  <tr key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}`}>
-                    <td className="score-evolution-cell-identity">
-                      <div className="archive-cell-stack">
-                        <strong className="archive-main">{item.deployment_id}</strong>
-                        <div className="table-note">{item.profile_name}</div>
-                        <div className="archive-main">{item.model_id}</div>
-                        <div className="table-note">{item.dataset_name || "-"}</div>
-                      </div>
-                    </td>
-                    <td>
-                      <div className="score-adjustment-stack">
-                        <div className="score-adjustment-heading">基准</div>
-                        <span className={`score-delta-chip ${Number(item.benchmark_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.benchmark_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
-                          {formatSignedNumber(item.benchmark_score_delta || 0, 4)}
-                        </span>
-                        <div className="score-adjustment-breakdown-grid">
-                          {getSignedWeightSnapshotEntries(item.benchmark_score_breakdown || {}).length ? (
-                            getSignedWeightSnapshotEntries(item.benchmark_score_breakdown || {}).map(([key, value]) => (
-                              <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-benchmark-${key}`}>
-                                <strong>{formatWeightDimensionLabel(key)}</strong>
-                                <span>{formatSignedNumber(value, 4)}</span>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="table-note">无拆分</span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <div className="score-adjustment-stack">
-                        <div className="score-adjustment-heading">无用户反馈</div>
-                        <span className={`score-delta-chip ${Number(item.no_feedback_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.no_feedback_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
-                          {formatSignedNumber(item.no_feedback_score_delta || 0, 4)}
-                        </span>
-                        <div className="score-adjustment-breakdown-grid">
-                          {getSignedWeightSnapshotEntries(item.no_feedback_score_breakdown || {}).length ? (
-                            getSignedWeightSnapshotEntries(item.no_feedback_score_breakdown || {}).map(([key, value]) => (
-                              <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-no-feedback-${key}`}>
-                                <strong>{formatWeightDimensionLabel(key)}</strong>
-                                <span>{formatSignedNumber(value, 4)}</span>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="table-note">无拆分</span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <div className="score-adjustment-stack">
-                        <div className="score-adjustment-heading">有用户反馈</div>
-                        <span className={`score-delta-chip ${Number(item.feedback_score_delta || 0) > 0 ? "score-delta-positive" : Number(item.feedback_score_delta || 0) < 0 ? "score-delta-negative" : ""}`}>
-                          {formatSignedNumber(item.feedback_score_delta || 0, 4)}
-                        </span>
-                        <div className="score-adjustment-breakdown-grid">
-                          {getSignedWeightSnapshotEntries(item.feedback_score_breakdown || {}).length ? (
-                            getSignedWeightSnapshotEntries(item.feedback_score_breakdown || {}).map(([key, value]) => (
-                              <span className={`score-adjustment-breakdown-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`contrib-${item.objective}-${item.scene}-${item.deployment_id}-feedback-${key}`}>
-                                <strong>{formatWeightDimensionLabel(key)}</strong>
-                                <span>{formatSignedNumber(value, 4)}</span>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="table-note">无拆分</span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr>
-                    <td className="table-note" colSpan="4">当前目标与场景下还没有可展示的权重贡献记录。</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <PaginationBar
-          currentPage={modelScoreSummaryPagination.page}
-          totalPages={modelScoreSummaryPagination.totalPages}
-          pageSize={modelScoreSummaryPagination.pageSize}
-          totalItems={modelScoreSummaryPagination.totalItems}
-          onChange={modelScoreSummaryPagination.setPage}
-        />
       </section>
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="左侧介绍" title="执行路径都是什么意思" note="左边把平台已支持的执行路径逐个解释清楚，右边就是这些路径在真实运行中的分布情况。" />
-          <div className="relation-list">
-            {executionPathGuideItems.map((item) => (
-              <div className="relation-item" key={item.key}>
-                <strong>{item.label}</strong>
-                <br />
-                路径代码：{item.key}
-                <br />
-                {item.note}
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="分析区" title="执行路径分布" note="这张表看的是平台常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
-          <div className="banner banner-muted">这张表看什么：看平台平时更常用哪种执行方式，例如单模型直出、多模型共识还是多模型融合。</div>
-          <div className="banner banner-muted">这里统计的是“执行方式”出现了多少次，而不是某个具体模型的性能排名。</div>
+          <SectionHeader kicker="历史路径" title="执行路径分布" note="这张表看的是平台长期更常用哪种调度方式完成任务，例如单模型直出还是多模型融合。" />
+          <div className="banner banner-muted">一行就是一种执行路径。顶部如果选中了某个调度目标分类，这里就统计该目标下的路径分布；如果保持“全部目标”，则展示全平台的历史累计路径分布。</div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>执行路径</th>
                   <th>中文说明</th>
-                  <th>决策数</th>
-                  <th>补充记录</th>
+                  <th>历史决策数</th>
+                  <th>历史反馈数</th>
+                  <th>关联目标分类</th>
                   <th>说明</th>
                 </tr>
               </thead>
@@ -4514,9 +4747,10 @@ function TaskRoutingPage({
                     <td>{formatExecutionPathLabel(item.execution_path)}</td>
                     <td>{item.decision_count}</td>
                     <td>{item.feedback_count}</td>
+                    <td>{item.objective_labels?.join(" / ") || "-"}</td>
                     <td className="limitation-cell">
                       {item.decision_count > 0
-                        ? `该路径已出现 ${item.decision_count} 次，可用于观察不同目标下的执行路径分布。`
+                        ? `该路径历史上已出现 ${item.decision_count} 次，可用于观察平台长期更偏好的执行组织方式。`
                         : "暂无路径记录。"}
                     </td>
                   </tr>
@@ -4534,23 +4768,8 @@ function TaskRoutingPage({
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="左侧介绍" title="融合策略都是什么意思" note="执行路径决定“怎么组织模型”，融合策略决定“多个结果怎么合成”。这两个概念放在一起看最不容易混淆。" />
-          <div className="relation-list">
-            {fusionPolicyGuideItems.map((item) => (
-              <div className="relation-item" key={item.key}>
-                <strong>{item.label}</strong>
-                <br />
-                融合代码：{item.key}
-                <br />
-                {item.note}
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="分析区" title="最近决策记录" note="右边这张表是融合策略和执行路径的真实样本库。你可以直接对照左边的术语说明，看平台最近一次次具体是怎么做的。" />
-          <div className="banner banner-muted">这张表看什么：一行就是一次真实任务调度。重点看“执行路径”和“融合策略”两列，就能把左边的术语说明和右边的真实记录对起来。</div>
+          <SectionHeader kicker="历史样本" title="最近决策记录" note="一行就是一次真实任务调度记录，可直接对照目标、执行路径、融合策略和实际选中的模型。" />
+          <div className="banner banner-muted">这张表更偏“样本库”作用。顶部切换调度目标分类后，这里会同步只保留该目标下的最近真实决策样本。</div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -4565,27 +4784,27 @@ function TaskRoutingPage({
               </thead>
               <tbody>
                 {recentDecisionPagination.pagedItems.map((item) => (
-                  <tr key={item.decision_id}>
+                  <tr key={item.task_routing_decision_id || item.archive_id}>
                     <td>
-                      <strong>{item.decision_id}</strong>
+                      <strong>{item.task_routing_decision_id || item.archive_id}</strong>
                       <div className="table-note">{item.created_at}</div>
                     </td>
                     <td>
-                      <div>{item.objective}</div>
-                      <div className="table-note">{item.context_domain} / {item.inferred_language}</div>
+                      <div>{formatObjectiveLabel(item.task_routing_objective)}</div>
+                      <div className="table-note">{item.scene || "-"} / {item.inferred_language || "-"}</div>
                     </td>
                     <td>
-                      <div>{formatExecutionPathLabel(item.execution_path)}</div>
-                      <div className="table-note">triples={item.fused_triple_count || 0}</div>
+                      <div>{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
+                      <div className="table-note">triples={item.triple_count || 0}</div>
                     </td>
                     <td>
-                      <div>{formatFusionPolicyLabel(item.fusion_policy)}</div>
-                      <div className="table-note">{item.fusion_policy || "-"}</div>
+                      <div>{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
+                      <div className="table-note">{item.task_routing_fusion_policy || "-"}</div>
                     </td>
-                    <td className="limitation-cell">{(item.selected_model_ids || []).join("、") || "-"}</td>
+                    <td className="limitation-cell">{(item.task_routing_selected_model_ids || []).join("、") || "-"}</td>
                     <td>
-                      <div>{item.feedback_status === "completed" ? "附带补充记录" : "自动决策归档"}</div>
-                      <div className="table-note">{formatExecutionPathNote(item.execution_path)}</div>
+                      <div>{normalizePredictionFeedbackStatus(item.feedback_status) === "pending" ? "自动任务调度留痕" : "已补充反馈"}</div>
+                      <div className="table-note">{formatExecutionPathNote(item.task_routing_execution_path)}</div>
                     </td>
                   </tr>
                 ))}
@@ -4600,62 +4819,6 @@ function TaskRoutingPage({
             />
           </div>
         </article>
-      </section>
-
-      <section className="page-shell card section-shell">
-        <SectionHeader kicker="分析区" title="策略校准总览" note="这块继续保留全局统计视角，回答平台过去更常以什么目标运行，以及已经形成了多少历史调度记录。" />
-        <div className="metrics">
-          <MetricCard title="决策总数" value={feedbackOverview.total_decisions || 0} note="累计归档的任务调度记录" />
-          <MetricCard title="Benchmark 证据" value={completedBenchmarks.length} note="已完成的 benchmark 记录数" />
-          <MetricCard title="在线归档证据" value={calibrationArchiveCount} note="实时推理沉淀的归档记录数" />
-          <MetricCard title="满意反馈" value={feedbackOverview.archive_satisfied_count || 0} note="结果反馈里被标记为满意的记录数" />
-          <MetricCard title="不满意反馈" value={feedbackOverview.archive_unsatisfied_count || 0} note="结果反馈里被标记为不满意的记录数" />
-          <MetricCard title="最近决策时间" value={feedbackOverview.recent_decisions?.[0]?.created_at || "-"} note="最近一条任务调度历史" />
-        </div>
-        <div className="relation-list">
-          {(feedbackOverview.insights || []).map((item, index) => (
-            <div className="relation-item" key={`${item}-${index + 1}`}>
-              {item}
-            </div>
-          ))}
-        </div>
-        <div className="banner banner-muted">这张表看什么：看不同“目标偏好”下，平台已经积累了多少历史调度记录。它更像调度行为统计，不是模型性能榜单。</div>
-        <div className="banner banner-muted">你可以在这里看出平台在哪些任务目标下已经有较多历史样本，以及常见的主参考执行路径是什么。</div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>目标</th>
-                <th>决策数</th>
-                <th>补充记录</th>
-                <th>主参考路径</th>
-                <th>说明</th>
-              </tr>
-            </thead>
-            <tbody>
-              {objectiveSummaryPagination.pagedItems.map((item) => (
-                <tr key={item.objective}>
-                  <td>{item.objective}</td>
-                  <td>{item.decision_count}</td>
-                  <td>{item.feedback_count}</td>
-                  <td>{formatExecutionPathLabel(item.best_execution_path)}</td>
-                  <td className="limitation-cell">
-                    {item.decision_count > 0
-                      ? `该目标已有 ${item.decision_count} 条历史调度，可直接作为权重更新的参考窗口。`
-                      : "当前还没有该目标的历史调度记录。"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <PaginationBar
-            currentPage={objectiveSummaryPagination.page}
-            totalPages={objectiveSummaryPagination.totalPages}
-            pageSize={objectiveSummaryPagination.pageSize}
-            totalItems={objectiveSummaryPagination.totalItems}
-            onChange={objectiveSummaryPagination.setPage}
-          />
-        </div>
       </section>
     </>
   );
