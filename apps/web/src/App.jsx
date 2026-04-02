@@ -3546,7 +3546,6 @@ function TaskRoutingPage({
   const weightProfilePagination = useTablePagination(feedbackOverview.weight_profiles || [], 5);
   const modelScoreSummaryPagination = useTablePagination(currentModelScoreSummaries, 5);
   const executionPathPagination = useTablePagination(feedbackOverview.execution_path_summaries || [], 5);
-  const recentDecisionPagination = useTablePagination(feedbackOverview.recent_decisions || [], 5);
   const strategyModeLabels = {
     none: "未执行",
     "multi-objective-adaptive": "多目标自适应",
@@ -3554,62 +3553,12 @@ function TaskRoutingPage({
   function formatStrategyModeLabel(value) {
     return strategyModeLabels[String(value || "").trim()] || value || "-";
   }
-  const quickStartSteps = [
-    {
-      title: "1. 选目标",
-      desc: "先告诉平台这次更看重什么，例如准确、覆盖、时延或领域匹配。",
-    },
-    {
-      title: "2. 填文本",
-      desc: "先选场景，再贴入待抽取文本。场景会直接限制候选 deployment 的范围。",
-    },
-    {
-      title: "3. 运行调度",
-      desc: "平台会只在当前运行中的 deployment 里自动选 1 到多个模型，必要时做交叉验证或融合。",
-    },
-    {
-      title: "4. 看结果",
-      desc: "先看最终三元组，再看平台为什么这么选，以及背后的 benchmark 和历史归档证据。",
-    },
-  ];
-  const pageReadingHints = [
-    "先看“调度结果”：这里直接回答平台最终选了什么执行路径，融合出了哪些三元组。",
-    "再看“候选部署与执行明细”：这里解释为什么选中这些 deployment，而不是别的 deployment。",
-    "接着看“运行证据与基准概览”：这里展示最近 benchmark 如何支撑本次调度选择。",
-    "再看“当前操作如何作用到评分”：这里解释当前目标和场景为什么会把某些 deployment 抬高或压低。",
-    "如果要截图或追溯长期统计，直接进入“调度历史”页：那里专门放历史累计、执行路径分布和最近决策记录。",
-  ];
-  const executionPathGuideItems = Object.entries(executionPathLabels)
-    .filter(([key]) => key !== "none")
-    .map(([key, label]) => ({
-      key,
-      label,
-      note: formatExecutionPathNote(key),
-    }));
-  const fusionPolicyGuideItems = Object.entries(fusionPolicyLabels)
-    .filter(([key]) => key !== "empty")
-    .map(([key, label]) => ({
-      key,
-      label,
-      note: formatFusionPolicyNote(key),
-    }));
-  const activeExecutionPathCode = taskRoutingResult?.execution_path || "";
-  const activeFusionPolicyCode = taskRoutingResult?.fusion_policy || "";
   const activeWeightSnapshot = taskRoutingResult?.objective_weights || {};
   const activeWeightEntries = Object.entries(activeWeightSnapshot).sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0));
   const activeTopWeightEntry = activeWeightEntries[0];
   const activeBenchmarkAdjustments = currentWeightProfile?.benchmark_adjustments || {};
   const activeUnsupervisedAdjustments = currentWeightProfile?.unsupervised_adjustments || {};
   const activeFeedbackAdjustments = currentWeightProfile?.feedback_adjustments || {};
-  const taskResultSelectedModels = Array.isArray(taskRoutingResult?.selected_model_ids)
-    ? taskRoutingResult.selected_model_ids
-    : selectedDeployments.map((item) => item.model_id).filter(Boolean);
-  const activeSelectedModels = taskResultSelectedModels;
-  const activeRecordSourceLabel = taskRoutingResult ? "本次实时记录" : "等待本次运行";
-  const activeRecordDecisionId = taskRoutingResult?.decision_id || "-";
-  const activeRecordArchiveId = taskRoutingResult?.archive_id || "-";
-  const activeRecordTime = taskRoutingResult?.created_at || "-";
-  const activeDecisionNote = taskRoutingResult?.explanation || "";
 
   return (
     <>
@@ -3617,7 +3566,7 @@ function TaskRoutingPage({
         <SectionHeader
           kicker="创新点一"
           title="任务级模型调度策略"
-          note="这一页负责“先选模型，再做推理”。平台会综合任务目标、文本难度、领域特征、历史 benchmark、在线归档与资源成本，在单模型、交叉验证和多模型融合路径之间动态切换。"
+          note="这一页只保留任务调度真正需要的内容：填写参数、执行调度、查看结果、查看证据与评分变化。"
           right={
             <div className="actions">
               <button
@@ -3638,39 +3587,14 @@ function TaskRoutingPage({
           <MetricCard title="在线归档" value={calibrationArchiveCount} note="历史推理归档会参与调度层自校准" />
           <MetricCard title="当前目标" value={selectedObjective.label} note={selectedObjective.note} />
         </div>
-
-        <div className="task-routing-guide-grid">
-          <div className="task-routing-step-grid">
-            {quickStartSteps.map((item) => (
-              <div className="task-routing-step-card" key={item.title}>
-                <strong>{item.title}</strong>
-                <span>{item.desc}</span>
-              </div>
-            ))}
-          </div>
-          <div className="task-routing-note-card">
-            <div className="section-kicker">页面怎么看</div>
-            <div className="task-routing-note-list">
-              {pageReadingHints.map((item, index) => (
-                <div className="relation-item" key={`${item}-${index + 1}`}>
-                  {item}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
         <div className="banner banner-muted">
-          快速理解：在线推理页是“指定某个 deployment 直接跑”；任务调度页是“让平台先决定该调用哪些 deployment，再统一融合输出结果”。
+          使用顺序很简单：先填参数，再运行任务调度，然后依次看调度结果、候选部署、基准证据和评分变化。
         </div>
       </section>
 
-      <section className="detail-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="操作区" title="运行参数" note="这是你每次真正需要填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。" />
-          <div className="banner banner-muted">
-            快速上手建议：工业设备文本优先用“领域优先 + 中文工业设备场景”；普通中文文本优先用“综合平衡 + 中文通用场景”；想尽快返回就选“低时延”。
-          </div>
-          <div className="form-grid">
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="操作区" title="运行参数" note="这是任务调度唯一需要你主动填写的区域。一般只改目标偏好、场景标识、最大模型数和输入文本即可。" />
+        <div className="form-grid">
             <label className="stack-field">
               <span>目标偏好</span>
               <select
@@ -3734,44 +3658,7 @@ function TaskRoutingPage({
               />
               <small className="detail-note">通常可以留空。只有你想临时传入额外控制项时再填写；如果不确定，直接留空即可。</small>
             </label>
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="解读区" title="关键概念说明" note="如果你第一次看这页，先读这一块。它会告诉你页面里几个最容易混淆的词分别是什么意思。" />
-          <div className="relation-list">
-            <div className="relation-item">
-              <strong>目标偏好</strong>
-              <br />
-              决定调度更偏向准确、覆盖、时延还是成本。它不是模型参数，而是调度层策略。
-            </div>
-            <div className="relation-item">
-              <strong>场景标识</strong>
-              <br />
-              现在固定为 3 类：英文通用、中文通用、中文工业设备。它会直接约束候选 deployment 的范围，而不只是提示词。
-            </div>
-            <div className="relation-item">
-              <strong>执行路径</strong>
-              <br />
-              指这次任务最终采用了什么方式完成，例如单模型直出、多模型交叉验证、候选融合等。
-            </div>
-            <div className="relation-item">
-              <strong>候选部署</strong>
-              <br />
-              指当前运行中的 deployment。调度只会在这些已启动实例里选择，不会凭空调用未运行模型。
-            </div>
-            <div className="relation-item">
-              <strong>自动归档</strong>
-              <br />
-              指每次调度的输入、选中的模型、执行路径和结果都会被记录下来，供后续统计与论文展示使用。
-            </div>
-            <div className="relation-item">
-              <strong>自校准</strong>
-              <br />
-              指平台会参考 benchmark 与在线归档，既调整全局调度权重，也修正候选 deployment 的得分；不会改动底层 ONNX 模型参数。
-            </div>
-          </div>
-        </article>
+        </div>
       </section>
 
       <section className="detail-grid page-shell">
@@ -3894,210 +3781,53 @@ function TaskRoutingPage({
         </article>
       </section>
 
-      <section className="detail-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 通常不会回传“最终采用了哪个模型”，因此平台默认依赖自动留痕；如果管理员或使用者愿意，也可以在结果反馈页里补充满意度反馈。" />
-          {taskRoutingResult?.decision_id ? (
-            <>
-              <div className="metrics">
-                <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度会进入历史记录，后面可检索和截图" />
-                <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="本次真正参与运行的模型实例数" />
-                <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="会进入在线归档，参与后续统计" />
-                <MetricCard title="反馈留痕方式" value="自动留痕 + 可选反馈" note={`记录编号 ${taskRoutingResult.archive_id || "-"}`} />
-              </div>
-              <div className="relation-list">
-                {[
-                  "任务调度记录：保存这次任务的目标偏好、执行路径、候选部署与最终选中的模型。",
-                  "结果反馈记录：保存这次任务输出的三元组数量、运行情况，以及可选的满意 / 不满意 / 暂定反馈。",
-                  "调度层自校准：平台后续会优先参考 benchmark、在线归档和已补充的满意度反馈，同时修正不同目标的权重和候选 deployment 的排序得分。",
-                ].map((item, index) => (
-                  <div className="relation-item" key={`${item}-${index + 1}`}>
-                    {item}
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <EmptyState icon="F" title="还没有归档样本" note="先运行一次任务调度，系统才会生成这次任务的决策编号和归档记录。" />
-          )}
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader kicker="证据区" title="运行证据与基准概览" note="这张表主要看最近有哪些 benchmark 在支撑调度层决策，尤其适合论文里引用 P95、成功率和 profile 信息。" />
-          <div className="metrics">
-            <MetricCard title="已完成 Benchmark" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
-            <MetricCard title="在线归档" value={calibrationArchiveCount} note="作为运行证据参与策略校准" />
-            <MetricCard title="当前场景" value={selectedScene.label} note="证据筛选会优先参考这一场景下的记录" />
-            <MetricCard title="最近证据更新时间" value={completedBenchmarks[0]?.created_at || feedbackOverview.last_feedback_at || "-"} note="优先展示最近一条可引用记录" />
-          </div>
-          <div className="banner banner-muted">这张表看什么：看平台最近拿什么 benchmark 结果当作调度证据。重点看 `P95`、`成功率` 和 `Profile`。</div>
-          <div className="banner banner-muted">如果某个模型或 profile 最近有稳定 benchmark，它在低时延或高稳定场景中通常会更容易被调度层优先考虑。</div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Benchmark</th>
-                  <th>模型</th>
-                  <th>Profile</th>
-                  <th>P95</th>
-                  <th>成功率</th>
-                  <th>时间</th>
+      <section className="page-shell card section-shell">
+        <SectionHeader kicker="证据区" title="运行证据与基准概览" note="只保留真正会影响调度的 benchmark 证据。" />
+        <div className="metrics">
+          <MetricCard title="已完成 Benchmark" value={completedBenchmarks.length} note={`覆盖模型 ${benchmarkedModelCount} 个`} />
+          <MetricCard title="在线归档" value={calibrationArchiveCount} note="作为运行证据参与策略校准" />
+          <MetricCard title="当前场景" value={selectedScene.label} note="证据筛选会优先参考这一场景下的记录" />
+          <MetricCard title="最近证据更新时间" value={completedBenchmarks[0]?.created_at || feedbackOverview.last_feedback_at || "-"} note="优先展示最近一条可引用记录" />
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Benchmark</th>
+                <th>模型</th>
+                <th>Profile</th>
+                <th>P95</th>
+                <th>成功率</th>
+                <th>时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {benchmarkEvidencePagination.pagedItems.map((item) => (
+                <tr key={item.benchmark_id}>
+                  <td>
+                    <strong>{item.label || item.benchmark_id}</strong>
+                    <div className="table-note">{item.benchmark_id}</div>
+                  </td>
+                  <td>{item.model_id}</td>
+                  <td>{item.profile_name}</td>
+                  <td>{item.p95_latency_ms ? `${Number(item.p95_latency_ms).toFixed(3)} ms` : "-"}</td>
+                  <td>{formatPercent(item.total_requests ? item.success_count / item.total_requests : null)}</td>
+                  <td>{item.created_at}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {benchmarkEvidencePagination.pagedItems.map((item) => (
-                  <tr key={item.benchmark_id}>
-                    <td>
-                      <strong>{item.label || item.benchmark_id}</strong>
-                      <div className="table-note">{item.benchmark_id}</div>
-                    </td>
-                    <td>{item.model_id}</td>
-                    <td>{item.profile_name}</td>
-                    <td>{item.p95_latency_ms ? `${Number(item.p95_latency_ms).toFixed(3)} ms` : "-"}</td>
-                    <td>{formatPercent(item.total_requests ? item.success_count / item.total_requests : null)}</td>
-                    <td>{item.created_at}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <PaginationBar
-              currentPage={benchmarkEvidencePagination.page}
-              totalPages={benchmarkEvidencePagination.totalPages}
-              pageSize={benchmarkEvidencePagination.pageSize}
-              totalItems={benchmarkEvidencePagination.totalItems}
-              onChange={benchmarkEvidencePagination.setPage}
-            />
-          </div>
-          {!benchmarkEvidencePagination.totalItems ? (
-            <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
-          ) : null}
-        </article>
-      </section>
-
-      <section className="task-routing-summary-grid page-shell">
-        <article className="card detail-card">
-          <SectionHeader kicker="概念图" title="任务调度名词关系图" note="这张图回答这些名词是怎么串起来的。你可以把它理解成任务调度页的阅读地图。" />
-          <div className="task-routing-concept-flow">
-            <div className="task-routing-flow-node">
-              <strong>场景标识</strong>
-              <span>先限制候选 deployment 范围</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>目标偏好</strong>
-              <span>决定准确、覆盖、时延、资源的关注重点</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>权重信息</strong>
-              <span>由基础权重、Benchmark 修正、归档校准共同形成</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>执行路径</strong>
-              <span>决定单模型直出、多模型投票还是交叉校验</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>融合策略</strong>
-              <span>决定多个候选结果最终如何合成</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-flow-node">
-              <strong>统一输出</strong>
-              <span>形成最终三元组结果</span>
-            </div>
-          </div>
-          <div className="task-routing-concept-feedback">
-            <div className="task-routing-feedback-node">
-              <strong>Benchmark 证据</strong>
-              <span>修正不同 deployment 的排序依据</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-feedback-node">
-              <strong>结果反馈与反馈学习</strong>
-              <span>满意、漏抽多、误抽多、延迟高都会回流校准</span>
-            </div>
-            <div className="task-routing-flow-arrow">-&gt;</div>
-            <div className="task-routing-feedback-node">
-              <strong>下一轮权重更新</strong>
-              <span>影响后续任务调度评分与路径选择</span>
-            </div>
-          </div>
-        </article>
-
-        <article className="card detail-card">
-          <SectionHeader
-            kicker="右侧实际记录"
-            title="当前执行路径与权重实例"
-            note="这里只展示本次刚运行出来的真实任务调度结果，不再混入历史累计记录。"
+              ))}
+            </tbody>
+          </table>
+          <PaginationBar
+            currentPage={benchmarkEvidencePagination.page}
+            totalPages={benchmarkEvidencePagination.totalPages}
+            pageSize={benchmarkEvidencePagination.pageSize}
+            totalItems={benchmarkEvidencePagination.totalItems}
+            onChange={benchmarkEvidencePagination.setPage}
           />
-          {taskRoutingResult ? (
-            <>
-              <div className="metrics">
-                <MetricCard title="记录来源" value={activeRecordSourceLabel} note={`决策编号 ${activeRecordDecisionId}`} />
-                <MetricCard title="执行路径" value={formatExecutionPathLabel(activeExecutionPathCode)} note={activeExecutionPathCode || "尚未生成路径代码"} />
-                <MetricCard title="融合策略" value={formatFusionPolicyLabel(activeFusionPolicyCode)} note={activeFusionPolicyCode || "尚未生成融合代码"} />
-                <MetricCard title="权重主项" value={activeTopWeightEntry?.[0] || "-"} note={activeTopWeightEntry ? `当前值 ${Number(activeTopWeightEntry[1]).toFixed(2)}` : "尚未形成权重快照"} />
-              </div>
-              {activeDecisionNote ? <div className="banner banner-muted">{activeDecisionNote}</div> : null}
-              <div className="relation-list">
-                <div className="relation-item">
-                  <strong>实际执行路径怎么看</strong>
-                  <br />
-                  当前记录显示为“{formatExecutionPathLabel(activeExecutionPathCode)}”。它决定平台本次是单模型直出，还是多模型交叉验证、多模型融合。
-                </div>
-                <div className="relation-item">
-                  <strong>实际融合策略怎么看</strong>
-                  <br />
-                  当前记录显示为“{formatFusionPolicyLabel(activeFusionPolicyCode)}”。它决定多个候选模型的结果最终如何合成为统一输出。
-                </div>
-                <div className="relation-item">
-                  <strong>当前参与模型</strong>
-                  <br />
-                  {activeSelectedModels.length ? activeSelectedModels.join(" / ") : "当前记录里还没有参与模型信息。"}
-                </div>
-                <div className="relation-item">
-                  <strong>记录留痕</strong>
-                  <br />
-                  归档编号：{activeRecordArchiveId}
-                  <br />
-                  记录时间：{activeRecordTime}
-                </div>
-              </div>
-              <div className="task-routing-weight-stack">
-                <div className="task-routing-weight-card">
-                  <strong>有效权重</strong>
-                  <span>{formatWeightSnapshot(activeWeightSnapshot)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>基准修正</strong>
-                  <span>{formatWeightSnapshot(activeBenchmarkAdjustments)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>无用户反馈校准修正</strong>
-                  <span>{formatWeightSnapshot(activeUnsupervisedAdjustments)}</span>
-                </div>
-                <div className="task-routing-weight-card">
-                  <strong>有用户反馈校准修正</strong>
-                  <span>{formatWeightSnapshot(activeFeedbackAdjustments)}</span>
-                </div>
-              </div>
-              <div className="banner banner-muted">
-                这一块就是任务调度页的“实例翻译器”：左边解释名词，右边直接给出当前真实记录，方便你把术语和平台实际行为一一对上。
-              </div>
-            </>
-          ) : (
-            <>
-              <EmptyState icon="R" title="还没有本次调度记录" note="你还没有执行当前这次任务调度，所以这里不会预先展示历史执行路径或历史权重快照，避免和本次实时结果混淆。" />
-              <div className="actions">
-                <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
-                  查看历史调度记录
-                </NavLink>
-              </div>
-            </>
-          )}
-        </article>
+        </div>
+        {!benchmarkEvidencePagination.totalItems ? (
+          <div className="logs">当前还没有可引用的 benchmark 记录。建议先针对 CasRel、PURE、SpERT 等运行中的部署补几条固定样本 benchmark，再回来截图。</div>
+        ) : null}
       </section>
 
       <section className="page-shell card section-shell">
@@ -4414,21 +4144,6 @@ function TaskRoutingPage({
         )}
       </section>
 
-      <section className="page-shell card section-shell">
-        <SectionHeader kicker="历史入口" title="长期统计已拆到独立页面" note="主任务调度页现在只保留当前操作与本次评分作用。执行路径分布、最近决策记录、各目标长期权重和历史累计统计，统一移动到“调度历史”页。" />
-        <div className="metrics">
-          <MetricCard title="执行路径术语" value={executionPathGuideItems.length} note="历史页中有完整解释与分布统计" />
-          <MetricCard title="融合策略术语" value={fusionPolicyGuideItems.length} note="历史页中有真实样本对照" />
-          <MetricCard title="历史累计决策" value={feedbackOverview.total_decisions || 0} note="点击后可查看长期趋势" />
-          <MetricCard title="最近历史记录" value={feedbackOverview.recent_decisions?.[0]?.decision_id || "-"} note="历史页中可查看完整列表" />
-        </div>
-        <div className="banner banner-muted">如果你现在关心的是“本次为什么这样选”，继续留在本页即可；如果你想看“平台长期学成了什么样”，请进入“调度历史”页。</div>
-        <div className="actions">
-          <NavLink className="btn-linklike btn-primary" to="/task-routing-history">
-            打开调度历史页
-          </NavLink>
-        </div>
-      </section>
     </>
   );
 }
@@ -4621,11 +4336,46 @@ function TaskRoutingHistoryPage({ derived }) {
       }))
       .sort((left, right) => right.decision_count - left.decision_count || right.feedback_count - left.feedback_count || left.execution_path.localeCompare(right.execution_path));
   }, [filteredTaskRoutingHistoryRows]);
+  const filteredFusionPolicySummaries = useMemo(() => {
+    const grouped = new Map();
+    filteredTaskRoutingHistoryRows.forEach((item) => {
+      const key = String(item.task_routing_fusion_policy || "").trim() || "empty";
+      const current = grouped.get(key) || {
+        fusion_policy: key,
+        decision_count: 0,
+        feedback_count: 0,
+        triple_total: 0,
+        objective_counter: new Map(),
+      };
+      current.decision_count += 1;
+      current.triple_total += Number(item.triple_count || 0);
+      if (normalizePredictionFeedbackStatus(item.feedback_status) !== "pending") {
+        current.feedback_count += 1;
+      }
+      const objectiveKey = String(item.task_routing_objective || "").trim().toLowerCase();
+      if (objectiveKey) {
+        current.objective_counter.set(objectiveKey, (current.objective_counter.get(objectiveKey) || 0) + 1);
+      }
+      grouped.set(key, current);
+    });
+    return Array.from(grouped.values())
+      .map((item) => ({
+        fusion_policy: item.fusion_policy,
+        decision_count: item.decision_count,
+        feedback_count: item.feedback_count,
+        avg_triple_count: item.decision_count ? item.triple_total / item.decision_count : 0,
+        objective_labels: Array.from(item.objective_counter.entries())
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 3)
+          .map(([objective, count]) => `${formatObjectiveLabel(objective)} ${count}`),
+      }))
+      .sort((left, right) => right.decision_count - left.decision_count || right.feedback_count - left.feedback_count || left.fusion_policy.localeCompare(right.fusion_policy));
+  }, [filteredTaskRoutingHistoryRows]);
   const objectiveSummaryPagination = useTablePagination(filteredObjectiveSummaries, 5);
   const weightProfilePagination = useTablePagination(filteredWeightProfiles, 5);
   const historyModelScorePagination = useTablePagination(filteredHistoryModelScoreRows, 5);
   const executionPathPagination = useTablePagination(filteredExecutionPathSummaries, 5);
-  const recentDecisionPagination = useTablePagination(filteredTaskRoutingHistoryRows, 5);
+  const fusionPolicyPagination = useTablePagination(filteredFusionPolicySummaries, 5);
 
   return (
     <>
@@ -5135,54 +4885,42 @@ function TaskRoutingHistoryPage({ derived }) {
         </article>
 
         <article className="card detail-card">
-          <SectionHeader kicker="历史样本" title="最近决策记录" note="一行就是一次真实任务调度记录，可直接对照目标、执行路径、融合策略和实际选中的模型。" />
-          <div className="banner banner-muted">这张表更偏“样本库”作用。顶部切换调度目标分类后，这里会同步只保留该目标下的最近真实决策样本。</div>
+          <SectionHeader kicker="融合历史" title="融合策略历史" note="这张表按融合策略做长期汇总，更适合观察平台历史上更常使用哪种结果合成方式。" />
+          <div className="banner banner-muted">一行就是一种融合策略。顶部切换调度目标分类后，这里会同步只保留该目标下的融合策略历史；如果保持“全部目标”，则展示全平台累计的融合方式分布。</div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>决策</th>
-                  <th>目标 / 领域</th>
-                  <th>执行路径</th>
                   <th>融合策略</th>
-                  <th>模型</th>
-                  <th>归档说明</th>
+                  <th>历史决策数</th>
+                  <th>历史反馈数</th>
+                  <th>平均三元组数</th>
+                  <th>关联目标分类</th>
+                  <th>说明</th>
                 </tr>
               </thead>
               <tbody>
-                {recentDecisionPagination.pagedItems.map((item) => (
-                  <tr key={item.task_routing_decision_id || item.archive_id}>
+                {fusionPolicyPagination.pagedItems.map((item) => (
+                  <tr key={item.fusion_policy}>
                     <td>
-                      <strong>{item.task_routing_decision_id || item.archive_id}</strong>
-                      <div className="table-note">{item.created_at}</div>
+                      <div>{formatFusionPolicyLabel(item.fusion_policy)}</div>
+                      <div className="table-note">{item.fusion_policy || "-"}</div>
                     </td>
-                    <td>
-                      <div>{formatObjectiveLabel(item.task_routing_objective)}</div>
-                      <div className="table-note">{item.scene || "-"} / {item.inferred_language || "-"}</div>
-                    </td>
-                    <td>
-                      <div>{formatExecutionPathLabel(item.task_routing_execution_path)}</div>
-                      <div className="table-note">triples={item.triple_count || 0}</div>
-                    </td>
-                    <td>
-                      <div>{formatFusionPolicyLabel(item.task_routing_fusion_policy)}</div>
-                      <div className="table-note">{item.task_routing_fusion_policy || "-"}</div>
-                    </td>
-                    <td className="limitation-cell">{(item.task_routing_selected_model_ids || []).join("、") || "-"}</td>
-                    <td>
-                      <div>{normalizePredictionFeedbackStatus(item.feedback_status) === "pending" ? "自动任务调度留痕" : "已补充反馈"}</div>
-                      <div className="table-note">{formatExecutionPathNote(item.task_routing_execution_path)}</div>
-                    </td>
+                    <td>{item.decision_count}</td>
+                    <td>{item.feedback_count}</td>
+                    <td>{Number(item.avg_triple_count || 0).toFixed(2)}</td>
+                    <td>{item.objective_labels?.join(" / ") || "-"}</td>
+                    <td className="limitation-cell">{formatFusionPolicyNote(item.fusion_policy)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
             <PaginationBar
-              currentPage={recentDecisionPagination.page}
-              totalPages={recentDecisionPagination.totalPages}
-              pageSize={recentDecisionPagination.pageSize}
-              totalItems={recentDecisionPagination.totalItems}
-              onChange={recentDecisionPagination.setPage}
+              currentPage={fusionPolicyPagination.page}
+              totalPages={fusionPolicyPagination.totalPages}
+              pageSize={fusionPolicyPagination.pageSize}
+              totalItems={fusionPolicyPagination.totalItems}
+              onChange={fusionPolicyPagination.setPage}
             />
           </div>
         </article>
