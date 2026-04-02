@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import {
   createAccessUser,
@@ -112,6 +112,10 @@ const pageMeta = {
   "/task-routing-history": {
     title: "调度历史",
     note: "集中查看任务调度的历史累计统计、各目标长期权重、执行路径分布与最近决策记录。",
+  },
+  "/deployment-performance": {
+    title: "表现变化",
+    note: "集中查看所有 Deployment 在任务调度与推理实验两条链路中的表现层变化，即使从未被使用过的 Deployment 也会保留在总表里。",
   },
   "/deployment-policy": {
     title: "部署策略",
@@ -932,11 +936,15 @@ function getVisibleNavGroups(currentPermissions, currentUser) {
 }
 
 function getFallbackPath(currentPermissions, currentUser) {
+  if (canAccessPath("/", currentPermissions, currentUser)) {
+    return "/";
+  }
   const visibleGroups = getVisibleNavGroups(currentPermissions, currentUser);
   return visibleGroups[0]?.items[0]?.path || "/";
 }
 
 export default function App() {
+  const navigate = useNavigate();
   const [data, setData] = useState(initialData);
   const [authSession, setAuthSession] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
@@ -1182,6 +1190,7 @@ export default function App() {
       setAuthSession(session);
       setNotice({ type: "ok", text: `登录成功：${session.current_user?.display_name || session.current_user?.username || ""}` });
       await refreshAll({ sessionOverride: session });
+      navigate("/", { replace: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNotice({ type: "error", text: message });
@@ -2293,6 +2302,12 @@ function Shell(props) {
             {renderGuardedRoute(
               "/task-routing-history",
               <TaskRoutingHistoryPage
+                derived={derived}
+              />,
+            )}
+            {renderGuardedRoute(
+              "/deployment-performance",
+              <DeploymentPerformancePage
                 derived={derived}
               />,
             )}
@@ -4924,6 +4939,376 @@ function TaskRoutingHistoryPage({ derived }) {
             />
           </div>
         </article>
+      </section>
+    </>
+  );
+}
+
+function DeploymentPerformancePage({ derived }) {
+  const deployments = derived.deployments || [];
+  const feedbackOverview = derived.taskRoutingFeedbackOverview || { model_score_summaries: [] };
+  const modelScoreSummaries = feedbackOverview.model_score_summaries || [];
+  const experimentArchives = (derived.predictArchives || []).filter((item) => item.archive_source !== "task_routing");
+  const datasetCatalog = derived.datasetCatalog || { datasets: DEFAULT_PREDICT_DATASETS };
+
+  const [modelFilter, setModelFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [taskSceneFilter, setTaskSceneFilter] = useState("all");
+  const [datasetSceneFilter, setDatasetSceneFilter] = useState("all");
+
+  const datasetLabelMap = useMemo(() => {
+    const map = new Map();
+    (datasetCatalog.datasets || []).forEach((item) => {
+      const key = String(item.dataset_key || "").trim();
+      if (key) {
+        map.set(key, item.label || item.dataset_name || key);
+      }
+    });
+    return map;
+  }, [datasetCatalog.datasets]);
+
+  function formatDatasetSceneLabel(value) {
+    const key = String(value || "").trim();
+    return datasetLabelMap.get(key) || key || "-";
+  }
+
+  function collectAverageBreakdown(items, key) {
+    const bucket = new Map();
+    items.forEach((item) => {
+      const breakdown = item?.[key] || {};
+      Object.entries(breakdown).forEach(([dimension, value]) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return;
+        }
+        const current = bucket.get(dimension) || { total: 0, count: 0 };
+        current.total += numeric;
+        current.count += 1;
+        bucket.set(dimension, current);
+      });
+    });
+    return Object.fromEntries(
+      Array.from(bucket.entries()).map(([dimension, item]) => [dimension, item.count ? item.total / item.count : 0]),
+    );
+  }
+
+  const modelOptions = useMemo(
+    () => ["all", ...Array.from(new Set(deployments.map((item) => String(item.model_id || "").trim()).filter(Boolean))).sort()],
+    [deployments],
+  );
+  const statusOptions = useMemo(
+    () => ["all", ...Array.from(new Set(deployments.map((item) => String(item.status || "").trim()).filter(Boolean))).sort()],
+    [deployments],
+  );
+  const taskSceneOptions = useMemo(
+    () => ["all", "none", ...Array.from(new Set(modelScoreSummaries.map((item) => String(item.scene || "").trim()).filter(Boolean))).sort()],
+    [modelScoreSummaries],
+  );
+  const datasetSceneOptions = useMemo(
+    () => ["all", "none", ...Array.from(new Set(experimentArchives.map((item) => String(item.scene || "").trim()).filter(Boolean))).sort()],
+    [experimentArchives],
+  );
+
+  useEffect(() => {
+    if (!modelOptions.includes(modelFilter)) {
+      setModelFilter("all");
+    }
+  }, [modelFilter, modelOptions]);
+  useEffect(() => {
+    if (!statusOptions.includes(statusFilter)) {
+      setStatusFilter("all");
+    }
+  }, [statusFilter, statusOptions]);
+  useEffect(() => {
+    if (!taskSceneOptions.includes(taskSceneFilter)) {
+      setTaskSceneFilter("all");
+    }
+  }, [taskSceneFilter, taskSceneOptions]);
+  useEffect(() => {
+    if (!datasetSceneOptions.includes(datasetSceneFilter)) {
+      setDatasetSceneFilter("all");
+    }
+  }, [datasetSceneFilter, datasetSceneOptions]);
+
+  const rows = useMemo(() => {
+    return deployments.map((deployment) => {
+      const deploymentId = String(deployment.deployment_id || "").trim();
+      const deploymentModelId = String(deployment.model_id || "").trim();
+      const routingRows = modelScoreSummaries.filter((item) => String(item.deployment_id || "").trim() === deploymentId);
+      const experimentRows = experimentArchives.filter((item) => String(item.deployment_id || "").trim() === deploymentId);
+      const taskScenes = Array.from(new Set(routingRows.map((item) => String(item.scene || "").trim()).filter(Boolean)));
+      const datasetScenes = Array.from(new Set(experimentRows.map((item) => String(item.scene || "").trim()).filter(Boolean)));
+      const avgCurrentBreakdown = collectAverageBreakdown(routingRows, "current_breakdown");
+      const avgPerformanceDeltaBreakdown = collectAverageBreakdown(routingRows, "performance_delta_breakdown");
+      const avgBaselineScore = meanBy(routingRows, (item) => item.baseline_score);
+      const avgCurrentScore = meanBy(routingRows, (item) => item.current_score);
+      const avgScoreDelta = meanBy(routingRows, (item) => item.score_delta);
+      const avgLatencyMs = meanBy(experimentRows, (item) => item.latency_ms);
+      const avgTripleCount = meanBy(experimentRows, (item) => item.triple_count);
+      const taskObjectiveLabels = Array.from(new Set(routingRows.map((item) => String(item.objective || "").trim()).filter(Boolean)));
+      const latestExperimentAt = sortByCreatedDesc(experimentRows)[0]?.created_at || "-";
+
+      return {
+        deployment,
+        routingRows,
+        experimentRows,
+        taskScenes,
+        datasetScenes,
+        taskObjectiveLabels,
+        avgCurrentBreakdown,
+        avgPerformanceDeltaBreakdown,
+        avgBaselineScore,
+        avgCurrentScore,
+        avgScoreDelta,
+        avgLatencyMs,
+        avgTripleCount,
+        latestExperimentAt,
+        hasTaskRouting: routingRows.length > 0,
+        hasExperiment: experimentRows.length > 0,
+        modelId: deploymentModelId,
+      };
+    });
+  }, [deployments, experimentArchives, modelScoreSummaries]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((row) => {
+      if (modelFilter !== "all" && row.modelId !== modelFilter) {
+        return false;
+      }
+      if (statusFilter !== "all" && String(row.deployment.status || "").trim() !== statusFilter) {
+        return false;
+      }
+      if (taskSceneFilter === "none" && row.hasTaskRouting) {
+        return false;
+      }
+      if (taskSceneFilter !== "all" && taskSceneFilter !== "none" && !row.taskScenes.includes(taskSceneFilter)) {
+        return false;
+      }
+      if (datasetSceneFilter === "none" && row.hasExperiment) {
+        return false;
+      }
+      if (datasetSceneFilter !== "all" && datasetSceneFilter !== "none" && !row.datasetScenes.includes(datasetSceneFilter)) {
+        return false;
+      }
+      return true;
+    }).sort((left, right) => {
+      if (left.deployment.status === "running" && right.deployment.status !== "running") {
+        return -1;
+      }
+      if (left.deployment.status !== "running" && right.deployment.status === "running") {
+        return 1;
+      }
+      return String(left.deployment.deployment_id || "").localeCompare(String(right.deployment.deployment_id || ""));
+    });
+  }, [datasetSceneFilter, modelFilter, rows, statusFilter, taskSceneFilter]);
+
+  const pagination = useTablePagination(filteredRows, 5);
+  const noTaskRoutingCount = rows.filter((item) => !item.hasTaskRouting).length;
+  const noExperimentCount = rows.filter((item) => !item.hasExperiment).length;
+
+  return (
+    <>
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="全量总表"
+          title="Deployment 表现变化总览"
+          note="这页统一看所有 Deployment 在任务调度与推理实验两条链路中的表现层变化。即使某个 Deployment 从未参与过任务调度或推理实验，也会保留在总表里。"
+        />
+        <div className="metrics">
+          <MetricCard title="Deployment 总数" value={rows.length} note="包含当前平台全部 deployment" />
+          <MetricCard title="无任务调度记录" value={noTaskRoutingCount} note="没有进入任务调度评分快照的 deployment" />
+          <MetricCard title="无推理实验记录" value={noExperimentCount} note="没有推理实验归档的 deployment" />
+          <MetricCard title="当前筛选结果" value={filteredRows.length} note="经过筛选后仍保留的 deployment 数量" />
+        </div>
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>模型</span>
+            <select onChange={(event) => setModelFilter(event.target.value)} value={modelFilter}>
+              <option value="all">全部模型</option>
+              {modelOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-performance-model-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>Deployment 状态</span>
+            <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+              <option value="all">全部状态</option>
+              {statusOptions.filter((item) => item !== "all").map((item) => (
+                <option key={`deployment-performance-status-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>任务调度场景</span>
+            <select onChange={(event) => setTaskSceneFilter(event.target.value)} value={taskSceneFilter}>
+              <option value="all">全部场景</option>
+              <option value="none">无任务调度记录</option>
+              {taskSceneOptions.filter((item) => !["all", "none"].includes(item)).map((item) => (
+                <option key={`deployment-performance-task-scene-${item}`} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>推理实验数据集场景</span>
+            <select onChange={(event) => setDatasetSceneFilter(event.target.value)} value={datasetSceneFilter}>
+              <option value="all">全部场景</option>
+              <option value="none">无推理实验记录</option>
+              {datasetSceneOptions.filter((item) => !["all", "none"].includes(item)).map((item) => (
+                <option key={`deployment-performance-dataset-scene-${item}`} value={item}>
+                  {formatDatasetSceneLabel(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="banner banner-muted">
+          过滤策略我先给成四层：模型、Deployment 状态、任务调度场景、推理实验数据集场景。这样能同时兼容“任务调度记录”和“推理实验记录”两条数据链路，而且还能显式筛出“无记录”的 deployment。
+        </div>
+      </section>
+
+      <section className="page-shell card section-shell score-evolution-section">
+        <SectionHeader
+          kicker="表现层"
+          title="所有 Deployment 表现变化"
+          note="表内同时展示任务调度侧的表现层变化，以及推理实验侧的数据集场景与运行统计。"
+        />
+        <div className="table-wrap">
+          <table className="weight-profile-table score-evolution-table score-evolution-primary-table deployment-performance-table">
+            <thead>
+              <tr>
+                <th>Deployment / 模型</th>
+                <th>场景覆盖</th>
+                <th>任务调度表现概览</th>
+                <th>当前表现层拆解</th>
+                <th>表现层净变化</th>
+                <th>推理实验与说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagination.pagedItems.length ? pagination.pagedItems.map((row) => {
+                const deltaPositive = Number(row.avgScoreDelta || 0) > 0;
+                const deltaNegative = Number(row.avgScoreDelta || 0) < 0;
+                return (
+                  <tr key={row.deployment.deployment_id}>
+                    <td className="score-evolution-cell-identity">
+                      <div className="archive-cell-stack">
+                        <strong className="archive-main">{row.deployment.deployment_id}</strong>
+                        <div className="table-note">{row.deployment.status || "-"}</div>
+                        <div className="archive-main">{row.deployment.model_id}</div>
+                        <div className="table-note">{row.deployment.profile_name || "-"}</div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="archive-cell-stack">
+                        <div className="table-note">任务调度</div>
+                        {row.taskScenes.length ? (
+                          <div className="tag-list">
+                            {row.taskScenes.map((item) => <span className="tag" key={`${row.deployment.deployment_id}-task-scene-${item}`}>{item}</span>)}
+                          </div>
+                        ) : (
+                          <span className="table-note">无任务调度记录</span>
+                        )}
+                        <div className="table-note">目标：{row.taskObjectiveLabels.length ? row.taskObjectiveLabels.join(" / ") : "-"}</div>
+                        <div className="table-note">推理实验</div>
+                        {row.datasetScenes.length ? (
+                          <div className="tag-list">
+                            {row.datasetScenes.map((item) => <span className="tag" key={`${row.deployment.deployment_id}-dataset-scene-${item}`}>{formatDatasetSceneLabel(item)}</span>)}
+                          </div>
+                        ) : (
+                          <span className="table-note">无推理实验记录</span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {row.hasTaskRouting ? (
+                        <div className="score-overview-stack">
+                          <div className="score-overview-row">
+                            <span className="weight-snapshot-chip weight-snapshot-chip-baseline score-overview-chip">
+                              <strong>优化前</strong>
+                              <span>{Number(row.avgBaselineScore || 0).toFixed(4)}</span>
+                            </span>
+                            <span className="weight-snapshot-chip score-overview-chip">
+                              <strong>当前</strong>
+                              <span>{Number(row.avgCurrentScore || 0).toFixed(4)}</span>
+                            </span>
+                          </div>
+                          <span className={`score-delta-chip score-overview-delta ${deltaPositive ? "score-delta-positive" : deltaNegative ? "score-delta-negative" : ""}`}>
+                            变化 {formatSignedNumber(row.avgScoreDelta || 0, 4)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="table-note">无任务调度评分快照</span>
+                      )}
+                    </td>
+                    <td>
+                      <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                        {getWeightSnapshotEntries(row.avgCurrentBreakdown || {}).length ? (
+                          getWeightSnapshotEntries(row.avgCurrentBreakdown || {}).map(([key, value]) => (
+                            <span className="score-breakdown-compact-chip" key={`${row.deployment.deployment_id}-current-breakdown-${key}`}>
+                              <strong>{formatWeightDimensionLabel(key)}</strong>
+                              <span>{Number(value).toFixed(2)}</span>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="table-note">无</span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="score-breakdown-compact-grid score-breakdown-compact-grid-wide">
+                        {getSignedWeightSnapshotEntries(row.avgPerformanceDeltaBreakdown || {}).length ? (
+                          getSignedWeightSnapshotEntries(row.avgPerformanceDeltaBreakdown || {}).map(([key, value]) => (
+                            <span className={`score-breakdown-compact-chip ${Number(value || 0) > 0 ? "score-adjustment-breakdown-positive" : Number(value || 0) < 0 ? "score-adjustment-breakdown-negative" : ""}`} key={`${row.deployment.deployment_id}-performance-delta-${key}`}>
+                              <strong>{formatWeightDimensionLabel(key)}</strong>
+                              <span>{formatSignedNumber(value, 4)}</span>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="table-note">无</span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="archive-cell-stack">
+                        <div className="archive-main">实验数 {row.experimentRows.length}</div>
+                        <div className="table-note">平均延迟 {row.avgLatencyMs !== null ? `${Number(row.avgLatencyMs).toFixed(2)} ms` : "-"}</div>
+                        <div className="table-note">平均三元组 {row.avgTripleCount !== null ? Number(row.avgTripleCount).toFixed(2) : "-"}</div>
+                        <div className="table-note">最近实验 {row.latestExperimentAt}</div>
+                        <div className="table-note">
+                          {!row.hasTaskRouting && !row.hasExperiment
+                            ? "无任务调度、无推理实验"
+                            : !row.hasTaskRouting
+                              ? "仅有推理实验记录"
+                              : !row.hasExperiment
+                                ? "仅有任务调度记录"
+                                : "两条链路均有记录"}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }) : (
+                <tr>
+                  <td className="table-note" colSpan="6">当前筛选条件下没有可展示的 Deployment 表现变化记录。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <PaginationBar
+            currentPage={pagination.page}
+            totalPages={pagination.totalPages}
+            pageSize={pagination.pageSize}
+            totalItems={pagination.totalItems}
+            onChange={pagination.setPage}
+          />
+        </div>
       </section>
     </>
   );

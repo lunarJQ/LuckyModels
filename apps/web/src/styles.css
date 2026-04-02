@@ -1356,6 +1356,45 @@ tbody tr:hover {
   width: 20%;
 }
 
+.deployment-performance-table th:nth-child(1),
+.deployment-performance-table td:nth-child(1) {
+  width: 16%;
+}
+
+.deployment-performance-table th:nth-child(2),
+.deployment-performance-table td:nth-child(2) {
+  width: 20%;
+}
+
+.deployment-performance-table th:nth-child(3),
+.deployment-performance-table td:nth-child(3) {
+  width: 14%;
+}
+
+.deployment-performance-table th:nth-child(4),
+.deployment-performance-table td:nth-child(4) {
+  width: 18%;
+}
+
+.deployment-performance-table th:nth-child(5),
+.deployment-performance-table td:nth-child(5) {
+  width: 14%;
+}
+
+.deployment-performance-table th:nth-child(6),
+.deployment-performance-table td:nth-child(6) {
+  width: 18%;
+}
+
+.deployment-performance-table .tag-list {
+  gap: 4px;
+}
+
+.deployment-performance-table .tag {
+  padding: 3px 7px;
+  font-size: 11px;
+}
+
 .score-evolution-contrib-table th:nth-child(1),
 .score-evolution-contrib-table td:nth-child(1) {
   width: 22%;

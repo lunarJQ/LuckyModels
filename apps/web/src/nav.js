@@ -6,6 +6,7 @@ export const navGroups = [
       { id: "experiment", path: "/experiments", label: "推理试验", icon: "◉", description: "在线推理与结果反馈", requiredPermissions: ["predictions.view"] },
       { id: "task-routing", path: "/task-routing", label: "任务调度", icon: "⇄", description: "多模型策略执行", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "task-routing-history", path: "/task-routing-history", label: "调度历史", icon: "☷", description: "历史累计与策略回看", requiredPermissions: ["strategies.manage"], adminOnly: true },
+      { id: "deployment-performance", path: "/deployment-performance", label: "表现变化", icon: "▤", description: "Deployment 全量表现视图", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "deployment-policy", path: "/deployment-policy", label: "部署策略", icon: "△", description: "资源建议与部署方案", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "archive", path: "/archive", label: "结果反馈", icon: "▣", description: "预测与实验反馈", requiredPermissions: ["predictions.view"] },
     ],
