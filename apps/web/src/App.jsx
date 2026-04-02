@@ -114,8 +114,8 @@ const pageMeta = {
     note: "根据热温冷分层、冷启动风险与 GPU 压力，生成自适应部署建议，并支持定时自动优化。",
   },
   "/archive": {
-    title: "结果归档",
-    note: "集中查看最近的部署实例与基准记录，便于截图和整理论文表格。",
+    title: "结果反馈",
+    note: "集中查看最近的推理与调度结果，并以用户反馈为主补充平台在线学习证据。",
   },
   "/models": {
     title: "模型库",
@@ -869,7 +869,7 @@ function formatPermissionLabel(permissionId) {
     "deployments.manage": "管理部署",
     "benchmarks.view": "查看基准",
     "benchmarks.manage": "运行基准",
-    "predictions.view": "查看预测归档",
+    "predictions.view": "查看结果反馈",
     "strategies.manage": "运行策略",
     "resources.view": "查看资源",
     "archive.export": "导出归档",
@@ -1399,13 +1399,13 @@ export default function App() {
   }
 
   async function handleDeletePredictionArchive(archiveId) {
-    if (!window.confirm(`确认删除预测归档 ${archiveId} 吗？`)) {
+    if (!window.confirm(`确认删除结果反馈记录 ${archiveId} 吗？`)) {
       return;
     }
     await runAction(
       `delete-prediction-${archiveId}`,
       () => deletePredictionArchive(archiveId),
-      `预测归档已删除：${archiveId}`,
+      `结果反馈记录已删除：${archiveId}`,
     );
     setPredictResult((current) => (current?.archive_id === archiveId ? null : current));
   }
@@ -1422,7 +1422,7 @@ export default function App() {
           feedback_status: nextStatus,
           feedback_note: nextFeedbackNote,
         }),
-      `预测归档反馈已更新为“${statusLabel}${detailLabel}”。`,
+      `结果反馈已更新为“${statusLabel}${detailLabel}”。`,
     );
     setPredictResult((current) => {
       if (!current || current.archive_id !== archiveId) {
@@ -1760,7 +1760,7 @@ export default function App() {
       setNotice({ type: "error", text: `当前模型制品不可删除：${modelId}（来源：${originLabel}）` });
       return;
     }
-    if (!window.confirm(`确认删除模型制品 ${modelId} 吗？关联部署、基准和预测归档会一并删除。`)) {
+    if (!window.confirm(`确认删除模型制品 ${modelId} 吗？关联部署、基准和结果反馈记录会一并删除。`)) {
       return;
     }
     const result = await runAction(
@@ -1774,7 +1774,7 @@ export default function App() {
     if (result) {
       setNotice({
         type: "ok",
-        text: `模型制品已删除：${modelId}，同步清理部署 ${result.deleted_deployment_count} 条、基准 ${result.deleted_benchmark_count} 条、预测归档 ${result.deleted_prediction_archive_count} 条。`,
+        text: `模型制品已删除：${modelId}，同步清理部署 ${result.deleted_deployment_count} 条、基准 ${result.deleted_benchmark_count} 条、结果反馈记录 ${result.deleted_prediction_archive_count} 条。`,
       });
     }
   }
@@ -2879,12 +2879,12 @@ function ExperimentsPage({
                 <MetricCard
                   title="当前反馈"
                   value={formatPredictionFeedbackSummary(currentArchive?.feedback_status, currentArchive?.feedback_note)}
-                  note={currentArchive?.feedback_updated_at || "默认暂定，可在下方结果归档中修改"}
+                  note={currentArchive?.feedback_updated_at || "默认暂定，可在下方结果反馈区中修改"}
                 />
               </div>
               {currentArchive ? (
                 <div className="banner banner-muted">
-                  当前预测归档反馈：{formatPredictionFeedbackSummary(currentArchive.feedback_status, currentArchive.feedback_note)}。如果这次结果已经可直接用于业务，可标记“满意”；如果结果明显不符合预期，可先标记“不满意”，再补充“漏抽多”、“误抽多”和/或“延迟高”；暂时不判断就保留“暂定”。
+                  当前结果反馈：{formatPredictionFeedbackSummary(currentArchive.feedback_status, currentArchive.feedback_note)}。如果这次结果已经可直接用于业务，可标记“满意”；如果结果明显不符合预期，可先标记“不满意”，再补充“漏抽多”、“误抽多”和/或“延迟高”；暂时不判断就保留“暂定”。
                 </div>
               ) : null}
               <div className="relation-list">
@@ -2911,9 +2911,9 @@ function ExperimentsPage({
 
       <section className="page-shell card section-shell">
         <SectionHeader
-          kicker="预测归档"
-          title="单次预测归档"
-          note="每次在线推理成功后，平台会自动写入归档，方便后续导出 JSON、截图、回填论文案例，并补充满意度反馈。"
+          kicker="结果反馈"
+          title="单次预测反馈"
+          note="每次在线推理成功后，平台会自动写入反馈记录，方便后续导出 JSON、截图、回填论文案例，并补充满意度反馈。"
         />
         {derived.predictArchives.length ? (
           <div className="table-wrap">
@@ -2986,7 +2986,7 @@ function ExperimentsPage({
             />
           </div>
         ) : (
-          <EmptyState icon="A" title="暂无预测归档" note="完成一次在线推理后，结果会自动归档到这里。" />
+          <EmptyState icon="A" title="暂无结果反馈" note="完成一次在线推理后，结果会自动沉淀到这里。" />
         )}
       </section>
     </>
@@ -3695,7 +3695,7 @@ function TaskRoutingPage({
             </div>
             <div className="task-routing-flow-arrow">-&gt;</div>
             <div className="task-routing-feedback-node">
-              <strong>结果归档与反馈</strong>
+              <strong>结果反馈与反馈学习</strong>
               <span>满意、漏抽多、误抽多、延迟高都会回流校准</span>
             </div>
             <div className="task-routing-flow-arrow">-&gt;</div>
@@ -4005,19 +4005,19 @@ function TaskRoutingPage({
 
       <section className="detail-grid page-shell">
         <article className="card detail-card">
-          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 通常不会回传“最终采用了哪个模型”，因此平台默认依赖自动归档；如果管理员或使用者愿意，也可以在结果归档里补充满意度反馈。" />
+          <SectionHeader kicker="证据区" title="本次调度会沉淀哪些证据" note="真实业务里外露 API 通常不会回传“最终采用了哪个模型”，因此平台默认依赖自动留痕；如果管理员或使用者愿意，也可以在结果反馈页里补充满意度反馈。" />
           {taskRoutingResult?.decision_id ? (
             <>
               <div className="metrics">
                 <MetricCard title="决策编号" value={taskRoutingResult.decision_id} note="本次调度会进入历史记录，后面可检索和截图" />
                 <MetricCard title="执行模型数" value={(taskRoutingResult.execution_results || []).length} note="本次真正参与运行的模型实例数" />
                 <MetricCard title="融合三元组" value={taskRoutingResult.fused_result?.triple_count || 0} note="会进入在线归档，参与后续统计" />
-                <MetricCard title="归档方式" value="自动归档 + 可选反馈" note={`归档编号 ${taskRoutingResult.archive_id || "-"}`} />
+                <MetricCard title="反馈留痕方式" value="自动留痕 + 可选反馈" note={`记录编号 ${taskRoutingResult.archive_id || "-"}`} />
               </div>
               <div className="relation-list">
                 {[
                   "任务调度记录：保存这次任务的目标偏好、执行路径、候选部署与最终选中的模型。",
-                  "预测归档记录：保存这次任务输出的三元组数量、运行情况，以及可选的满意 / 不满意 / 暂定反馈。",
+                  "结果反馈记录：保存这次任务输出的三元组数量、运行情况，以及可选的满意 / 不满意 / 暂定反馈。",
                   "调度层自校准：平台后续会优先参考 benchmark、在线归档和已补充的满意度反馈，同时修正不同目标的权重和候选 deployment 的排序得分。",
                 ].map((item, index) => (
                   <div className="relation-item" key={`${item}-${index + 1}`}>
@@ -4255,7 +4255,7 @@ function TaskRoutingPage({
           <div className="relation-item">
             <strong>这些数据确实来自在线校准</strong>
             <br />
-            Benchmark、预测归档、满意度反馈和历史调度记录都会实时进入调度权重修正与表现分修正，所以这里不是静态展示，而是真正参与任务调度的在线校准结果。
+            Benchmark、结果反馈、满意度反馈和历史调度记录都会实时进入调度权重修正与表现分修正，所以这里不是静态展示，而是真正参与任务调度的在线校准结果。
           </div>
           <div className="relation-item">
             <strong>权重来源再往下看</strong>
@@ -4608,8 +4608,8 @@ function TaskRoutingPage({
           <MetricCard title="决策总数" value={feedbackOverview.total_decisions || 0} note="累计归档的任务调度记录" />
           <MetricCard title="Benchmark 证据" value={completedBenchmarks.length} note="已完成的 benchmark 记录数" />
           <MetricCard title="在线归档证据" value={calibrationArchiveCount} note="实时推理沉淀的归档记录数" />
-          <MetricCard title="满意反馈" value={feedbackOverview.archive_satisfied_count || 0} note="结果归档里被标记为满意的记录数" />
-          <MetricCard title="不满意反馈" value={feedbackOverview.archive_unsatisfied_count || 0} note="结果归档里被标记为不满意的记录数" />
+          <MetricCard title="满意反馈" value={feedbackOverview.archive_satisfied_count || 0} note="结果反馈里被标记为满意的记录数" />
+          <MetricCard title="不满意反馈" value={feedbackOverview.archive_unsatisfied_count || 0} note="结果反馈里被标记为不满意的记录数" />
           <MetricCard title="最近决策时间" value={feedbackOverview.recent_decisions?.[0]?.created_at || "-"} note="最近一条任务调度历史" />
         </div>
         <div className="relation-list">
@@ -5280,20 +5280,20 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
   return (
     <>
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="结果归档" title="结果归档" note="这里只保留预测留痕与反馈统计，用来回看在线推理结果、整理论文样例和补充调度证据。" />
+        <SectionHeader kicker="结果反馈" title="结果反馈" note="这里以用户反馈为主组织推理与调度结果，用来回看在线推理结果、补充调度学习证据，并支持论文展示。" />
         <div className="metrics">
-          <MetricCard title="最新结果归档" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
-          <MetricCard title="结果归档总数" value={allArchives.length} note="在线推理与任务调度结果自动留痕" />
-          <MetricCard title="推理实验归档" value={predictionArchives.length} note="以 pred 开头，来自在线推理或推理实验" />
-          <MetricCard title="任务调度归档" value={mergedTaskRoutingArchives.length} note="真实归档 + 历史最近决策补充行" />
+          <MetricCard title="最新反馈记录" value={derived.latestPredictArchive?.archive_id || "-"} note={derived.latestPredictArchive?.model_id || "-"} />
+          <MetricCard title="反馈记录总数" value={allArchives.length} note="在线推理与任务调度结果自动留痕" />
+          <MetricCard title="推理实验反馈" value={predictionArchives.length} note="以 pred 开头，来自在线推理或推理实验" />
+          <MetricCard title="任务调度反馈" value={mergedTaskRoutingArchives.length} note="真实记录 + 历史最近决策补充行" />
           <MetricCard title="满意结果" value={archiveSatisfiedCount} note="用户确认当前结果可接受" />
           <MetricCard title="不满意结果" value={archiveUnsatisfiedCount} note="用户明确标记结果不符合预期" />
         </div>
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="任务调度归档" title="任务调度归档列表" note="这一表优先展示真实任务调度归档，同时补充接入历史最近决策记录，便于在同一处查看完整任务调度留痕。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。已生成真实归档的记录保留完整输入、权重快照和反馈入口；没有真实归档的历史最近决策，也会补成只读记录接进来。</div>
+        <SectionHeader kicker="任务调度反馈" title="任务调度反馈列表" note="这一表优先展示真实任务调度记录，同时补充接入历史最近决策记录，便于在同一处查看完整任务调度留痕和反馈。" />
+        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。已生成真实留痕的记录保留完整输入、权重快照和反馈入口；没有真实留痕的历史最近决策，也会补成只读记录接进来。</div>
         {mergedTaskRoutingArchives.length ? (
           <div className="table-wrap">
             <table className="archive-table">
@@ -5321,7 +5321,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                         <div className="archive-cell-stack">
                           <strong className="archive-main">{displayId}</strong>
                           <div className="table-note">创建时间：{item.created_at}</div>
-                          <div className="table-note">来源：{isSupplementalDecision ? "历史最近决策补充" : "任务调度归档"}</div>
+                          <div className="table-note">来源：{isSupplementalDecision ? "历史最近决策补充" : "任务调度反馈记录"}</div>
                         </div>
                       </td>
                       <td>
@@ -5365,7 +5365,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                             onUpdate={onUpdatePredictionArchiveFeedback}
                           />
                         ) : (
-                          <div className="table-note">历史补充行当前仅展示决策信息，不提供归档级反馈按钮。</div>
+                          <div className="table-note">历史补充行当前仅展示决策信息，不提供记录级反馈按钮。</div>
                         )}
                       </td>
                       <td>
@@ -5392,12 +5392,12 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
             />
           </div>
         ) : (
-          <EmptyState icon="T" title="暂无任务调度归档" note="先运行一次任务调度，这里就会出现以 trd 开头的归档结果。" />
+          <EmptyState icon="T" title="暂无任务调度反馈" note="先运行一次任务调度，这里就会出现以 trd 开头的反馈记录。" />
         )}
       </section>
 
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="推理实验归档" title="推理实验记录归档列表" note="这一表只放以 pred 开头的归档，主要回看单次在线推理或推理实验结果，也支持直接补反馈。" />
+        <SectionHeader kicker="推理实验反馈" title="推理实验反馈列表" note="这一表只放以 pred 开头的记录，主要回看单次在线推理或推理实验结果，也支持直接补反馈。" />
         <div className="banner banner-muted">这张表看什么：一行就是一次推理实验记录。它保留输入文本、延迟和三元组数量，补上的满意 / 不满意 / 暂定反馈会继续影响任务调度学习过程。</div>
         {predictionArchives.length ? (
           <div className="table-wrap">
@@ -5421,7 +5421,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                         <div className="archive-cell-stack">
                           <strong className="archive-main">{item.archive_id}</strong>
                           <div className="table-note">创建时间：{item.created_at}</div>
-                          <div className="table-note">来源：推理实验</div>
+                          <div className="table-note">来源：推理实验反馈记录</div>
                         </div>
                       </td>
                       <td>
@@ -5440,7 +5440,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                             <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
                             <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
                           </div>
-                          <div className="table-note">推理实验归档用于回放预测输出、导出 JSON 和补充反馈。</div>
+                          <div className="table-note">推理实验反馈记录用于回放预测输出、导出 JSON 和补充反馈。</div>
                         </div>
                       </td>
                       <td className="archive-feedback-cell">
@@ -5478,7 +5478,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
             />
           </div>
         ) : (
-          <EmptyState icon="A" title="暂无推理实验归档" note="先执行一次在线推理或推理实验，这里就会出现以 pred 开头的归档结果。" />
+          <EmptyState icon="A" title="暂无推理实验反馈" note="先执行一次在线推理或推理实验，这里就会出现以 pred 开头的反馈记录。" />
         )}
       </section>
     </>

@@ -3,10 +3,10 @@ export const navGroups = [
     title: "工作台",
     items: [
       { id: "overview", path: "/", label: "资产概览", icon: "◆", description: "平台总览与系统态势" },
-      { id: "experiment", path: "/experiments", label: "推理试验", icon: "◉", description: "在线推理与结果归档", requiredPermissions: ["predictions.view"] },
+      { id: "experiment", path: "/experiments", label: "推理试验", icon: "◉", description: "在线推理与结果反馈", requiredPermissions: ["predictions.view"] },
       { id: "task-routing", path: "/task-routing", label: "任务调度", icon: "⇄", description: "多模型策略执行", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "deployment-policy", path: "/deployment-policy", label: "部署策略", icon: "△", description: "资源建议与部署方案", requiredPermissions: ["strategies.manage"], adminOnly: true },
-      { id: "archive", path: "/archive", label: "结果归档", icon: "▣", description: "预测与实验沉淀", requiredPermissions: ["predictions.view"] },
+      { id: "archive", path: "/archive", label: "结果反馈", icon: "▣", description: "预测与实验反馈", requiredPermissions: ["predictions.view"] },
     ],
   },
   {
