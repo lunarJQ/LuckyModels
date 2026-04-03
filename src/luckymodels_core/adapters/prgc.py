@@ -41,7 +41,7 @@ class PRGCAdapter(BaseAdapter):
             self.manifest.resolved_labels.get("relation_map")
         )
         self.vocab = load_vocab(self.manifest.resolved_tokenizer["vocab_path"])
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.stage1_session = create_inference_session(
             self.manifest.resolved_artifacts["stage1_model"],
             self.providers,
@@ -52,6 +52,7 @@ class PRGCAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.providers = list(self.stage1_session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

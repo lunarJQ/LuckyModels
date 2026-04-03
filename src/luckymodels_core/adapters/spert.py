@@ -63,7 +63,7 @@ class SpERTAdapter(BaseAdapter):
         self.default_max_entity_candidates = int(
             manifest_inference.max_entity_candidates or 24
         )
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_encoder"],
             self.providers,
@@ -74,6 +74,7 @@ class SpERTAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.providers = list(self.entity_session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

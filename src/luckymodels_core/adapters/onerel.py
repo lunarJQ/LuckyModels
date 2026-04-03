@@ -51,12 +51,13 @@ class OneRelAdapter(BaseAdapter):
                 self.vocab[clean] = index
                 self.id2token[index] = clean
 
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.session = create_inference_session(
             self.manifest.resolved_artifacts["model"],
             self.providers,
             self.profile,
         )
+        self.providers = list(self.session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

@@ -14,6 +14,7 @@ from luckymodels_core.launcher import (
     wait_for_runtime,
 )
 from luckymodels_core.manifest import load_profile
+from luckymodels_core.runtime_capabilities import inspect_runtime_capabilities
 from luckymodels_core.schemas import DeploymentCreateRequest, DeploymentRecord
 from luckymodels_core.settings import get_settings
 
@@ -73,12 +74,22 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     deployment.profile_path = model.resolved_profiles[request.profile_name]
     deployment.service_url = store.ensure_service_url(deployment)
     settings = get_settings()
+    deployment.provider_preference = _resolve_provider_preference(
+        requested_preference=request.provider_preference,
+        use_gpu=deployment.use_gpu,
+        settings=settings,
+    )
     deployment.log_path = str(settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
     deployment.use_gpu, deployment.gpu_ids, device_note = _resolve_runtime_device(
         model=model,
         requested_use_gpu=deployment.use_gpu,
         requested_gpu_ids=deployment.gpu_ids,
+    )
+    _validate_runtime_backend_choice(
+        settings=settings,
+        use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
     )
     if device_note:
         deployment.notes = " | ".join(item for item in [deployment.notes, device_note] if item)
@@ -93,6 +104,7 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
             log_path=deployment.log_path,
             gpu_ids=deployment.gpu_ids,
             use_gpu=deployment.use_gpu,
+            provider_preference=deployment.provider_preference,
         )
         deployment.pid = pid
         deployment.service_url = service_url
@@ -228,12 +240,22 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         requested_use_gpu=deployment.use_gpu,
         requested_gpu_ids=deployment.gpu_ids,
     )
+    settings = get_settings()
+    deployment.provider_preference = _resolve_provider_preference(
+        requested_preference=deployment.provider_preference,
+        use_gpu=deployment.use_gpu,
+        settings=settings,
+    )
+    _validate_runtime_backend_choice(
+        settings=settings,
+        use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
+    )
     if device_note:
         deployment.notes = " | ".join(item for item in [deployment.notes, device_note] if item)
 
     service_url = store.ensure_service_url(deployment)
     port = int(service_url.rsplit(":", maxsplit=1)[-1])
-    settings = get_settings()
     pid, service_url = launch_runtime_process(
         root_dir=settings.root_dir,
         manifest_path=deployment.manifest_path,
@@ -242,6 +264,7 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         log_path=deployment.log_path,
         gpu_ids=deployment.gpu_ids,
         use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
     )
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
     deployment.pid = pid
@@ -292,8 +315,54 @@ def _hydrate_deployment_runtime_snapshot(deployment: DeploymentRecord) -> Deploy
     deployment.device = "cpu" if not deployment.use_gpu else profile.device
     if not deployment.gpu_ids and profile.gpu_ids:
         deployment.gpu_ids = list(profile.gpu_ids)
+    if not deployment.provider_preference:
+        deployment.provider_preference = str(profile.execution.get("provider_preference", "") or "").strip() or None
     deployment.execution = profile.execution
     return deployment
+
+
+def _resolve_provider_preference(
+    *,
+    requested_preference: str | None,
+    use_gpu: bool,
+    settings,
+) -> str:
+    if not use_gpu:
+        return "cpu"
+    normalized = str(requested_preference or "").strip().lower()
+    if normalized in {"cuda", "tensorrt"}:
+        return normalized
+    capabilities = inspect_runtime_capabilities(settings)
+    if _runtime_provider_usable(capabilities, "TensorrtExecutionProvider"):
+        return "tensorrt"
+    if _runtime_provider_usable(capabilities, "CUDAExecutionProvider"):
+        return "cuda"
+    return "cpu"
+
+
+def _validate_runtime_backend_choice(
+    *,
+    settings,
+    use_gpu: bool,
+    provider_preference: str | None,
+) -> None:
+    normalized = str(provider_preference or "").strip().lower() or ("cpu" if not use_gpu else "")
+    capabilities = inspect_runtime_capabilities(settings)
+    if not use_gpu:
+        return
+    if normalized == "tensorrt" and not _runtime_provider_usable(capabilities, "TensorrtExecutionProvider"):
+        raise HTTPException(status_code=400, detail="当前服务器环境不支持 TensorRT Execution Provider，平台已禁止创建该部署选项。")
+    if normalized == "cuda" and not _runtime_provider_usable(capabilities, "CUDAExecutionProvider"):
+        raise HTTPException(status_code=400, detail="当前服务器环境不支持 CUDA Execution Provider，平台已禁止创建该部署选项。")
+    if normalized == "cpu":
+        raise HTTPException(status_code=400, detail="当前服务器环境没有可用的 GPU Execution Provider，请改为 CPU 部署。")
+
+
+def _runtime_provider_usable(capabilities: dict[str, object], provider_name: str) -> bool:
+    for row in capabilities.get("providers") or []:
+        if str(row.get("provider")) == provider_name:
+            return bool(row.get("runtime_usable"))
+    return False
 
 
 def _resolve_runtime_device(

@@ -75,7 +75,7 @@ class CasRelAdapter(BaseAdapter):
             self.sessions_loaded = False
             return
 
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.subject_session = create_inference_session(
             self.manifest.resolved_artifacts["subject_model"],
             self.providers,
@@ -86,6 +86,7 @@ class CasRelAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.providers = list(self.subject_session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

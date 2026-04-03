@@ -35,6 +35,7 @@ class DeploymentStore:
             node_name=request.node_name,
             use_gpu=request.use_gpu,
             gpu_ids=request.gpu_ids,
+            provider_preference=request.provider_preference,
             notes=request.notes,
         )
         deployments = self.list()

@@ -214,6 +214,7 @@ class DeploymentCreateRequest(BaseModel):
     node_name: str = "local-node"
     use_gpu: bool = True
     gpu_ids: list[int] = Field(default_factory=list)
+    provider_preference: str | None = None
     launch_runtime: bool = False
     notes: str | None = None
 
@@ -226,6 +227,7 @@ class DeploymentRecord(BaseModel):
     node_name: str
     use_gpu: bool = True
     gpu_ids: list[int] = Field(default_factory=list)
+    provider_preference: str | None = None
     profile_runtime: str | None = None
     device: str | None = None
     execution: dict[str, Any] = Field(default_factory=dict)

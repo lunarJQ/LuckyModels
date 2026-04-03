@@ -45,7 +45,7 @@ class PUREAdapter(BaseAdapter):
         self.entity_labels = load_json(self.manifest.resolved_labels.get("entity_map")) or []
         self.relation_labels = load_json(self.manifest.resolved_labels.get("relation_map")) or []
         self.special_tokens = load_json(str(relation_config_path / "special_tokens.json")) or {}
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.entity_session = create_inference_session(
             self.manifest.resolved_artifacts["entity_model"],
             self.providers,
@@ -56,6 +56,7 @@ class PUREAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.providers = list(self.entity_session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

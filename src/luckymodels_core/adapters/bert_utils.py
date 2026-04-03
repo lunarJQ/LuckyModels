@@ -187,7 +187,7 @@ def decode_bio_spans(
     return spans
 
 
-def provider_list(profile_device: str) -> list[str]:
+def provider_list(profile_or_device: Any) -> list[str]:
     try:
         import onnxruntime as ort  # type: ignore
     except ImportError as exc:  # pragma: no cover - dependency path
@@ -195,6 +195,7 @@ def provider_list(profile_device: str) -> list[str]:
             "onnxruntime is required for LuckyModels live inference adapters"
         ) from exc
 
+    profile_device = _resolve_profile_device(profile_or_device)
     if profile_device.lower().startswith("cuda"):
         # When the GPU wheel is installed via NVIDIA site packages, preload the
         # CUDA/cuDNN shared objects before checking available providers.
@@ -206,6 +207,17 @@ def provider_list(profile_device: str) -> list[str]:
                 pass
 
     available = ort.get_available_providers()
+    provider_preference = _resolve_provider_preference(profile_or_device)
+    if provider_preference == "cpu":
+        return ["CPUExecutionProvider"]
+    if provider_preference == "tensorrt":
+        providers: list[str] = []
+        if "TensorrtExecutionProvider" in available:
+            providers.append("TensorrtExecutionProvider")
+        if "CUDAExecutionProvider" in available:
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
+        return providers
     if profile_device.lower().startswith("cuda") and "CUDAExecutionProvider" in available:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
@@ -217,21 +229,91 @@ def build_session_options(profile: Any):
     session_options = ort.SessionOptions()
     intra_threads = int(profile.execution.get("intra_op_threads", 0) or 0)
     inter_threads = int(profile.execution.get("inter_op_threads", 0) or 0)
+    optimization_level = str(profile.execution.get("graph_optimization_level", "") or "").strip().lower()
     if intra_threads > 0:
         session_options.intra_op_num_threads = intra_threads
     if inter_threads > 0:
         session_options.inter_op_num_threads = inter_threads
+    if optimization_level:
+        optimization_map = {
+            "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
+            "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+            "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+            "layout": ort.GraphOptimizationLevel.ORT_ENABLE_LAYOUT,
+            "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+        }
+        resolved_level = optimization_map.get(optimization_level)
+        if resolved_level is not None:
+            session_options.graph_optimization_level = resolved_level
+    if bool(profile.execution.get("enable_profiling")):
+        session_options.enable_profiling = True
+        profile_prefix = str(profile.execution.get("profile_file_prefix", "") or "").strip()
+        if profile_prefix:
+            session_options.profile_file_prefix = profile_prefix
+    session_config_entries = profile.execution.get("session_config_entries") or {}
+    if isinstance(session_config_entries, dict):
+        for key, value in session_config_entries.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            session_options.add_session_config_entry(key_text, str(value))
     return session_options
 
 
 def create_inference_session(model_path: str, providers: list[str], profile: Any):
     import onnxruntime as ort  # type: ignore
 
+    provider_options = _build_provider_options(providers, profile)
     return ort.InferenceSession(
         model_path,
         sess_options=build_session_options(profile),
         providers=providers,
+        provider_options=provider_options if provider_options else None,
     )
+
+
+def _resolve_profile_device(profile_or_device: Any) -> str:
+    if hasattr(profile_or_device, "device"):
+        return str(getattr(profile_or_device, "device", "cpu") or "cpu")
+    return str(profile_or_device or "cpu")
+
+
+def _resolve_provider_preference(profile_or_device: Any) -> str:
+    if not hasattr(profile_or_device, "execution"):
+        device = _resolve_profile_device(profile_or_device)
+        return "cuda" if device.lower().startswith("cuda") else "cpu"
+    execution = getattr(profile_or_device, "execution", {}) or {}
+    preferred = str(execution.get("provider_preference", "") or "").strip().lower()
+    if preferred in {"tensorrt", "cuda", "cpu"}:
+        return preferred
+    device = _resolve_profile_device(profile_or_device)
+    return "cuda" if device.lower().startswith("cuda") else "cpu"
+
+
+def _build_provider_options(providers: list[str], profile: Any) -> list[dict[str, str]]:
+    execution = getattr(profile, "execution", {}) or {}
+    provider_options: list[dict[str, str]] = []
+    trt_cache_dir = str(execution.get("trt_engine_cache_path", "") or "").strip()
+    for provider_name in providers:
+        options: dict[str, str] = {}
+        if provider_name == "TensorrtExecutionProvider":
+            if execution.get("trt_fp16_enable") is not None:
+                options["trt_fp16_enable"] = _bool_to_provider_flag(execution.get("trt_fp16_enable"))
+            if execution.get("trt_engine_cache_enable") is not None:
+                options["trt_engine_cache_enable"] = _bool_to_provider_flag(execution.get("trt_engine_cache_enable"))
+            if trt_cache_dir:
+                Path(trt_cache_dir).mkdir(parents=True, exist_ok=True)
+                options["trt_engine_cache_path"] = trt_cache_dir
+            if execution.get("trt_builder_optimization_level") is not None:
+                options["trt_builder_optimization_level"] = str(execution.get("trt_builder_optimization_level"))
+            if execution.get("trt_timing_cache_enable") is not None:
+                options["trt_timing_cache_enable"] = _bool_to_provider_flag(execution.get("trt_timing_cache_enable"))
+        provider_options.append(options)
+    return provider_options
+
+
+def _bool_to_provider_flag(value: Any) -> str:
+    return "1" if bool(value) else "0"
 
 
 def load_vocab(vocab_path: str) -> dict[str, int]:

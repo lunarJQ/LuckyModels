@@ -52,6 +52,7 @@ const initialData = {
   accessOverview: null,
   importOptions: null,
   optimizationOptions: null,
+  runtimeCapabilities: null,
   datasetCatalog: null,
   taskRoutingFeedbackOverview: null,
 };
@@ -172,6 +173,7 @@ function buildInitialDeploymentForm(models, details) {
     profileName: profiles.includes("default") ? "default" : profiles[0] || "",
     useGpu: true,
     gpuIdsText: "",
+    providerPreference: "cpu",
     notes: "",
     launchRuntime: true,
   };
@@ -248,6 +250,47 @@ function getOptimizationSummaryForModel(modelId, details) {
     sourceModelId: String(metadata.source_model_id || "").trim(),
     isGenerated: String(metadata.origin || "").trim() === "generated",
   };
+}
+
+function getRuntimeProviderCapability(runtimeCapabilities, providerName) {
+  return (runtimeCapabilities?.providers || []).find((item) => item.provider === providerName) || null;
+}
+
+function isRuntimeProviderUsable(runtimeCapabilities, providerName) {
+  return Boolean(getRuntimeProviderCapability(runtimeCapabilities, providerName)?.runtime_usable);
+}
+
+function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType = "") {
+  if (!useGpu || optimizationType === "int8_dynamic") {
+    return [{ value: "cpu", label: "CPUExecutionProvider", note: "当前部署按 CPU 路径运行。" }];
+  }
+  const options = [];
+  if (isRuntimeProviderUsable(runtimeCapabilities, "TensorrtExecutionProvider")) {
+    options.push({
+      value: "tensorrt",
+      label: "TensorRT Execution Provider",
+      note: "优先使用 TensorRT，失败时由 ONNX Runtime 自动回退。",
+    });
+  }
+  if (isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider")) {
+    options.push({
+      value: "cuda",
+      label: "CUDA Execution Provider",
+      note: "使用 ONNX Runtime 的 CUDA EP 运行 GPU 推理。",
+    });
+  }
+  return options;
+}
+
+function resolveDeploymentProviderPreference(currentPreference, runtimeCapabilities, useGpu, optimizationType = "") {
+  const options = getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType);
+  if (!options.length) {
+    return "cpu";
+  }
+  if (options.some((item) => item.value === currentPreference)) {
+    return currentPreference;
+  }
+  return options[0].value;
 }
 
 function getSuggestedDeploymentPreset(modelId, details, recommendation = null) {
@@ -1198,36 +1241,90 @@ export default function App() {
   useEffect(() => {
     if (!data.models.length) return;
     setDeploymentForm((current) => {
+      const fallback = (modelId, profileName, useGpu, providerPreference) => ({
+        ...current,
+        modelId,
+        profileName,
+        useGpu,
+        providerPreference,
+      });
       if (current.modelId && data.models.some((item) => item.model_id === current.modelId)) {
         const profiles = Object.keys(data.modelDetails[current.modelId]?.resolved_profiles || {});
+        const optimization = getOptimizationSummaryForModel(current.modelId, data.modelDetails);
+        const allowGpu = optimization.optimizationType !== "int8_dynamic"
+          && getDeploymentBackendOptions(data.runtimeCapabilities, true, optimization.optimizationType).length > 0;
+        const nextUseGpu = current.useGpu && allowGpu;
+        const nextProviderPreference = resolveDeploymentProviderPreference(
+          current.providerPreference,
+          data.runtimeCapabilities,
+          nextUseGpu,
+          optimization.optimizationType,
+        );
         if (profiles.includes(current.profileName)) {
-          return current;
+          if (nextUseGpu === current.useGpu && nextProviderPreference === current.providerPreference) {
+            return current;
+          }
+          return {
+            ...current,
+            useGpu: nextUseGpu,
+            providerPreference: nextProviderPreference,
+            gpuIdsText: nextUseGpu ? current.gpuIdsText : "",
+          };
         }
-        return {
-          ...current,
-          profileName: profiles.includes("default") ? "default" : profiles[0] || "",
-        };
+        return fallback(
+          current.modelId,
+          profiles.includes("default") ? "default" : profiles[0] || "",
+          nextUseGpu,
+          nextProviderPreference,
+        );
       }
-      return buildInitialDeploymentForm(data.models, data.modelDetails);
+      const initial = buildInitialDeploymentForm(data.models, data.modelDetails);
+      const initialOptimization = getOptimizationSummaryForModel(initial.modelId, data.modelDetails);
+      const initialUseGpu = initialOptimization.optimizationType !== "int8_dynamic"
+        && getDeploymentBackendOptions(data.runtimeCapabilities, true, initialOptimization.optimizationType).length > 0;
+      return {
+        ...initial,
+        useGpu: initialUseGpu,
+        providerPreference: resolveDeploymentProviderPreference(
+          initial.providerPreference,
+          data.runtimeCapabilities,
+          initialUseGpu,
+          initialOptimization.optimizationType,
+        ),
+      };
     });
-  }, [data.models, data.modelDetails]);
+  }, [data.models, data.modelDetails, data.runtimeCapabilities]);
 
   useEffect(() => {
     if (!deploymentForm.modelId) {
       return;
     }
     const optimization = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
-    if (!optimization.optimizationType) {
-      return;
-    }
-    if (optimization.optimizationType === "int8_dynamic" && deploymentForm.useGpu) {
+    const availableGpuBackends = getDeploymentBackendOptions(data.runtimeCapabilities, true, optimization.optimizationType);
+    const shouldUseGpu = optimization.optimizationType !== "int8_dynamic" && availableGpuBackends.length > 0 && deploymentForm.useGpu;
+    const nextProviderPreference = resolveDeploymentProviderPreference(
+      deploymentForm.providerPreference,
+      data.runtimeCapabilities,
+      shouldUseGpu,
+      optimization.optimizationType,
+    );
+    if (
+      shouldUseGpu !== deploymentForm.useGpu
+      || nextProviderPreference !== deploymentForm.providerPreference
+      || (!shouldUseGpu && deploymentForm.gpuIdsText)
+    ) {
       setDeploymentForm((current) => (
         current.modelId === deploymentForm.modelId
-          ? { ...current, useGpu: false, gpuIdsText: "" }
+          ? {
+            ...current,
+            useGpu: shouldUseGpu,
+            providerPreference: nextProviderPreference,
+            gpuIdsText: shouldUseGpu ? current.gpuIdsText : "",
+          }
           : current
       ));
     }
-  }, [data.modelDetails, deploymentForm.modelId, deploymentForm.useGpu]);
+  }, [data.modelDetails, data.runtimeCapabilities, deploymentForm.modelId, deploymentForm.providerPreference, deploymentForm.useGpu, deploymentForm.gpuIdsText]);
 
   useEffect(() => {
     if (!data.importOptions?.families?.length) {
@@ -1496,6 +1593,12 @@ export default function App() {
       launch_runtime: payloadOverride?.launch_runtime ?? deploymentForm.launchRuntime,
       use_gpu: resolvedUseGpu,
       gpu_ids: resolvedUseGpu ? gpuIds : [],
+      provider_preference: resolveDeploymentProviderPreference(
+        payloadOverride?.provider_preference || deploymentForm.providerPreference,
+        data.runtimeCapabilities,
+        resolvedUseGpu,
+        getOptimizationSummaryForModel(requestedModelId, data.modelDetails).optimizationType,
+      ),
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
     await runAction("create-deployment", () => createDeployment(payload), `部署已创建：${payload.model_id}`);
@@ -2711,6 +2814,7 @@ function Shell(props) {
               "/deployments",
               <DeploymentsPage
                 actionBusy={actionBusy}
+                data={data}
                 deploymentForm={deploymentForm}
                 derived={derived}
                 onCreateDeployment={onCreateDeployment}
@@ -7013,10 +7117,18 @@ function ModelsPage({
   const canManageModels = derived.currentAccessUser?.is_admin;
   const familyOptions = data.importOptions?.families || [];
   const optimizationOptions = data.optimizationOptions?.options || [];
+  const runtimeCapabilities = data.runtimeCapabilities;
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
   const selectedOptimizationOption =
     optimizationOptions.find((item) => item.code === modelOptimizationForm.optimizationType) || optimizationOptions[0];
   const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
+  const deploymentBackendOptions = getDeploymentBackendOptions(
+    runtimeCapabilities,
+    deploymentForm.useGpu,
+    selectedDeploymentModelSummary.optimizationType,
+  );
+  const selectedDeploymentBackend =
+    deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
   const recommendationByModelId = useMemo(
     () => new Map((deploymentPolicy?.recommendations || []).map((item) => [item.model_id, item])),
     [deploymentPolicy],
@@ -7232,9 +7344,68 @@ function ModelsPage({
           note="基于平台内已有 ONNX 制品直接生成优化版本。生成后的制品会作为新的正式模型接入平台，可继续部署、基准测试和删除。"
         />
         <div className="banner banner-muted">
-          这块解决的是运行时工具链优化，不是调度策略。当前支持 ORT 图优化、FP16 精度优化和 INT8 动态量化。
+          这块解决的是运行时工具链优化，不是调度策略。当前支持 ORT 图优化、ORT Format、FP16 精度优化和 INT8 动态量化。
           其中 INT8 动态量化会默认改写为更适合 CPU 的 profile，避免直接按 GPU 方式启动带来不稳定行为。
         </div>
+        {runtimeCapabilities ? (
+          <div className="stack-block">
+            <div className="section-intro">
+              <strong>当前运行时能力看什么</strong>
+              <div className="detail-note">
+                这里展示服务器上的 onnxruntime 实际可用能力，不是纸面支持。只有这里显示“可正常初始化”的 provider，后续才适合做正式部署入口。
+              </div>
+            </div>
+            <div className="metrics">
+              <MetricCard
+                title="ONNX Runtime"
+                value={runtimeCapabilities.onnxruntime_version || (runtimeCapabilities.onnxruntime_installed ? "已安装" : "未安装")}
+                note={runtimeCapabilities.onnxruntime_installed ? "当前平台实际运行版本" : runtimeCapabilities.detail || "当前环境未安装"}
+              />
+              <MetricCard
+                title="ORT Format 导出"
+                value={formatBooleanLabel(runtimeCapabilities.features?.ort_format_export)}
+                note="支持把 ONNX 制品转成 .ort 格式"
+              />
+              <MetricCard
+                title="Session 配置注入"
+                value={formatBooleanLabel(runtimeCapabilities.features?.session_config_entries)}
+                note="支持图优化等级、profiling 和 session config entries"
+              />
+              <MetricCard
+                title="探测样本"
+                value={runtimeCapabilities.probe_model_path ? "已找到" : "缺失"}
+                note={runtimeCapabilities.probe_model_path || "当前没有可用于运行时能力探测的 ONNX 模型"}
+              />
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>wheel 内置</th>
+                    <th>当前环境可用</th>
+                    <th>实际激活结果</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(runtimeCapabilities.providers || []).map((item) => (
+                    <tr key={`runtime-capability-${item.provider}`}>
+                      <td><strong>{item.provider}</strong></td>
+                      <td>{formatBooleanLabel(item.available_in_wheel)}</td>
+                      <td>{formatBooleanLabel(item.runtime_usable)}</td>
+                      <td>{Array.isArray(item.active_providers) && item.active_providers.length ? item.active_providers.join(", ") : "-"}</td>
+                      <td>{item.detail || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="detail-note">
+              当前平台已经实际接入的工具链优化优先级建议：先用 ORT 图优化、ORT Format 和 FP16；如果后续服务器补齐 TensorRT / CUDA 依赖，再把 TensorRT provider 作为 GPU 专项优化入口打开。
+            </div>
+          </div>
+        ) : null}
         <div className="form-grid">
           <label className="stack-field">
             <span>源模型</span>
@@ -7326,6 +7497,28 @@ function ModelsPage({
             </select>
           </label>
           <label className="stack-field">
+            <span>执行后端</span>
+            <select
+              disabled={!deploymentBackendOptions.length}
+              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, providerPreference: event.target.value }))}
+              value={resolveDeploymentProviderPreference(
+                deploymentForm.providerPreference,
+                runtimeCapabilities,
+                deploymentForm.useGpu,
+                selectedDeploymentModelSummary.optimizationType,
+              )}
+            >
+              {deploymentBackendOptions.map((item) => (
+                <option key={`model-page-backend-${item.value}`} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">
+              {selectedDeploymentBackend?.note || "当前环境没有可用的 GPU 执行后端，平台已自动改为 CPU。"}
+            </small>
+          </label>
+          <label className="stack-field">
             <span>GPU 卡号</span>
             <input
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, gpuIdsText: event.target.value }))}
@@ -7346,11 +7539,20 @@ function ModelsPage({
           <label className="stack-check">
             <input
               checked={deploymentForm.useGpu}
-              disabled={selectedDeploymentModelSummary.optimizationType === "int8_dynamic"}
+              disabled={
+                selectedDeploymentModelSummary.optimizationType === "int8_dynamic"
+                || !getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length
+              }
               onChange={(event) =>
                 onDeploymentFormChange((current) => ({
                   ...current,
                   useGpu: event.target.checked,
+                  providerPreference: resolveDeploymentProviderPreference(
+                    current.providerPreference,
+                    runtimeCapabilities,
+                    event.target.checked,
+                    selectedDeploymentModelSummary.optimizationType,
+                  ),
                   gpuIdsText: event.target.checked ? current.gpuIdsText : "",
                 }))
               }
@@ -7359,6 +7561,8 @@ function ModelsPage({
             使用 GPU
             {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
               <small className="detail-note">INT8 动态量化版本当前默认固定为 CPU 部署。</small>
+            ) : !getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
+              <small className="detail-note">当前服务器环境未通过 CUDA / TensorRT 运行时探测，平台已禁用 GPU 部署入口。</small>
             ) : null}
           </label>
           <label className="stack-check">
@@ -7790,6 +7994,7 @@ function ArtifactsPage({ actionBusy, currentUser, data, onDeleteModelPackage, on
 
 function DeploymentsPage({
   actionBusy,
+  data,
   deploymentForm,
   derived,
   onCreateDeployment,
@@ -7808,6 +8013,13 @@ function DeploymentsPage({
   const canManageDeployments = currentPermissions.includes("deployments.manage");
   const canViewResources = currentPermissions.includes("resources.view");
   const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, derived.modelDetails);
+  const deploymentBackendOptions = getDeploymentBackendOptions(
+    data.runtimeCapabilities,
+    deploymentForm.useGpu,
+    selectedDeploymentModelSummary.optimizationType,
+  );
+  const selectedDeploymentBackend =
+    deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
 
   const filteredDeployments = useMemo(() => {
     let next = sortByCreatedDesc(derived.deployments).filter((item) =>
@@ -7898,6 +8110,28 @@ function DeploymentsPage({
             </select>
           </label>
           <label className="stack-field">
+            <span>执行后端</span>
+            <select
+              disabled={!deploymentBackendOptions.length}
+              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, providerPreference: event.target.value }))}
+              value={resolveDeploymentProviderPreference(
+                deploymentForm.providerPreference,
+                data.runtimeCapabilities,
+                deploymentForm.useGpu,
+                selectedDeploymentModelSummary.optimizationType,
+              )}
+            >
+              {deploymentBackendOptions.map((item) => (
+                <option key={`deploy-backend-${item.value}`} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">
+              {selectedDeploymentBackend?.note || "当前环境没有可用的 GPU 执行后端，平台已自动改为 CPU。"}
+            </small>
+          </label>
+          <label className="stack-field">
             <span>GPU 卡号</span>
             <input
               onChange={(event) => onDeploymentFormChange((current) => ({ ...current, gpuIdsText: event.target.value }))}
@@ -7918,11 +8152,20 @@ function DeploymentsPage({
 	          <label className="stack-check">
 	            <input
 	              checked={deploymentForm.useGpu}
-                disabled={selectedDeploymentModelSummary.optimizationType === "int8_dynamic"}
+                disabled={
+                  selectedDeploymentModelSummary.optimizationType === "int8_dynamic"
+                  || !getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length
+                }
 	              onChange={(event) =>
 	                onDeploymentFormChange((current) => ({
 	                  ...current,
                   useGpu: event.target.checked,
+                  providerPreference: resolveDeploymentProviderPreference(
+                    current.providerPreference,
+                    data.runtimeCapabilities,
+                    event.target.checked,
+                    selectedDeploymentModelSummary.optimizationType,
+                  ),
                   gpuIdsText: event.target.checked ? current.gpuIdsText : "",
                 }))
               }
@@ -7931,6 +8174,8 @@ function DeploymentsPage({
 	            使用 GPU
               {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
                 <small className="detail-note">INT8 动态量化版本默认固定为 CPU 部署。</small>
+              ) : !getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
+                <small className="detail-note">当前服务器环境未通过 CUDA / TensorRT 运行时探测，平台已禁用 GPU 部署入口。</small>
               ) : null}
 	          </label>
           <label className="stack-check">

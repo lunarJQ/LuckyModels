@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from luckymodels_core.runtime_capabilities import inspect_runtime_capabilities
 from luckymodels_core.schemas import GpuPoolState, SystemSummary
 from luckymodels_core.settings import get_settings
 
@@ -48,6 +49,12 @@ def get_system_summary() -> SystemSummary:
 def get_gpu_status() -> dict[str, Any]:
     require_permission("resources.view")
     return collect_gpu_status()
+
+
+@router.get("/system/runtime-capabilities")
+def get_runtime_capabilities() -> dict[str, Any]:
+    require_permission("models.view")
+    return inspect_runtime_capabilities(get_settings())
 
 
 def collect_gpu_status() -> dict[str, Any]:

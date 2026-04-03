@@ -18,6 +18,7 @@ from luckymodels_core.model_optimizer import (
     list_supported_optimization_types,
     optimize_model_package,
 )
+from luckymodels_core.runtime_capabilities import inspect_runtime_capabilities
 from luckymodels_core.model_package_manager import (
     export_model_package,
     get_model_import_options,
@@ -64,7 +65,13 @@ def get_supported_model_import_options() -> ModelImportOptions:
 @router.get("/models/optimization-options", response_model=ModelOptimizationOptions)
 def get_supported_model_optimization_options() -> ModelOptimizationOptions:
     require_admin()
-    return ModelOptimizationOptions(options=list_supported_optimization_types())
+    runtime_capabilities = inspect_runtime_capabilities(get_settings())
+    options = [
+        item
+        for item in list_supported_optimization_types()
+        if item["code"] != "ort_format" or runtime_capabilities.get("features", {}).get("ort_format_export")
+    ]
+    return ModelOptimizationOptions(options=options)
 
 
 @router.get("/datasets/catalog")
@@ -184,6 +191,11 @@ def optimize_model(model_id: str, payload: ModelOptimizeRequest) -> ModelOptimiz
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     try:
+        if (
+            payload.optimization_type == "ort_format"
+            and not inspect_runtime_capabilities(get_settings()).get("features", {}).get("ort_format_export")
+        ):
+            raise HTTPException(status_code=400, detail="当前运行环境不支持 ORT Format 导出，平台已禁用该优化选项。")
         return optimize_model_package(
             settings=get_settings(),
             model=model,

@@ -22,6 +22,7 @@ PROFILE_PATH = os.getenv("LUCKYMODELS_PROFILE_PATH")
 GPU_IDS_ENV = os.getenv("LUCKYMODELS_GPU_IDS", "")
 CUDA_VISIBLE_DEVICES = os.getenv("CUDA_VISIBLE_DEVICES", "")
 FORCE_CPU = os.getenv("LUCKYMODELS_FORCE_CPU", "").strip() == "1"
+PROVIDER_PREFERENCE_ENV = os.getenv("LUCKYMODELS_PROVIDER_PREFERENCE", "").strip().lower()
 
 app = FastAPI(
     title="LuckyModels Runtime",
@@ -39,12 +40,15 @@ if MANIFEST_PATH and PROFILE_PATH:
         if FORCE_CPU:
             loaded_profile.device = "cpu"
             loaded_profile.gpu_ids = []
+            loaded_profile.execution["provider_preference"] = "cpu"
         if GPU_IDS_ENV.strip():
             loaded_profile.gpu_ids = [
                 int(value.strip())
                 for value in GPU_IDS_ENV.split(",")
                 if value.strip()
             ]
+        if PROVIDER_PREFERENCE_ENV:
+            loaded_profile.execution["provider_preference"] = PROVIDER_PREFERENCE_ENV
         adapter_cls = build_adapter(loaded_manifest.manifest.runtime_adapter)
         adapter = adapter_cls(loaded_manifest, loaded_profile)
         adapter.load()
@@ -69,6 +73,7 @@ def healthz() -> dict[str, Any]:
     ]
     payload["cuda_visible_devices"] = CUDA_VISIBLE_DEVICES
     payload["use_gpu"] = not FORCE_CPU
+    payload["provider_preference"] = PROVIDER_PREFERENCE_ENV or payload.get("execution", {}).get("provider_preference")
     return payload
 
 
@@ -84,6 +89,7 @@ def metadata() -> dict[str, Any]:
     ]
     payload["cuda_visible_devices"] = CUDA_VISIBLE_DEVICES
     payload["use_gpu"] = not FORCE_CPU
+    payload["provider_preference"] = PROVIDER_PREFERENCE_ENV or payload.get("profile", {}).get("execution", {}).get("provider_preference")
     return payload
 
 

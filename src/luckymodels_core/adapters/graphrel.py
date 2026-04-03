@@ -56,12 +56,13 @@ class GraphRelAdapter(BaseAdapter):
         self.spacy_model_name = str(self.spacy_meta.get("spacy_model", "en_core_web_lg"))
 
         self.nlp, self.spacy_source = self._load_spacy_pipeline(spacy)
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.session = create_inference_session(
             self.manifest.resolved_artifacts["model"],
             self.providers,
             self.profile,
         )
+        self.providers = list(self.session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

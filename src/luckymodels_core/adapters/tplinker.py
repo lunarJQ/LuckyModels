@@ -42,12 +42,13 @@ class TPLinkerAdapter(BaseAdapter):
             self.manifest.resolved_tokenizer.get("tokenizer_path"),
             self.manifest.manifest.backbone,
         )
-        self.providers = provider_list(self.profile.device)
+        self.providers = provider_list(self.profile)
         self.session = create_inference_session(
             self.manifest.resolved_artifacts["model"],
             self.providers,
             self.profile,
         )
+        self.providers = list(self.session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
 

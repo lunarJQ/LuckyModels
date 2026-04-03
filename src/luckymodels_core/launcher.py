@@ -18,6 +18,7 @@ def launch_runtime_process(
     log_path: str | None = None,
     gpu_ids: list[int] | None = None,
     use_gpu: bool = True,
+    provider_preference: str | None = None,
 ) -> tuple[int, str]:
     env = os.environ.copy()
     env["LUCKYMODELS_MANIFEST_PATH"] = manifest_path
@@ -38,11 +39,14 @@ def launch_runtime_process(
     env.pop("CUDA_VISIBLE_DEVICES", None)
     env.pop("LUCKYMODELS_GPU_IDS", None)
     env.pop("LUCKYMODELS_FORCE_CPU", None)
+    env.pop("LUCKYMODELS_PROVIDER_PREFERENCE", None)
     if use_gpu and selected_gpu_ids:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(value) for value in selected_gpu_ids)
         env["LUCKYMODELS_GPU_IDS"] = ",".join(str(value) for value in selected_gpu_ids)
     if not use_gpu:
         env["LUCKYMODELS_FORCE_CPU"] = "1"
+    if provider_preference:
+        env["LUCKYMODELS_PROVIDER_PREFERENCE"] = str(provider_preference)
 
     cmd = [
         str(root_dir / ".venv" / "bin" / "python"),
@@ -69,6 +73,7 @@ def launch_runtime_process(
             f"with workers={worker_count} "
             f"use_gpu={use_gpu} "
             f"gpu_ids={selected_gpu_ids or ['auto']}\n"
+            f"provider_preference={provider_preference or 'profile-default'}\n"
         )
         log_handle.flush()
         stdout_target = log_handle
