@@ -749,7 +749,7 @@ def read_package_metadata(package_root: str | Path) -> dict[str, Any]:
         **payload,
         "origin": origin,
         "origin_label": _origin_label(origin),
-        "deletable": bool(payload.get("deletable")) if origin == "user_upload" else False,
+        "deletable": bool(payload.get("deletable")) if origin in {"user_upload", "generated"} else False,
     }
     return normalized
 
@@ -760,21 +760,29 @@ def _write_package_metadata(
     origin: str,
     import_mode: str,
     archive_filename: str,
+    extra_payload: dict[str, Any] | None = None,
 ) -> None:
     normalized_origin = str(origin or "builtin").strip().lower() or "builtin"
     payload = {
         "origin": normalized_origin,
         "origin_label": _origin_label(normalized_origin),
-        "deletable": normalized_origin == "user_upload",
+        "deletable": normalized_origin in {"user_upload", "generated"},
         "import_mode": import_mode,
         "archive_filename": archive_filename,
     }
+    if extra_payload:
+        payload.update(extra_payload)
     metadata_path = target_root / PACKAGE_METADATA_FILENAME
     metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _origin_label(origin: str) -> str:
-    return "用户上传" if str(origin or "").strip().lower() == "user_upload" else "本机自带"
+    normalized = str(origin or "").strip().lower()
+    if normalized == "user_upload":
+        return "用户上传"
+    if normalized == "generated":
+        return "平台生成"
+    return "本机自带"
 
 
 def _build_profile_mapping(profiles_dir: Path) -> dict[str, str]:

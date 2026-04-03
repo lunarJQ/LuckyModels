@@ -21,6 +21,7 @@ import {
   loginWithPassword,
   loadDashboardData,
   logoutSession,
+  optimizeModelPackage,
   predictWithDeployment,
   resetAccessUserPassword,
   restartDeployment,
@@ -50,6 +51,7 @@ const initialData = {
   gpuStatus: null,
   accessOverview: null,
   importOptions: null,
+  optimizationOptions: null,
   datasetCatalog: null,
   taskRoutingFeedbackOverview: null,
 };
@@ -184,6 +186,16 @@ function buildInitialModelImportForm(importOptions) {
   };
 }
 
+function buildInitialModelOptimizationForm(models, optimizationOptions) {
+  const preferred = models.find((model) => model.predict_ready) || models[0];
+  const optionList = optimizationOptions?.options || [];
+  return {
+    modelId: preferred?.model_id || "",
+    optimizationType: optionList[0]?.code || "ort_graph",
+    alias: "",
+  };
+}
+
 function formatBytes(value) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) {
@@ -220,6 +232,37 @@ function resolveProfileName(modelId, details, preferredProfileName = "") {
     return "default";
   }
   return profiles[0];
+}
+
+function getOptimizationSummaryForModel(modelId, details) {
+  const metadata = details?.[modelId]?.package_metadata || {};
+  return {
+    optimizationType: String(metadata.optimization_type || "").trim(),
+    optimizationLabel: String(metadata.optimization_label || "").trim(),
+    sourceModelId: String(metadata.source_model_id || "").trim(),
+    isGenerated: String(metadata.origin || "").trim() === "generated",
+  };
+}
+
+function getSuggestedDeploymentPreset(modelId, details, recommendation = null) {
+  const optimization = getOptimizationSummaryForModel(modelId, details);
+  if (optimization.optimizationType === "int8_dynamic") {
+    return {
+      useGpu: false,
+      gpuIds: [],
+      deviceLabel: "CPU",
+      reason: "INT8 动态量化版本当前默认按 CPU 路径部署，更符合当前 ORT 配置。",
+    };
+  }
+  const useGpu = recommendation?.recommended_use_gpu ?? true;
+  return {
+    useGpu,
+    gpuIds: useGpu ? (recommendation?.recommended_gpu_ids || []) : [],
+    deviceLabel: recommendation?.recommended_device_label || (useGpu ? "GPU" : "CPU"),
+    reason: optimization.optimizationLabel
+      ? `当前模型为${optimization.optimizationLabel}版本，可继续按推荐设备部署。`
+      : "当前模型按部署策略推荐设备创建。",
+  };
 }
 
 function normalizeKeyword(value) {
@@ -451,6 +494,17 @@ function formatSignedNumber(value, digits = 4) {
     return `+${number.toFixed(digits)}`;
   }
   return number.toFixed(digits);
+}
+
+function formatSignedPercentDelta(value, digits = 1) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "-";
+  }
+  if (number > 0) {
+    return `+${number.toFixed(digits)}%`;
+  }
+  return `${number.toFixed(digits)}%`;
 }
 
 const executionPathLabels = {
@@ -1071,6 +1125,7 @@ export default function App() {
   const [notice, setNotice] = useState({ type: "ok", text: "" });
   const [actionBusy, setActionBusy] = useState({});
   const [modelImportForm, setModelImportForm] = useState(buildInitialModelImportForm(null));
+  const [modelOptimizationForm, setModelOptimizationForm] = useState(buildInitialModelOptimizationForm([], null));
   const [modelTransferItems, setModelTransferItems] = useState([]);
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
@@ -1128,6 +1183,23 @@ export default function App() {
   }, [data.models, data.modelDetails]);
 
   useEffect(() => {
+    if (!deploymentForm.modelId) {
+      return;
+    }
+    const optimization = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
+    if (!optimization.optimizationType) {
+      return;
+    }
+    if (optimization.optimizationType === "int8_dynamic" && deploymentForm.useGpu) {
+      setDeploymentForm((current) => (
+        current.modelId === deploymentForm.modelId
+          ? { ...current, useGpu: false, gpuIdsText: "" }
+          : current
+      ));
+    }
+  }, [data.modelDetails, deploymentForm.modelId, deploymentForm.useGpu]);
+
+  useEffect(() => {
     if (!data.importOptions?.families?.length) {
       return;
     }
@@ -1141,6 +1213,28 @@ export default function App() {
       };
     });
   }, [data.importOptions]);
+
+  useEffect(() => {
+    if (!data.models.length || !data.optimizationOptions?.options?.length) {
+      return;
+    }
+    setModelOptimizationForm((current) => {
+      const safeModelId =
+        current.modelId && data.models.some((item) => item.model_id === current.modelId)
+          ? current.modelId
+          : (data.models.find((item) => item.predict_ready) || data.models[0])?.model_id || "";
+      const safeOptimizationType =
+        current.optimizationType &&
+        data.optimizationOptions.options.some((item) => item.code === current.optimizationType)
+          ? current.optimizationType
+          : (data.optimizationOptions.options[0]?.code || "ort_graph");
+      return {
+        ...current,
+        modelId: safeModelId,
+        optimizationType: safeOptimizationType,
+      };
+    });
+  }, [data.models, data.optimizationOptions]);
 
   useEffect(() => {
     setBenchmarkForm((current) => {
@@ -1356,6 +1450,11 @@ export default function App() {
     }
 
     const requestedModelId = payloadOverride?.model_id || deploymentForm.modelId;
+    const resolvedUseGpu = payloadOverride?.use_gpu ?? (
+      getOptimizationSummaryForModel(requestedModelId, data.modelDetails).optimizationType === "int8_dynamic"
+        ? false
+        : deploymentForm.useGpu
+    );
     const payload = {
       ...payloadOverride,
       model_id: requestedModelId,
@@ -1365,8 +1464,8 @@ export default function App() {
         payloadOverride?.profile_name || deploymentForm.profileName,
       ),
       launch_runtime: payloadOverride?.launch_runtime ?? deploymentForm.launchRuntime,
-      use_gpu: useGpu,
-      gpu_ids: gpuIds,
+      use_gpu: resolvedUseGpu,
+      gpu_ids: resolvedUseGpu ? gpuIds : [],
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
     await runAction("create-deployment", () => createDeployment(payload), `部署已创建：${payload.model_id}`);
@@ -1448,6 +1547,66 @@ export default function App() {
       });
       scheduleModelTransferCleanup(task.taskId);
       setNotice({ type: "error", text: message });
+    }
+  }
+
+  async function handleOptimizeModel() {
+    if (!modelOptimizationForm.modelId) {
+      setNotice({ type: "error", text: "请先选择一个待优化模型。" });
+      return;
+    }
+    if (!modelOptimizationForm.optimizationType) {
+      setNotice({ type: "error", text: "请先选择一个优化方式。" });
+      return;
+    }
+    const selectedModel = data.models.find((item) => item.model_id === modelOptimizationForm.modelId);
+    const task = buildModelTransferTask({
+      taskId: `optimize-${modelOptimizationForm.modelId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      direction: "optimize",
+      phase: "running",
+      percent: null,
+      loadedBytes: 0,
+      totalBytes: null,
+      fileName: selectedModel?.model_name || modelOptimizationForm.modelId,
+      modelId: modelOptimizationForm.modelId,
+      detail: "平台正在生成优化制品，请稍候。",
+    });
+    addModelTransferTask(task);
+    setActionBusy((current) => ({ ...current, "optimize-model": true }));
+    setNotice({ type: "ok", text: "" });
+    try {
+      const result = await optimizeModelPackage(modelOptimizationForm.modelId, {
+        optimization_type: modelOptimizationForm.optimizationType,
+        alias: modelOptimizationForm.alias.trim() || undefined,
+      });
+      await refreshAll({ silent: true });
+      setModelOptimizationForm((current) => ({
+        ...current,
+        alias: "",
+      }));
+      updateModelTransferTask(task.taskId, {
+        direction: "optimize",
+        phase: "completed",
+        percent: 100,
+        modelId: result.model_id,
+        detail: `优化制品已生成：${result.model_id}`,
+      });
+      scheduleModelTransferCleanup(task.taskId);
+      setNotice({
+        type: "ok",
+        text: `优化制品已生成：${result.model_id}（${result.optimization_label}）。现在它已经作为正式模型接入平台，可继续部署和基准测试。`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateModelTransferTask(task.taskId, {
+        direction: "optimize",
+        phase: "failed",
+        detail: message,
+      });
+      scheduleModelTransferCleanup(task.taskId);
+      setNotice({ type: "error", text: message });
+    } finally {
+      setActionBusy((current) => ({ ...current, "optimize-model": false }));
     }
   }
 
@@ -2036,9 +2195,12 @@ export default function App() {
       predictSampleInfo={predictSampleInfo}
       predictResult={predictResult}
       modelImportForm={modelImportForm}
+      modelOptimizationForm={modelOptimizationForm}
       modelTransferItems={modelTransferItems}
       onDismissModelTransfer={removeModelTransferTask}
       onModelImportFormChange={setModelImportForm}
+      onModelOptimizationFormChange={setModelOptimizationForm}
+      onOptimizeModel={handleOptimizeModel}
       deploymentPolicy={deploymentPolicy}
       deploymentPolicyAutomation={deploymentPolicyAutomation}
       deploymentPolicyAutomationForm={deploymentPolicyAutomationForm}
@@ -2240,9 +2402,12 @@ function Shell(props) {
     predictSampleInfo,
     predictResult,
     modelImportForm,
+    modelOptimizationForm,
     modelTransferItems,
     onDismissModelTransfer,
     onModelImportFormChange,
+    onModelOptimizationFormChange,
+    onOptimizeModel,
     deploymentPolicy,
     deploymentPolicyAutomation,
     deploymentPolicyAutomationForm,
@@ -2489,12 +2654,15 @@ function Shell(props) {
                 onCreateDeployment={onCreateDeployment}
                 onDeploymentFormChange={onDeploymentFormChange}
                 modelImportForm={modelImportForm}
+                modelOptimizationForm={modelOptimizationForm}
                 modelTransferItems={modelTransferItems}
                 onDismissModelTransfer={onDismissModelTransfer}
                 onDeleteModelPackage={onDeleteModelPackage}
                 onExportModelPackage={onExportModelPackage}
                 onImportModel={onImportModel}
                 onModelImportFormChange={onModelImportFormChange}
+                onModelOptimizationFormChange={onModelOptimizationFormChange}
+                onOptimizeModel={onOptimizeModel}
               />,
             )}
             {renderGuardedRoute(
@@ -6791,6 +6959,7 @@ function ModelsPage({
   deploymentPolicy,
   derived,
   modelImportForm,
+  modelOptimizationForm,
   modelTransferItems,
   onDismissModelTransfer,
   onDeleteModelPackage,
@@ -6799,6 +6968,8 @@ function ModelsPage({
   onExportModelPackage,
   onImportModel,
   onModelImportFormChange,
+  onModelOptimizationFormChange,
+  onOptimizeModel,
 }) {
   const [search, setSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState("all");
@@ -6810,7 +6981,11 @@ function ModelsPage({
   const canExportPackages = currentPermissions.includes("archive.export");
   const canManageModels = derived.currentAccessUser?.is_admin;
   const familyOptions = data.importOptions?.families || [];
+  const optimizationOptions = data.optimizationOptions?.options || [];
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
+  const selectedOptimizationOption =
+    optimizationOptions.find((item) => item.code === modelOptimizationForm.optimizationType) || optimizationOptions[0];
+  const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
   const recommendationByModelId = useMemo(
     () => new Map((deploymentPolicy?.recommendations || []).map((item) => [item.model_id, item])),
     [deploymentPolicy],
@@ -6858,7 +7033,13 @@ function ModelsPage({
               return (
                 <div className={`transfer-card transfer-${item.phase}`} key={item.taskId}>
                   <div className="transfer-head">
-                    <strong>{item.direction === "download" ? "模型制品下载进度" : "模型制品上传进度"}</strong>
+                    <strong>
+                      {item.direction === "download"
+                        ? "模型制品下载进度"
+                        : item.direction === "optimize"
+                          ? "模型制品优化进度"
+                          : "模型制品上传进度"}
+                    </strong>
                     <div className="transfer-head-actions">
                       <span>
                         {item.percent !== null
@@ -7012,6 +7193,71 @@ function ModelsPage({
       </section>
       ) : null}
 
+      {canManageModels && optimizationOptions.length ? (
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="模型优化"
+          title="模型优化工作台"
+          note="基于平台内已有 ONNX 制品直接生成优化版本。生成后的制品会作为新的正式模型接入平台，可继续部署、基准测试和删除。"
+        />
+        <div className="banner banner-muted">
+          这块解决的是运行时工具链优化，不是调度策略。当前支持 ORT 图优化、FP16 精度优化和 INT8 动态量化。
+          其中 INT8 动态量化会默认改写为更适合 CPU 的 profile，避免直接按 GPU 方式启动带来不稳定行为。
+        </div>
+        <div className="form-grid">
+          <label className="stack-field">
+            <span>源模型</span>
+            <select
+              onChange={(event) => onModelOptimizationFormChange((current) => ({ ...current, modelId: event.target.value }))}
+              value={modelOptimizationForm.modelId}
+            >
+              {derived.models.map((model) => (
+                <option key={`optimize-${model.model_id}`} value={model.model_id}>
+                  {model.model_id} · {model.model_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="stack-field">
+            <span>优化方式</span>
+            <select
+              onChange={(event) =>
+                onModelOptimizationFormChange((current) => ({ ...current, optimizationType: event.target.value }))
+              }
+              value={modelOptimizationForm.optimizationType}
+            >
+              {optimizationOptions.map((item) => (
+                <option key={`optimization-${item.code}`} value={item.code}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <small className="detail-note">{selectedOptimizationOption?.note || "选择一种优化方式后，平台会生成新的模型制品包。"}</small>
+          </label>
+          <label className="stack-field">
+            <span>优化别名</span>
+            <input
+              onChange={(event) => onModelOptimizationFormChange((current) => ({ ...current, alias: event.target.value }))}
+              placeholder={selectedOptimizationOption?.alias_suffix || "例如 fp16"}
+              type="text"
+              value={modelOptimizationForm.alias}
+            />
+            <small className="detail-note">留空则自动使用系统别名后缀，生成模型编号时会自动带上源模型信息。</small>
+          </label>
+          <div className="actions">
+            <button
+              className="btn-primary"
+              disabled={actionBusy["optimize-model"] || !modelOptimizationForm.modelId || !modelOptimizationForm.optimizationType}
+              onClick={() => void onOptimizeModel()}
+              type="button"
+            >
+              {actionBusy["optimize-model"] ? "生成中" : "生成优化制品"}
+            </button>
+          </div>
+        </div>
+      </section>
+      ) : null}
+
       {canManageDeployments ? (
       <section className="page-shell card section-shell">
         <SectionHeader kicker="新建部署" title="从模型库创建部署实例" note="选择模型、配置模板和备注，直接通过控制面创建部署实例。" />
@@ -7026,8 +7272,14 @@ function ModelsPage({
                 <option key={model.model_id} value={model.model_id}>
                   {model.model_id}
                 </option>
-              ))}
+                ))}
             </select>
+            {selectedDeploymentModelSummary.optimizationLabel ? (
+              <small className="detail-note">
+                当前所选模型为 {selectedDeploymentModelSummary.optimizationLabel}
+                {selectedDeploymentModelSummary.sourceModelId ? `，来源模型 ${selectedDeploymentModelSummary.sourceModelId}` : ""}。
+              </small>
+            ) : null}
           </label>
           <label className="stack-field">
             <span>配置模板</span>
@@ -7063,6 +7315,7 @@ function ModelsPage({
           <label className="stack-check">
             <input
               checked={deploymentForm.useGpu}
+              disabled={selectedDeploymentModelSummary.optimizationType === "int8_dynamic"}
               onChange={(event) =>
                 onDeploymentFormChange((current) => ({
                   ...current,
@@ -7073,6 +7326,9 @@ function ModelsPage({
               type="checkbox"
             />
             使用 GPU
+            {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
+              <small className="detail-note">INT8 动态量化版本当前默认固定为 CPU 部署。</small>
+            ) : null}
           </label>
           <label className="stack-check">
             <input
@@ -7123,6 +7379,7 @@ function ModelsPage({
                 <option value="all">全部来源</option>
                 <option value="builtin">本机自带</option>
                 <option value="user_upload">用户上传</option>
+                <option value="generated">平台生成</option>
               </select>
             </label>
           </div>
@@ -7152,8 +7409,9 @@ function ModelsPage({
               data.modelDetails,
               recommendation?.recommended_profile_name || "default",
             );
-            const quickDeployUseGpu = recommendation?.recommended_use_gpu ?? true;
-            const quickDeployGpuIds = quickDeployUseGpu ? (recommendation?.recommended_gpu_ids || []) : [];
+            const deploymentPreset = getSuggestedDeploymentPreset(model.model_id, data.modelDetails, recommendation);
+            const quickDeployUseGpu = deploymentPreset.useGpu;
+            const quickDeployGpuIds = deploymentPreset.gpuIds;
             return (
               <article className="asset-card" key={model.model_id}>
                 <h4>{model.model_name}</h4>
@@ -7171,9 +7429,21 @@ function ModelsPage({
                 <div className="tag-list">
                   <span className="tag">{formatStatusLabel(model.runtime_status)}</span>
                   <span className="tag">{model.package_origin_label || "本机自带"}</span>
+                  {detail.package_metadata?.optimization_label ? (
+                    <span className="tag">{detail.package_metadata.optimization_label}</span>
+                  ) : null}
                   <span className="tag">{manifest.framework || "-"}</span>
                   <span className="tag">{manifest.stage_count || "-" } 个阶段</span>
                 </div>
+                {detail.package_metadata?.source_model_id ? (
+                  <div className="detail-note">
+                    来源模型：<span className="mono">{detail.package_metadata.source_model_id}</span>
+                    {detail.package_metadata?.optimization_type ? ` · 优化类型：${detail.package_metadata.optimization_type}` : ""}
+                  </div>
+                ) : null}
+                {detail.package_metadata?.optimization_label ? (
+                  <div className="detail-note">{deploymentPreset.reason}</div>
+                ) : null}
                 <div className="actions inline-actions">
                   {canManageDeployments ? (
                     <button
@@ -7187,8 +7457,8 @@ function ModelsPage({
                           use_gpu: quickDeployUseGpu,
                           gpu_ids: quickDeployGpuIds,
                           notes: recommendation
-                            ? `从模型页快速创建（按部署策略：${recommendation.recommended_device_label || (quickDeployUseGpu ? "GPU" : "CPU")}）`
-                            : "从模型页快速创建",
+                            ? `从模型页快速创建（按部署策略：${recommendation.recommended_device_label || deploymentPreset.deviceLabel}）`
+                            : `从模型页快速创建（默认 ${deploymentPreset.deviceLabel}）`,
                         })
                       }
                       type="button"
@@ -7432,6 +7702,18 @@ function ArtifactsPage({ actionBusy, currentUser, data, onDeleteModelPackage, on
                   <span className="artifact-meta-label">来源</span>
                   <span className="artifact-meta-value">{detail.summary?.package_origin_label || "本机自带"}</span>
                 </div>
+                {detail.package_metadata?.source_model_id ? (
+                  <div className="artifact-meta-row">
+                    <span className="artifact-meta-label">source_model</span>
+                    <span className="artifact-meta-value mono">{detail.package_metadata.source_model_id}</span>
+                  </div>
+                ) : null}
+                {detail.package_metadata?.optimization_label ? (
+                  <div className="artifact-meta-row">
+                    <span className="artifact-meta-label">optimization</span>
+                    <span className="artifact-meta-value">{detail.package_metadata.optimization_label}</span>
+                  </div>
+                ) : null}
                 <div className="artifact-meta-row">
                   <span className="artifact-meta-label">tokenizer</span>
                   <span className="artifact-meta-value">{detail.manifest?.tokenizer?.type || "-"}</span>
@@ -7494,6 +7776,7 @@ function DeploymentsPage({
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageDeployments = currentPermissions.includes("deployments.manage");
   const canViewResources = currentPermissions.includes("resources.view");
+  const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, derived.modelDetails);
 
   const filteredDeployments = useMemo(() => {
     let next = sortByCreatedDesc(derived.deployments).filter((item) =>
@@ -7551,19 +7834,25 @@ function DeploymentsPage({
           如果某个部署实例是在 2026-03-28 这次配置模板更新前创建且一直没有重启，它仍可能运行旧参数。重启一次后，新的线程数、实例数和批量配置才会真正生效。
         </div>
         <div className="form-grid">
-          <label className="stack-field">
-            <span>模型</span>
-            <select
-              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, modelId: event.target.value }))}
-              value={deploymentForm.modelId}
+	          <label className="stack-field">
+	            <span>模型</span>
+	            <select
+	              onChange={(event) => onDeploymentFormChange((current) => ({ ...current, modelId: event.target.value }))}
+	              value={deploymentForm.modelId}
             >
               {derived.models.map((model) => (
                 <option key={model.model_id} value={model.model_id}>
                   {model.model_id}
                 </option>
-              ))}
-            </select>
-          </label>
+	                ))}
+	            </select>
+              {selectedDeploymentModelSummary.optimizationLabel ? (
+                <small className="detail-note">
+                  当前所选模型为 {selectedDeploymentModelSummary.optimizationLabel}
+                  {selectedDeploymentModelSummary.sourceModelId ? `，来源模型 ${selectedDeploymentModelSummary.sourceModelId}` : ""}。
+                </small>
+              ) : null}
+	          </label>
           <label className="stack-field">
             <span>配置模板</span>
             <select
@@ -7595,20 +7884,24 @@ function DeploymentsPage({
               value={deploymentForm.notes}
             />
           </label>
-          <label className="stack-check">
-            <input
-              checked={deploymentForm.useGpu}
-              onChange={(event) =>
-                onDeploymentFormChange((current) => ({
-                  ...current,
+	          <label className="stack-check">
+	            <input
+	              checked={deploymentForm.useGpu}
+                disabled={selectedDeploymentModelSummary.optimizationType === "int8_dynamic"}
+	              onChange={(event) =>
+	                onDeploymentFormChange((current) => ({
+	                  ...current,
                   useGpu: event.target.checked,
                   gpuIdsText: event.target.checked ? current.gpuIdsText : "",
                 }))
               }
               type="checkbox"
-            />
-            使用 GPU
-          </label>
+	            />
+	            使用 GPU
+              {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
+                <small className="detail-note">INT8 动态量化版本默认固定为 CPU 部署。</small>
+              ) : null}
+	          </label>
           <label className="stack-check">
             <input
               checked={deploymentForm.launchRuntime}
@@ -7798,8 +8091,11 @@ function BenchmarksPage({
 }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const [sceneFilter, setSceneFilter] = useState("all");
   const [scopeFilter, setScopeFilter] = useState("recent");
   const [compareModelId, setCompareModelId] = useState("all");
+  const [optimizationSourceModelId, setOptimizationSourceModelId] = useState("all");
   const [paperModelDraftId, setPaperModelDraftId] = useState("all");
   const [paperModelId, setPaperModelId] = useState("all");
   const deferredSearch = useDeferredValue(search);
@@ -7810,6 +8106,28 @@ function BenchmarksPage({
     () => sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed"),
     [derived.benchmarks],
   );
+
+  const benchmarkModelOptions = useMemo(
+    () => Array.from(new Set((derived.benchmarks || []).map((item) => String(item.model_id || "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
+    [derived.benchmarks],
+  );
+
+  const benchmarkSceneOptions = useMemo(
+    () => Array.from(new Set((derived.benchmarks || []).map((item) => String(item.scene || "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
+    [derived.benchmarks],
+  );
+
+  useEffect(() => {
+    if (modelFilter !== "all" && !benchmarkModelOptions.includes(modelFilter)) {
+      setModelFilter("all");
+    }
+  }, [benchmarkModelOptions, modelFilter]);
+
+  useEffect(() => {
+    if (sceneFilter !== "all" && sceneFilter !== "none" && !benchmarkSceneOptions.includes(sceneFilter)) {
+      setSceneFilter("all");
+    }
+  }, [benchmarkSceneOptions, sceneFilter]);
 
   const compareModelOptions = useMemo(() => {
     return Array.from(new Set(completedBenchmarks.map((item) => item.model_id))).sort((left, right) =>
@@ -7838,7 +8156,7 @@ function BenchmarksPage({
   const filteredBenchmarks = useMemo(() => {
     let next = sortByCreatedDesc(derived.benchmarks).filter((item) =>
       matchesKeyword(
-        [item.benchmark_id, item.label, item.model_id, item.deployment_id, item.profile_name, item.status],
+        [item.benchmark_id, item.label, item.model_id, item.deployment_id, item.profile_name, item.status, item.scene, item.trigger_source],
         deferredSearch,
       ),
     );
@@ -7847,7 +8165,19 @@ function BenchmarksPage({
       next = next.filter((item) => item.status === statusFilter);
     }
 
-    if (scopeFilter === "completed") {
+     if (modelFilter !== "all") {
+      next = next.filter((item) => item.model_id === modelFilter);
+    }
+
+    if (sceneFilter === "none") {
+      next = next.filter((item) => !String(item.scene || "").trim());
+    } else if (sceneFilter !== "all") {
+      next = next.filter((item) => String(item.scene || "").trim() === sceneFilter);
+    }
+
+    if (scopeFilter === "effective") {
+      next = next.filter((item) => item.status === "completed" && item.is_effective);
+    } else if (scopeFilter === "completed") {
       next = next.filter((item) => item.status === "completed");
     } else if (scopeFilter === "problematic") {
       next = next.filter((item) => item.failure_count > 0 || item.status === "failed");
@@ -7856,7 +8186,7 @@ function BenchmarksPage({
     }
 
     return next;
-  }, [deferredSearch, derived.benchmarks, scopeFilter, statusFilter]);
+  }, [deferredSearch, derived.benchmarks, modelFilter, sceneFilter, scopeFilter, statusFilter]);
   const benchmarkRecordPagination = useTablePagination(filteredBenchmarks, 5);
 
   const compareRows = useMemo(() => {
@@ -7882,6 +8212,7 @@ function BenchmarksPage({
         const latestDeployment = deploymentMap.get(latest?.deployment_id);
         const execution = latestDeployment ? getDeploymentExecution(latestDeployment) : {};
         const providers = latestDeployment ? getDeploymentProviders(latestDeployment) : [];
+        const optimizationSummary = getOptimizationSummaryForModel(model_id, derived.modelDetails);
         return {
           model_id,
           profile_name,
@@ -7900,6 +8231,11 @@ function BenchmarksPage({
           providers: providers.join(" / "),
           latest_benchmark_id: latest?.benchmark_id || "-",
           latest_created_at: latest?.created_at || "-",
+          optimization_type: optimizationSummary.optimizationType,
+          optimization_label: optimizationSummary.optimizationLabel,
+          source_model_id: optimizationSummary.sourceModelId,
+          comparison_root_model_id: optimizationSummary.sourceModelId || model_id,
+          is_generated_variant: optimizationSummary.isGenerated,
         };
       })
       .sort((left, right) => {
@@ -7908,7 +8244,7 @@ function BenchmarksPage({
         }
         return left.profile_name.localeCompare(right.profile_name);
       });
-  }, [compareModelId, completedBenchmarks, derived.deployments]);
+  }, [compareModelId, completedBenchmarks, derived.deployments, derived.modelDetails]);
   const compareRowPagination = useTablePagination(compareRows, 5);
 
   const bestLatencyRow = useMemo(() => {
@@ -7969,6 +8305,93 @@ function BenchmarksPage({
     };
   }, [selectedPaperModelRows]);
 
+  const optimizationGroups = useMemo(() => {
+    const grouped = new Map();
+    compareRows.forEach((row) => {
+      const rootModelId = row.comparison_root_model_id || row.model_id;
+      const current = grouped.get(rootModelId) || [];
+      current.push(row);
+      grouped.set(rootModelId, current);
+    });
+    return grouped;
+  }, [compareRows]);
+
+  const optimizationSourceOptions = useMemo(() => {
+    return ["all", ...Array.from(optimizationGroups.entries())
+      .filter(([, items]) => items.some((item) => item.is_generated_variant) && items.length > 1)
+      .map(([rootModelId]) => rootModelId)
+      .sort((left, right) => left.localeCompare(right))];
+  }, [optimizationGroups]);
+
+  useEffect(() => {
+    if (!optimizationSourceOptions.includes(optimizationSourceModelId)) {
+      setOptimizationSourceModelId("all");
+    }
+  }, [optimizationSourceModelId, optimizationSourceOptions]);
+
+  const optimizationCompareRows = useMemo(() => {
+    const rows = [];
+    optimizationGroups.forEach((items, rootModelId) => {
+      const hasGenerated = items.some((item) => item.is_generated_variant);
+      if (!hasGenerated || items.length <= 1) {
+        return;
+      }
+      if (optimizationSourceModelId !== "all" && rootModelId !== optimizationSourceModelId) {
+        return;
+      }
+      const baselineRows = items.filter((item) => !item.is_generated_variant && item.model_id === rootModelId);
+      const bestBaselineLatency = baselineRows.length
+        ? Math.min(...baselineRows.map((item) => Number(item.avg_latency_ms || Number.POSITIVE_INFINITY)))
+        : null;
+      const bestBaselineThroughput = baselineRows.length
+        ? Math.max(...baselineRows.map((item) => Number(item.throughput_qps || 0)))
+        : null;
+      items.forEach((item) => {
+        const latencyValue = Number(item.avg_latency_ms);
+        const throughputValue = Number(item.throughput_qps);
+        const latencyGainPct =
+          item.is_generated_variant && Number.isFinite(latencyValue) && Number.isFinite(bestBaselineLatency) && bestBaselineLatency > 0
+            ? ((bestBaselineLatency - latencyValue) / bestBaselineLatency) * 100
+            : null;
+        const throughputGainPct =
+          item.is_generated_variant && Number.isFinite(throughputValue) && Number.isFinite(bestBaselineThroughput) && bestBaselineThroughput > 0
+            ? ((throughputValue - bestBaselineThroughput) / bestBaselineThroughput) * 100
+            : null;
+        rows.push({
+          ...item,
+          baseline_best_latency_ms: bestBaselineLatency,
+          baseline_best_throughput_qps: bestBaselineThroughput,
+          latency_gain_pct: latencyGainPct,
+          throughput_gain_pct: throughputGainPct,
+          variant_label: item.optimization_label || "原始版本",
+          source_root_model_id: rootModelId,
+        });
+      });
+    });
+    return rows.sort((left, right) => {
+      if (left.source_root_model_id !== right.source_root_model_id) {
+        return left.source_root_model_id.localeCompare(right.source_root_model_id);
+      }
+      if (left.model_id !== right.model_id) {
+        return left.model_id.localeCompare(right.model_id);
+      }
+      return left.profile_name.localeCompare(right.profile_name);
+    });
+  }, [optimizationGroups, optimizationSourceModelId]);
+  const optimizationComparePagination = useTablePagination(optimizationCompareRows, 5);
+
+  const bestOptimizationLatencyRow = useMemo(() => {
+    return [...optimizationCompareRows]
+      .filter((item) => item.is_generated_variant && item.latency_gain_pct !== null)
+      .sort((left, right) => Number(right.latency_gain_pct) - Number(left.latency_gain_pct))[0] || null;
+  }, [optimizationCompareRows]);
+
+  const bestOptimizationThroughputRow = useMemo(() => {
+    return [...optimizationCompareRows]
+      .filter((item) => item.is_generated_variant && item.throughput_gain_pct !== null)
+      .sort((left, right) => Number(right.throughput_gain_pct) - Number(left.throughput_gain_pct))[0] || null;
+  }, [optimizationCompareRows]);
+
   function handleExportFilteredBenchmarks() {
     if (!filteredBenchmarks.length) {
       return;
@@ -7987,6 +8410,10 @@ function BenchmarksPage({
         total_requests: item.total_requests,
         success_count: item.success_count,
         failure_count: item.failure_count,
+        scene: item.scene || "",
+        is_effective: item.is_effective ? "yes" : "no",
+        trigger_source: item.trigger_source || "",
+        superseded_by: item.superseded_by || "",
         avg_latency_ms: item.avg_latency_ms ?? "",
         p95_latency_ms: item.p95_latency_ms ?? "",
         throughput_qps: item.throughput_qps ?? "",
@@ -8023,6 +8450,31 @@ function BenchmarksPage({
         remote_avg_latency_ms: item.remote_avg_latency_ms?.toFixed(3) ?? "",
         success_rate: item.success_rate ?? "",
         avg_batch_size: item.avg_batch_size?.toFixed(2) ?? "",
+        latest_benchmark_id: item.latest_benchmark_id,
+        latest_created_at: item.latest_created_at,
+      })),
+    );
+  }
+
+  function handleExportOptimizationCompareRows() {
+    if (!optimizationCompareRows.length) {
+      return;
+    }
+    downloadCsvFile(
+      "luckymodels-optimization-compare.csv",
+      optimizationCompareRows.map((item) => ({
+        source_model_id: item.source_root_model_id,
+        model_id: item.model_id,
+        variant_label: item.variant_label,
+        optimization_type: item.optimization_type || "",
+        profile_name: item.profile_name,
+        device: item.device || "",
+        run_count: item.run_count,
+        avg_latency_ms: item.avg_latency_ms?.toFixed(3) ?? "",
+        latency_gain_pct: item.latency_gain_pct?.toFixed(2) ?? "",
+        throughput_qps: item.throughput_qps?.toFixed(3) ?? "",
+        throughput_gain_pct: item.throughput_gain_pct?.toFixed(2) ?? "",
+        success_rate: item.success_rate?.toFixed(4) ?? "",
         latest_benchmark_id: item.latest_benchmark_id,
         latest_created_at: item.latest_created_at,
       })),
@@ -8154,9 +8606,33 @@ function BenchmarksPage({
               </select>
             </label>
             <label className="stack-field">
+              <span>模型</span>
+              <select onChange={(event) => setModelFilter(event.target.value)} value={modelFilter}>
+                <option value="all">全部模型</option>
+                {benchmarkModelOptions.map((item) => (
+                  <option key={`benchmark-model-${item}`} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="stack-field">
+              <span>场景</span>
+              <select onChange={(event) => setSceneFilter(event.target.value)} value={sceneFilter}>
+                <option value="all">全部场景</option>
+                <option value="none">未标注场景</option>
+                {benchmarkSceneOptions.map((item) => (
+                  <option key={`benchmark-scene-${item}`} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="stack-field">
               <span>显示范围</span>
               <select onChange={(event) => setScopeFilter(event.target.value)} value={scopeFilter}>
                 <option value="recent">最近 12 条</option>
+                <option value="effective">仅最新有效</option>
                 <option value="completed">仅已完成</option>
                 <option value="problematic">仅异常记录</option>
                 <option value="all">全部记录</option>
@@ -8176,13 +8652,15 @@ function BenchmarksPage({
               </button>
               <button
                 onClick={() => {
-                  setSearch("");
-                  setStatusFilter("all");
-                  setScopeFilter("recent");
-                }}
-                type="button"
-              >
-                恢复默认视图
+                setSearch("");
+                setStatusFilter("all");
+                setModelFilter("all");
+                setSceneFilter("all");
+                setScopeFilter("recent");
+              }}
+              type="button"
+            >
+              恢复默认视图
               </button>
             </div>
           </div>
@@ -8195,6 +8673,7 @@ function BenchmarksPage({
                   <tr>
                     <th>基准编号</th>
                     <th>模型</th>
+                    <th>场景 / 有效性</th>
                     <th>状态</th>
                     <th>吞吐量</th>
                     <th>平均延迟</th>
@@ -8208,8 +8687,19 @@ function BenchmarksPage({
                       <td>
                         <strong>{item.label || item.benchmark_id}</strong>
                         <div className="mono">{item.benchmark_id}</div>
+                        <div className="table-note">{item.created_at || "-"}</div>
                       </td>
-                      <td>{item.model_id}</td>
+                      <td>
+                        <div>{item.model_id}</div>
+                        <div className="table-note">{item.deployment_id || "-"}</div>
+                      </td>
+                      <td>
+                        <div>{item.scene || "未标注场景"}</div>
+                        <div className="table-note">
+                          {item.is_effective ? "最新有效记录" : item.superseded_by ? `已被 ${item.superseded_by} 覆盖` : "历史记录"}
+                        </div>
+                        <div className="table-note">触发方式：{item.trigger_source || "manual"}</div>
+                      </td>
                       <td><StatusPill status={item.status} /></td>
                       <td>{escapeValue(item.throughput_qps)}</td>
                       <td>{escapeValue(item.avg_latency_ms)}</td>
@@ -8498,6 +8988,146 @@ function BenchmarksPage({
             icon="P"
             title="暂无可对比的基准记录"
             note="先运行至少一条已完成的基准记录，配置模板对比视图才会出现聚合结果。"
+          />
+        )}
+      </section>
+
+      <section className="page-shell card section-shell">
+        <SectionHeader
+          kicker="优化对比"
+          title="原始模型与优化版本对比"
+          note="按“源模型”归并原始版本及其平台生成的优化版本，直接比较优化前后在 benchmark 上的延迟、吞吐和成功率变化。"
+          right={
+            <div className="actions">
+              <button disabled={!optimizationCompareRows.length} onClick={handleExportOptimizationCompareRows} type="button">
+                导出优化对比 CSV
+              </button>
+            </div>
+          }
+        />
+        <div className="filter-panel compare-panel">
+          <div className="filter-grid">
+            <label className="stack-field">
+              <span>源模型</span>
+              <select onChange={(event) => setOptimizationSourceModelId(event.target.value)} value={optimizationSourceModelId}>
+                <option value="all">全部源模型</option>
+                {optimizationSourceOptions.filter((item) => item !== "all").map((item) => (
+                  <option key={`optimization-source-${item}`} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="filter-foot">
+            <div className="filter-meta">
+              当前纳入 {optimizationCompareRows.length} 个原始/优化版本组合条目。
+            </div>
+          </div>
+        </div>
+
+        {optimizationCompareRows.length ? (
+          <>
+            <div className="metrics">
+              <MetricCard
+                title="优化源模型数"
+                value={new Set(optimizationCompareRows.map((item) => item.source_root_model_id)).size}
+                note="至少同时包含原始版本和平台生成优化版本"
+              />
+              <MetricCard
+                title="最佳延迟收益"
+                value={bestOptimizationLatencyRow ? formatSignedPercentDelta(bestOptimizationLatencyRow.latency_gain_pct, 1) : "-"}
+                note={bestOptimizationLatencyRow ? `${bestOptimizationLatencyRow.model_id} · ${bestOptimizationLatencyRow.profile_name}` : "暂无"}
+              />
+              <MetricCard
+                title="最佳吞吐收益"
+                value={bestOptimizationThroughputRow ? formatSignedPercentDelta(bestOptimizationThroughputRow.throughput_gain_pct, 1) : "-"}
+                note={bestOptimizationThroughputRow ? `${bestOptimizationThroughputRow.model_id} · ${bestOptimizationThroughputRow.profile_name}` : "暂无"}
+              />
+              <MetricCard
+                title="当前筛选"
+                value={optimizationSourceModelId === "all" ? "全部源模型" : optimizationSourceModelId}
+                note="用于单独查看某个原始模型与其优化版本"
+              />
+            </div>
+            <div className="banner banner-muted">
+              这张表看什么：先看“版本类型”区分原始版本和平台生成版本；再看“相对原始最好延迟 / 吞吐收益”，它们是相对于同一源模型下原始版本最佳 benchmark 结果计算出来的收益百分比。
+            </div>
+            <div className="table-wrap compare-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>源模型</th>
+                    <th>版本模型</th>
+                    <th>版本类型</th>
+                    <th>配置模板 / 设备</th>
+                    <th>平均延迟</th>
+                    <th>相对原始最好延迟</th>
+                    <th>吞吐量</th>
+                    <th>相对原始最好吞吐</th>
+                    <th>成功率</th>
+                    <th>最新记录</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {optimizationComparePagination.pagedItems.map((item) => (
+                    <tr key={`${item.source_root_model_id}-${item.model_id}-${item.profile_name}`}>
+                      <td>
+                        <strong>{item.source_root_model_id}</strong>
+                        <div className="table-note">
+                          原始最好延迟 {item.baseline_best_latency_ms !== null ? Number(item.baseline_best_latency_ms).toFixed(3) : "-"} ms
+                        </div>
+                        <div className="table-note">
+                          原始最好吞吐 {item.baseline_best_throughput_qps !== null ? Number(item.baseline_best_throughput_qps).toFixed(3) : "-"} QPS
+                        </div>
+                      </td>
+                      <td>
+                        <strong>{item.model_id}</strong>
+                        <div className="table-note">{item.providers || "-"}</div>
+                      </td>
+                      <td>
+                        <span className="tag">{item.variant_label}</span>
+                        <div className="table-note">{item.optimization_type || "baseline"}</div>
+                      </td>
+                      <td>
+                        <div>{item.profile_name}</div>
+                        <div className="table-note">{item.device || "-"}</div>
+                      </td>
+                      <td>{item.avg_latency_ms !== null ? item.avg_latency_ms.toFixed(3) : "-"}</td>
+                      <td>
+                        {item.is_generated_variant && item.latency_gain_pct !== null
+                          ? formatSignedPercentDelta(item.latency_gain_pct, 1)
+                          : <span className="table-note">基线</span>}
+                      </td>
+                      <td>{item.throughput_qps !== null ? item.throughput_qps.toFixed(3) : "-"}</td>
+                      <td>
+                        {item.is_generated_variant && item.throughput_gain_pct !== null
+                          ? formatSignedPercentDelta(item.throughput_gain_pct, 1)
+                          : <span className="table-note">基线</span>}
+                      </td>
+                      <td>{formatPercent(item.success_rate)}</td>
+                      <td>
+                        <strong>{item.latest_benchmark_id}</strong>
+                        <div className="table-note">{item.latest_created_at}</div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <PaginationBar
+                currentPage={optimizationComparePagination.page}
+                totalPages={optimizationComparePagination.totalPages}
+                pageSize={optimizationComparePagination.pageSize}
+                totalItems={optimizationComparePagination.totalItems}
+                onChange={optimizationComparePagination.setPage}
+              />
+            </div>
+          </>
+        ) : (
+          <EmptyState
+            icon="O"
+            title="暂无可展示的优化前后对比"
+            note="先对某个模型生成优化版本，并分别跑完原始模型与优化版本的 benchmark，这里才会出现正式对比结果。"
           />
         )}
       </section>

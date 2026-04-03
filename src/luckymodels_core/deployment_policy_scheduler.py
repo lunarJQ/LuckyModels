@@ -7,10 +7,13 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any, Callable
 
+from .benchmark_evidence import default_benchmark_text, infer_benchmark_scene
+from .benchmark_runner import run_benchmark
 from .deployment_policy_store import DeploymentPolicyAutomationStore
 from .deployment_store import DeploymentStore
 from .inference_activity_tracker import InferenceActivityTracker
 from .launcher import launch_runtime_process, stop_runtime_process, wait_for_runtime
+from .manifest import load_profile
 from .schemas import (
     BenchmarkRecord,
     DeploymentCreateRequest,
@@ -21,6 +24,7 @@ from .schemas import (
     DeploymentRecord,
     GpuPoolState,
     GpuPoolUpdateResult,
+    BenchmarkCreateRequest,
     ModelDetail,
     PredictionArchiveRecord,
     utc_now,
@@ -254,6 +258,11 @@ class DeploymentPolicyScheduler:
             if any(item.status in {"restarted", "migrated", "applied"} for item in actions):
                 status = "applied"
 
+            benchmark_refresh_actions = self._refresh_benchmarks_for_actions(actions)
+            if benchmark_refresh_actions:
+                actions.extend(benchmark_refresh_actions)
+                status = "applied"
+
             return store.record_run(
                 state=state,
                 last_status=status,
@@ -396,6 +405,10 @@ class DeploymentPolicyScheduler:
                         ),
                     )
                 )
+
+            benchmark_refresh_actions = self._refresh_benchmarks_for_actions(actions)
+            if benchmark_refresh_actions:
+                actions.extend(benchmark_refresh_actions)
 
             status = "applied" if any(item.status in {"migrated", "applied", "restarted"} for item in actions) else "idle"
             policy_store.record_run(
@@ -1176,6 +1189,120 @@ class DeploymentPolicyScheduler:
                 f"{recommendation.recommended_profile_name}。"
             ),
         )
+
+    def _refresh_benchmarks_for_actions(
+        self,
+        actions: list[DeploymentPolicyAutomationAction],
+    ) -> list[DeploymentPolicyAutomationAction]:
+        benchmark_trigger_actions = {
+            "rebalance_gpu",
+            "migrate_to_cpu",
+            "recover_to_gpu",
+            "recover_profile",
+            "gpu_pool_reassign_gpu",
+            "gpu_pool_fallback_cpu",
+            "gpu_pool_promote_gpu",
+        }
+        eligible_actions = [
+            item
+            for item in actions
+            if item.action_type in benchmark_trigger_actions
+            and item.status == "migrated"
+            and item.deployment_id
+        ]
+        if not eligible_actions:
+            return []
+
+        deployment_store = self.get_deployment_store()
+        benchmark_store = self.get_benchmark_store()
+        registry = self.get_registry()
+        deployments_by_id = {
+            item.deployment_id: item
+            for item in deployment_store.list()
+            if item.deployment_id
+        }
+        refresh_actions: list[DeploymentPolicyAutomationAction] = []
+        seen_deployment_ids: set[str] = set()
+        for action in eligible_actions:
+            deployment_id = str(action.deployment_id or "").strip()
+            if not deployment_id or deployment_id in seen_deployment_ids:
+                continue
+            seen_deployment_ids.add(deployment_id)
+            deployment = deployments_by_id.get(deployment_id)
+            if deployment is None:
+                refresh_actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="refresh_benchmark",
+                        model_id=action.model_id,
+                        deployment_id=deployment_id,
+                        status="failed",
+                        detail="部署优化已生效，但自动刷新 benchmark 时未找到对应 deployment。",
+                    )
+                )
+                continue
+            if deployment.status != "running" or not deployment.service_url:
+                refresh_actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="refresh_benchmark",
+                        model_id=deployment.model_id,
+                        deployment_id=deployment_id,
+                        status="skipped",
+                        detail="deployment 当前未处于 running 状态，跳过自动 benchmark 刷新。",
+                    )
+                )
+                continue
+
+            try:
+                model_summary = registry.get_model(deployment.model_id).summary
+                scene = infer_benchmark_scene(model=model_summary)
+                request = BenchmarkCreateRequest(
+                    deployment_id=deployment.deployment_id,
+                    text=default_benchmark_text(scene),
+                    iterations=4,
+                    warmup_runs=1,
+                    timeout_seconds=30.0,
+                    label="自动部署刷新基准",
+                    scene=scene,
+                    trigger_source="post_policy_adjustment",
+                    options={},
+                )
+                record = benchmark_store.create(
+                    request,
+                    model_id=deployment.model_id,
+                    profile_name=deployment.profile_name,
+                    service_url=deployment.service_url,
+                    deployment=deployment,
+                    model=model_summary,
+                )
+                batch_size = 1
+                if deployment.profile_path:
+                    profile = load_profile(deployment.profile_path)
+                    batch_size = max(1, int(profile.execution.get("batch_size", 1) or 1))
+                finished = run_benchmark(request, record, batch_size=batch_size)
+                benchmark_store.update(finished)
+                refresh_actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="refresh_benchmark",
+                        model_id=deployment.model_id,
+                        deployment_id=deployment.deployment_id,
+                        status="applied" if finished.status == "completed" else "failed",
+                        detail=(
+                            f"部署方案已变化，平台已自动补跑 {scene} 场景 benchmark。"
+                            f" 当前结果状态：{finished.status}。"
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                refresh_actions.append(
+                    DeploymentPolicyAutomationAction(
+                        action_type="refresh_benchmark",
+                        model_id=deployment.model_id,
+                        deployment_id=deployment.deployment_id,
+                        status="failed",
+                        detail=f"自动刷新 benchmark 失败：{type(exc).__name__}: {exc}",
+                    )
+                )
+        return refresh_actions
 
 
 def _is_due(last_run_at: str | None, interval_seconds: int) -> bool:

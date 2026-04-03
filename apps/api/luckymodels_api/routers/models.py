@@ -14,6 +14,10 @@ from luckymodels_core.dataset_samples import (
 )
 from luckymodels_core.launcher import stop_runtime_process
 from luckymodels_core.manifest import load_profile
+from luckymodels_core.model_optimizer import (
+    list_supported_optimization_types,
+    optimize_model_package,
+)
 from luckymodels_core.model_package_manager import (
     export_model_package,
     get_model_import_options,
@@ -25,6 +29,9 @@ from luckymodels_core.schemas import (
     ModelDeleteResult,
     ModelImportOptions,
     ModelImportResult,
+    ModelOptimizeRequest,
+    ModelOptimizationOptions,
+    ModelOptimizationResult,
     ModelSummary,
     ProfileConfig,
 )
@@ -52,6 +59,12 @@ def list_models() -> list[ModelSummary]:
 def get_supported_model_import_options() -> ModelImportOptions:
     require_permission("models.import")
     return get_model_import_options()
+
+
+@router.get("/models/optimization-options", response_model=ModelOptimizationOptions)
+def get_supported_model_optimization_options() -> ModelOptimizationOptions:
+    require_admin()
+    return ModelOptimizationOptions(options=list_supported_optimization_types())
 
 
 @router.get("/datasets/catalog")
@@ -162,6 +175,25 @@ def get_model(model_id: str) -> ModelDetail:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/models/{model_id}/optimize", response_model=ModelOptimizationResult)
+def optimize_model(model_id: str, payload: ModelOptimizeRequest) -> ModelOptimizationResult:
+    require_admin()
+    try:
+        model = get_registry().get_model(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        return optimize_model_package(
+            settings=get_settings(),
+            model=model,
+            optimization_type=payload.optimization_type,
+            alias=payload.alias,
+        )
+    except (FileExistsError, FileNotFoundError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.delete("/models/{model_id}", response_model=ModelDeleteResult)
 def delete_model(model_id: str) -> ModelDeleteResult:
     require_admin()
@@ -172,7 +204,7 @@ def delete_model(model_id: str) -> ModelDeleteResult:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if not model.summary.deletable:
-        raise HTTPException(status_code=403, detail=f"模型制品不可删除：{model_id}（仅用户上传模型支持删除）")
+        raise HTTPException(status_code=403, detail=f"模型制品不可删除：{model_id}（仅用户上传或平台生成模型支持删除）")
 
     settings = get_settings()
     package_root = Path(model.summary.package_root).resolve()

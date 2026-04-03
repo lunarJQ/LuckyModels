@@ -144,6 +144,38 @@ class ModelImportResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ModelOptimizationOption(BaseModel):
+    code: str
+    label: str
+    alias_suffix: str
+    note: str
+
+
+class ModelOptimizationOptions(BaseModel):
+    options: list[ModelOptimizationOption] = Field(default_factory=list)
+
+
+class ModelOptimizeRequest(BaseModel):
+    optimization_type: str
+    alias: str | None = None
+
+
+class ModelOptimizationResult(BaseModel):
+    model_id: str
+    model_name: str
+    model_family: str
+    language: str
+    dataset_name: str | None = None
+    version: str
+    package_root: str
+    source_model_id: str
+    optimization_type: str
+    optimization_label: str
+    optimized_artifact_count: int = 0
+    optimized_artifacts: dict[str, str] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ModelDeleteResult(BaseModel):
     model_id: str
     deleted_deployment_count: int = 0
@@ -242,6 +274,8 @@ class BenchmarkCreateRequest(BaseModel):
     warmup_runs: int = 1
     timeout_seconds: float = 30.0
     label: str | None = None
+    scene: str | None = None
+    trigger_source: str = "manual"
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -252,6 +286,12 @@ class BenchmarkRecord(BaseModel):
     profile_name: str
     service_url: str
     label: str | None = None
+    scene: str | None = None
+    trigger_source: str = "manual"
+    benchmark_scope_key: str | None = None
+    deployment_signature: str | None = None
+    is_effective: bool = True
+    superseded_by: str | None = None
     request_text: str
     iterations: int
     warmup_runs: int

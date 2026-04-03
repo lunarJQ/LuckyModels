@@ -4,7 +4,7 @@ from luckymodels_core.benchmark_runner import run_benchmark
 from luckymodels_core.manifest import load_profile
 from luckymodels_core.schemas import BenchmarkCreateRequest, BenchmarkRecord
 
-from ..dependencies import get_benchmark_store, get_deployment_store
+from ..dependencies import get_benchmark_store, get_deployment_store, get_registry
 from ..permissions import require_permission
 
 router = APIRouter(tags=["benchmarks"])
@@ -38,11 +38,14 @@ def create_benchmark(request: BenchmarkCreateRequest) -> BenchmarkRecord:
         )
 
     store = get_benchmark_store()
+    model_summary = get_registry().get_model(deployment.model_id).summary
     record = store.create(
         request,
         model_id=deployment.model_id,
         profile_name=deployment.profile_name,
         service_url=deployment.service_url,
+        deployment=deployment,
+        model=model_summary,
     )
     batch_size = 1
     if deployment.profile_path:

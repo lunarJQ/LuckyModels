@@ -59,8 +59,9 @@ export async function loadDashboardData(session = null) {
   const canViewResources = hasPermission(session, "resources.view");
   const canViewUsers = hasPermission(session, "users.view");
   const canRunTaskRouting = hasPermission(session, "task_routing.run");
+  const canManageStrategies = hasPermission(session, "strategies.manage") || Boolean(session?.current_user?.is_admin);
 
-  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
+  const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, optimizationOptions, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
     canViewModels ? fetchJSON("/api/v1/models") : Promise.resolve([]),
     canViewDeployments ? fetchJSON("/api/v1/deployments") : Promise.resolve([]),
@@ -71,6 +72,7 @@ export async function loadDashboardData(session = null) {
     canViewResources ? fetchJSON("/api/v1/system/gpus") : Promise.resolve(null),
     canViewUsers ? fetchJSON("/api/v1/access-control/overview") : Promise.resolve(null),
     canImportModels ? fetchJSON("/api/v1/models/import-options") : Promise.resolve(null),
+    canManageStrategies ? fetchJSON("/api/v1/models/optimization-options").catch(() => null) : Promise.resolve(null),
     canViewPredictions ? fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })) : Promise.resolve({ datasets: [], default_fallback_text: "" }),
     canRunTaskRouting ? fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null) : Promise.resolve(null),
   ]);
@@ -117,6 +119,7 @@ export async function loadDashboardData(session = null) {
     gpuStatus,
     accessOverview,
     importOptions,
+    optimizationOptions,
     datasetCatalog,
     taskRoutingFeedbackOverview,
     modelDetails: Object.fromEntries(modelDetailsEntries),
@@ -227,6 +230,14 @@ export async function exportModelPackage(modelId, onDownloadProgress) {
 export async function deleteModelPackage(modelId) {
   return fetchJSON(`/api/v1/models/${encodeURIComponent(modelId)}`, {
     method: "DELETE",
+  });
+}
+
+export async function optimizeModelPackage(modelId, payload) {
+  return fetchJSON(`/api/v1/models/${encodeURIComponent(modelId)}/optimize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 }
 

@@ -11,6 +11,11 @@ from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+from .benchmark_evidence import (
+    is_industrial_dataset_name as evidence_is_industrial_dataset_name,
+    select_latest_effective_benchmarks,
+    select_scene_relevant_benchmarks,
+)
 from .inference_activity_tracker import InferenceActivityTracker
 from .schemas import (
     BenchmarkRecord,
@@ -541,17 +546,10 @@ def _normalize_scene(scene: str | None) -> str:
 
 
 def _is_industrial_dataset_name(dataset_name: str | None) -> bool:
-    normalized = str(dataset_name or "").strip().lower()
-    return any(
-        keyword in normalized
-        for keyword in (
-            "industrial",
-            "equipmentmix",
-            "industrialequipmentmix",
-            "mix15k",
-            "mfgdominant",
-        )
-    ) or infer_domain(text=str(dataset_name or ""), scene=dataset_name) == "industrial"
+    return evidence_is_industrial_dataset_name(dataset_name) or infer_domain(
+        text=str(dataset_name or ""),
+        scene=dataset_name,
+    ) == "industrial"
 
 
 def _scene_matches_model(scene: str | None, model: ModelSummary) -> bool:
@@ -694,9 +692,11 @@ def _build_benchmark_weight_adjustments(
     request_domain = str(context_features.get("domain") or "general")
     request_scene = context_features.get("scene")
     relevant: list[BenchmarkRecord] = []
-    for benchmark in benchmarks:
-        if benchmark.status != "completed":
-            continue
+    for benchmark in select_scene_relevant_benchmarks(
+        benchmarks,
+        request_scene=request_scene,
+        allowed_statuses={"completed"},
+    ):
         model = model_lookup.get(benchmark.model_id)
         if model is None or (requested_language and model.language != requested_language):
             continue
@@ -1214,7 +1214,10 @@ def _build_task_candidates(
     objective_weights: dict[str, float],
 ) -> list[TaskRoutingCandidate]:
     model_lookup = {item.model_id: item for item in models}
-    completed_benchmarks = [item for item in benchmarks if item.status == "completed"]
+    completed_benchmarks = select_latest_effective_benchmarks(
+        benchmarks,
+        allowed_statuses={"completed"},
+    )
     request_scene = context_features.get("scene")
     benchmark_by_deployment = defaultdict(list)
     benchmark_by_model = defaultdict(list)
@@ -1243,7 +1246,13 @@ def _build_task_candidates(
         if allowed_models and deployment.model_id not in allowed_models:
             continue
 
-        deployment_benchmarks = benchmark_by_deployment.get(deployment.deployment_id) or benchmark_by_model.get(deployment.model_id, [])
+        deployment_benchmarks = _pick_deployment_benchmark_evidence(
+            benchmark_by_deployment=benchmark_by_deployment,
+            benchmark_by_model=benchmark_by_model,
+            deployment_id=deployment.deployment_id,
+            model_id=deployment.model_id,
+            request_scene=request_scene,
+        )
         avg_p95 = _mean_numeric(item.p95_latency_ms for item in deployment_benchmarks)
         avg_success = _mean_numeric(
             (
@@ -1931,13 +1940,34 @@ def _resolve_relation_conflicts(
     return list(chosen.values())
 
 
+def _pick_deployment_benchmark_evidence(
+    *,
+    benchmark_by_deployment: dict[str, list[BenchmarkRecord]],
+    benchmark_by_model: dict[str, list[BenchmarkRecord]],
+    deployment_id: str,
+    model_id: str,
+    request_scene: str | None,
+) -> list[BenchmarkRecord]:
+    deployment_records = select_scene_relevant_benchmarks(
+        benchmark_by_deployment.get(deployment_id, []),
+        request_scene=request_scene,
+        allowed_statuses={"completed"},
+    )
+    if deployment_records:
+        return deployment_records
+    return select_scene_relevant_benchmarks(
+        benchmark_by_model.get(model_id, []),
+        request_scene=request_scene,
+        allowed_statuses={"completed"},
+    )
+
+
 def _group_completed_benchmarks_by_model(
     benchmarks: list[BenchmarkRecord],
 ) -> dict[str, list[BenchmarkRecord]]:
     grouped: dict[str, list[BenchmarkRecord]] = defaultdict(list)
-    for item in benchmarks:
-        if item.status == "completed":
-            grouped[item.model_id].append(item)
+    for item in select_latest_effective_benchmarks(benchmarks, allowed_statuses={"completed"}):
+        grouped[item.model_id].append(item)
     return grouped
 
 
@@ -1969,7 +1999,10 @@ def _build_model_score_summaries(
     feedback_records: list[TaskRoutingFeedbackRecord],
 ) -> list[TaskRoutingModelScoreSummary]:
     model_lookup = {item.model_id: item for item in models}
-    completed_benchmarks = [item for item in benchmarks if item.status == "completed"]
+    completed_benchmarks = select_latest_effective_benchmarks(
+        benchmarks,
+        allowed_statuses={"completed"},
+    )
     benchmark_by_deployment = defaultdict(list)
     benchmark_by_model = defaultdict(list)
     for item in completed_benchmarks:
@@ -2039,7 +2072,13 @@ def _build_model_score_summaries(
                 if not _scene_matches_model(scene, model):
                     continue
 
-                deployment_benchmarks = benchmark_by_deployment.get(deployment.deployment_id) or benchmark_by_model.get(deployment.model_id, [])
+                deployment_benchmarks = _pick_deployment_benchmark_evidence(
+                    benchmark_by_deployment=benchmark_by_deployment,
+                    benchmark_by_model=benchmark_by_model,
+                    deployment_id=deployment.deployment_id,
+                    model_id=deployment.model_id,
+                    request_scene=scene,
+                )
                 avg_p95 = _mean_numeric(item.p95_latency_ms for item in deployment_benchmarks)
                 avg_success = _mean_numeric(
                     (
@@ -2375,7 +2414,7 @@ def build_task_routing_feedback_overview(
         total_decisions=len(decision_records),
         total_feedback=total_feedback,
         acceptance_rate=acceptance_rate,
-        benchmark_count=len([item for item in benchmarks if item.status == "completed"]),
+        benchmark_count=len(select_latest_effective_benchmarks(benchmarks, allowed_statuses={"completed"})),
         archive_count=len(prediction_archives),
         archive_feedback_total=archive_satisfied_count + archive_unsatisfied_count,
         objective_summaries=objective_summaries,
