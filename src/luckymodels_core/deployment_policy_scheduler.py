@@ -542,7 +542,7 @@ class DeploymentPolicyScheduler:
 
         previous_pid = current.pid
         previous_status = current.status
-        service_url = current.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+        service_url = deployment_store.ensure_service_url(current)
         current.log_path = current.log_path or str(self.settings.logs_root / "deployments" / f"{current.deployment_id}.log")
         port = int(service_url.rsplit(":", maxsplit=1)[-1])
 
@@ -662,7 +662,7 @@ class DeploymentPolicyScheduler:
             deployment.use_gpu = False
             deployment.gpu_ids = []
             deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
-            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            deployment.service_url = deployment_store.ensure_service_url(deployment)
             deployment.notes = " | ".join(
                 item
                 for item in [
@@ -785,7 +785,7 @@ class DeploymentPolicyScheduler:
             deployment.use_gpu = True
             deployment.gpu_ids = target_gpu_ids
             deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
-            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            deployment.service_url = deployment_store.ensure_service_url(deployment)
             port = int(deployment.service_url.rsplit(":", maxsplit=1)[-1])
 
             pid, service_url = launch_runtime_process(
@@ -1009,7 +1009,7 @@ class DeploymentPolicyScheduler:
             deployment.use_gpu = bool(use_gpu)
             deployment.gpu_ids = [int(item) for item in gpu_ids] if use_gpu else []
             deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
-            deployment.service_url = deployment.service_url or f"http://127.0.0.1:{deployment_store._allocate_port()}"
+            deployment.service_url = deployment_store.ensure_service_url(deployment)
             deployment.notes = " | ".join(
                 item
                 for item in [

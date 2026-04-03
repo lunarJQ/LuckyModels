@@ -71,7 +71,7 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     deployment = store.create(request)
     deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
     deployment.profile_path = model.resolved_profiles[request.profile_name]
-    deployment.service_url = deployment.service_url or f"http://127.0.0.1:{store._allocate_port()}"
+    deployment.service_url = store.ensure_service_url(deployment)
     settings = get_settings()
     deployment.log_path = str(settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
@@ -231,7 +231,7 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
     if device_note:
         deployment.notes = " | ".join(item for item in [deployment.notes, device_note] if item)
 
-    service_url = deployment.service_url or f"http://127.0.0.1:{store._allocate_port()}"
+    service_url = store.ensure_service_url(deployment)
     port = int(service_url.rsplit(":", maxsplit=1)[-1])
     settings = get_settings()
     pid, service_url = launch_runtime_process(
