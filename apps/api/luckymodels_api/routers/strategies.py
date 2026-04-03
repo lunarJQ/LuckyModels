@@ -76,7 +76,7 @@ def _get_scheduler() -> DeploymentPolicyScheduler:
 
 @router.post("/strategies/task-routing/run", response_model=TaskRoutingResponse)
 def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
-    require_permission("strategies.manage")
+    require_permission("task_routing.run")
     registry = get_registry()
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
@@ -164,7 +164,7 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
 
 @router.get("/strategies/task-routing/feedback/overview", response_model=TaskRoutingFeedbackOverview)
 def get_task_routing_feedback_overview() -> TaskRoutingFeedbackOverview:
-    require_permission("strategies.manage")
+    require_permission("task_routing.run")
     registry = get_registry()
     deployment_store = get_deployment_store()
     benchmark_store = get_benchmark_store()
@@ -197,7 +197,7 @@ def list_task_routing_decisions(limit: int = 20) -> list[TaskRoutingDecisionSumm
 
 @router.post("/strategies/task-routing/feedback", response_model=TaskRoutingFeedbackRecord)
 def submit_task_routing_feedback(request: TaskRoutingFeedbackSubmitRequest) -> TaskRoutingFeedbackRecord:
-    require_permission("strategies.manage")
+    require_permission("task_routing.run")
     store = get_task_routing_feedback_store()
     try:
         return store.save_feedback(request)

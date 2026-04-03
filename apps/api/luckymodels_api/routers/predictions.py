@@ -32,7 +32,7 @@ def update_prediction_archive_feedback(
     archive_id: str,
     request: PredictionArchiveFeedbackUpdateRequest,
 ) -> PredictionArchiveRecord:
-    require_permission("predictions.view")
+    require_permission("predictions.feedback")
     feedback_status = str(request.feedback_status or "pending").strip().lower()
     if feedback_status not in {"pending", "satisfied", "unsatisfied"}:
         raise HTTPException(status_code=400, detail=f"Unsupported feedback_status: {request.feedback_status}")

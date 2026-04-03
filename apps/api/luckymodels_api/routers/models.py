@@ -50,7 +50,7 @@ def list_models() -> list[ModelSummary]:
 
 @router.get("/models/import-options", response_model=ModelImportOptions)
 def get_supported_model_import_options() -> ModelImportOptions:
-    require_admin()
+    require_permission("models.import")
     return get_model_import_options()
 
 
@@ -81,7 +81,7 @@ def import_model(
     backbone: str | None = Form(None),
     alias: str | None = Form(None),
 ) -> ModelImportResult:
-    require_admin()
+    require_permission("models.import")
     settings = get_settings()
     settings.imports_root.mkdir(parents=True, exist_ok=True)
     suffix = "".join(Path(archive.filename or "").suffixes) or ".zip"

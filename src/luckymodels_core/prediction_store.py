@@ -39,6 +39,8 @@ class PredictionStore:
         task_routing_fusion_policy: str | None = None,
         task_routing_weight_snapshot: dict | None = None,
         task_routing_adjustment_snapshot: dict | None = None,
+        task_routing_unsupervised_adjustment_snapshot: dict | None = None,
+        task_routing_feedback_adjustment_snapshot: dict | None = None,
         task_routing_selected_model_ids: list[str] | None = None,
     ) -> PredictionArchiveRecord:
         archive = PredictionArchiveRecord(
@@ -62,6 +64,8 @@ class PredictionStore:
             task_routing_fusion_policy=task_routing_fusion_policy,
             task_routing_weight_snapshot=dict(task_routing_weight_snapshot or {}),
             task_routing_adjustment_snapshot=dict(task_routing_adjustment_snapshot or {}),
+            task_routing_unsupervised_adjustment_snapshot=dict(task_routing_unsupervised_adjustment_snapshot or {}),
+            task_routing_feedback_adjustment_snapshot=dict(task_routing_feedback_adjustment_snapshot or {}),
             task_routing_selected_model_ids=list(task_routing_selected_model_ids or []),
         )
         archives = self.list()

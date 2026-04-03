@@ -52,13 +52,13 @@ export async function logoutSession() {
 
 export async function loadDashboardData(session = null) {
   const canViewModels = hasPermission(session, "models.view");
+  const canImportModels = hasPermission(session, "models.import");
   const canViewDeployments = hasPermission(session, "deployments.view");
   const canViewBenchmarks = hasPermission(session, "benchmarks.view");
   const canViewPredictions = hasPermission(session, "predictions.view");
   const canViewResources = hasPermission(session, "resources.view");
   const canViewUsers = hasPermission(session, "users.view");
-  const canRunStrategies = hasPermission(session, "strategies.manage");
-  const isAdmin = Boolean(session?.current_user?.is_admin);
+  const canRunTaskRouting = hasPermission(session, "task_routing.run");
 
   const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
@@ -70,9 +70,9 @@ export async function loadDashboardData(session = null) {
     canViewModels ? fetchJSON("/api/v1/models/capability-matrix") : Promise.resolve([]),
     canViewResources ? fetchJSON("/api/v1/system/gpus") : Promise.resolve(null),
     canViewUsers ? fetchJSON("/api/v1/access-control/overview") : Promise.resolve(null),
-    isAdmin ? fetchJSON("/api/v1/models/import-options") : Promise.resolve(null),
+    canImportModels ? fetchJSON("/api/v1/models/import-options") : Promise.resolve(null),
     canViewPredictions ? fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })) : Promise.resolve({ datasets: [], default_fallback_text: "" }),
-    canRunStrategies ? fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null) : Promise.resolve(null),
+    canRunTaskRouting ? fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null) : Promise.resolve(null),
   ]);
 
   const deploymentEntries = await Promise.all(

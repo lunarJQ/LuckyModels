@@ -4,7 +4,7 @@ export const navGroups = [
     items: [
       { id: "overview", path: "/", label: "资产概览", icon: "◆", description: "平台总览与系统态势" },
       { id: "experiment", path: "/experiments", label: "推理试验", icon: "◉", description: "在线推理与结果反馈", requiredPermissions: ["predictions.view"] },
-      { id: "task-routing", path: "/task-routing", label: "任务调度", icon: "⇄", description: "多模型策略执行", requiredPermissions: ["strategies.manage"], adminOnly: true },
+      { id: "task-routing", path: "/task-routing", label: "任务调度", icon: "⇄", description: "多模型策略执行", requiredPermissions: ["task_routing.run"] },
       { id: "task-routing-history", path: "/task-routing-history", label: "调度历史", icon: "☷", description: "历史累计与策略回看", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "deployment-performance", path: "/deployment-performance", label: "表现变化", icon: "▤", description: "Deployment 全量表现视图", requiredPermissions: ["strategies.manage"], adminOnly: true },
       { id: "deployment-policy", path: "/deployment-policy", label: "部署策略", icon: "△", description: "资源建议与部署方案", requiredPermissions: ["strategies.manage"], adminOnly: true },
@@ -15,8 +15,8 @@ export const navGroups = [
     title: "模型资产",
     items: [
       { id: "models", path: "/models", label: "模型库", icon: "□", description: "模型信息与部署入口", requiredPermissions: ["models.view"] },
-      { id: "capability-matrix", path: "/capability-matrix", label: "能力矩阵", icon: "≡", description: "模型能力总表", requiredPermissions: ["models.view"], adminOnly: true },
-      { id: "artifacts", path: "/artifacts", label: "制品包", icon: "◫", description: "Manifest 与制品清单", requiredPermissions: ["models.view"], adminOnly: true },
+      { id: "capability-matrix", path: "/capability-matrix", label: "能力矩阵", icon: "≡", description: "模型能力总表", requiredPermissions: ["models.view"] },
+      { id: "artifacts", path: "/artifacts", label: "制品包", icon: "◫", description: "Manifest 与制品清单", requiredPermissions: ["models.view"] },
       { id: "deployments", path: "/deployments", label: "部署记录", icon: "▶", description: "服务实例与运行状态", requiredPermissions: ["deployments.view"] },
       { id: "benchmarks", path: "/benchmarks", label: "基准剖析", icon: "∥", description: "性能结果与对比", requiredPermissions: ["benchmarks.view"] },
     ],

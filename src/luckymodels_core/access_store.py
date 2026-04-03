@@ -26,7 +26,7 @@ def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-AUTH_VERSION = 2
+AUTH_VERSION = 4
 
 BUILTIN_PERMISSIONS = [
     AccessPermission(
@@ -34,6 +34,12 @@ BUILTIN_PERMISSIONS = [
         permission_name="查看模型资产",
         category="模型资产",
         description="查看模型库、能力矩阵、制品包与模型详情。",
+    ),
+    AccessPermission(
+        permission_id="models.import",
+        permission_name="上传模型制品",
+        category="模型资产",
+        description="上传模型压缩包并接入平台模型库。",
     ),
     AccessPermission(
         permission_id="deployments.view",
@@ -66,10 +72,22 @@ BUILTIN_PERMISSIONS = [
         description="查看在线预测结果和历史归档。",
     ),
     AccessPermission(
+        permission_id="predictions.feedback",
+        permission_name="提交结果反馈",
+        category="预测归档",
+        description="更新满意度、不满意原因，并将反馈写入在线学习留痕。",
+    ),
+    AccessPermission(
         permission_id="strategies.manage",
         permission_name="运行策略分析",
         category="策略能力",
         description="运行任务调度与部署策略分析能力。",
+    ),
+    AccessPermission(
+        permission_id="task_routing.run",
+        permission_name="运行任务调度",
+        category="策略能力",
+        description="访问任务调度页面并执行任务调度推理。",
     ),
     AccessPermission(
         permission_id="resources.view",
@@ -101,18 +119,22 @@ BUILTIN_ROLES = [
     AccessRole(
         role_id="admin",
         role_name="平台管理员",
-        description="拥有全部权限，负责用户、部署、实验与系统治理。",
+        description="负责模型接入、部署控制、任务调度完整分析、部署策略、运行资源与系统治理，拥有平台全部权限。",
         permissions=[item.permission_id for item in BUILTIN_PERMISSIONS],
     ),
     AccessRole(
         role_id="user",
         role_name="普通用户",
-        description="拥有日常查看、在线推理和结果导出能力，但不允许管理员操作。",
+        description="可进行推理实验、任务调度、结果反馈、模型上传与基准测试；任务调度页采用简化视图，不显示解释区和即时学习反馈，且不能使用部署策略、运行资源、日志中心和系统管理。",
         permissions=[
             "models.view",
+            "models.import",
             "deployments.view",
             "benchmarks.view",
+            "benchmarks.manage",
             "predictions.view",
+            "predictions.feedback",
+            "task_routing.run",
             "archive.export",
         ],
     ),
