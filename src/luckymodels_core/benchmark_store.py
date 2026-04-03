@@ -104,6 +104,80 @@ class BenchmarkStore:
         with self.benchmarks_file.open("w", encoding="utf-8") as handle:
             json.dump([item.model_dump() for item in benchmarks], handle, ensure_ascii=False, indent=2)
 
+    def migrate_legacy_records(
+        self,
+        *,
+        model_lookup: dict[str, ModelSummary] | None = None,
+        deployment_lookup: dict[str, DeploymentRecord] | None = None,
+    ) -> dict[str, int]:
+        model_lookup = dict(model_lookup or {})
+        deployment_lookup = dict(deployment_lookup or {})
+        benchmarks = self.list()
+        if not benchmarks:
+            return {
+                "total_records": 0,
+                "updated_records": 0,
+                "scene_backfilled": 0,
+                "signature_backfilled": 0,
+                "scope_backfilled": 0,
+                "effective_refreshed": 0,
+            }
+
+        updated_records = 0
+        scene_backfilled = 0
+        signature_backfilled = 0
+        scope_backfilled = 0
+        effective_refreshed = 0
+
+        normalized: list[BenchmarkRecord] = []
+        for item in benchmarks:
+            before = item.model_dump()
+            if not str(item.scene or "").strip():
+                model = model_lookup.get(item.model_id)
+                item.scene = infer_benchmark_scene(
+                    model=model,
+                    explicit_scene=None,
+                    language=str((item.sample_response or {}).get("language") or ""),
+                    request_text=item.request_text,
+                )
+                scene_backfilled += 1
+            if not str(item.trigger_source or "").strip():
+                item.trigger_source = "manual"
+            if not str(item.benchmark_scope_key or "").strip():
+                item.benchmark_scope_key = build_benchmark_scope_key(item.deployment_id, item.scene)
+                scope_backfilled += 1
+            if not str(item.deployment_signature or "").strip():
+                deployment = deployment_lookup.get(item.deployment_id)
+                if deployment is not None:
+                    item.deployment_signature = build_deployment_signature(deployment)
+                    signature_backfilled += 1
+            normalized_item = self._normalize_record(item)
+            if normalized_item.model_dump() != before:
+                updated_records += 1
+            normalized.append(normalized_item)
+
+        scope_keys = {
+            item.benchmark_scope_key or build_benchmark_scope_key(item.deployment_id, item.scene)
+            for item in normalized
+        }
+        refreshed = normalized
+        for scope_key in sorted(scope_keys):
+            before_snapshot = [item.model_dump() for item in refreshed if (item.benchmark_scope_key or build_benchmark_scope_key(item.deployment_id, item.scene)) == scope_key]
+            refreshed = self._refresh_effective_scope(refreshed, scope_key)
+            after_snapshot = [item.model_dump() for item in refreshed if (item.benchmark_scope_key or build_benchmark_scope_key(item.deployment_id, item.scene)) == scope_key]
+            if after_snapshot != before_snapshot:
+                effective_refreshed += 1
+
+        self._write(refreshed)
+        return {
+            "total_records": len(refreshed),
+            "updated_records": updated_records,
+            "scene_backfilled": scene_backfilled,
+            "signature_backfilled": signature_backfilled,
+            "scope_backfilled": scope_backfilled,
+            "effective_refreshed": effective_refreshed,
+        }
+
     def _normalize_record(self, record: BenchmarkRecord) -> BenchmarkRecord:
         if not record.benchmark_scope_key:
             record.benchmark_scope_key = build_benchmark_scope_key(record.deployment_id, record.scene)

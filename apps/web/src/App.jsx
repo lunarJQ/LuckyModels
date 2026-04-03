@@ -71,6 +71,12 @@ const DEFAULT_PREDICT_DATASETS = [
   },
 ];
 
+const BENCHMARK_SCENE_OPTIONS = [
+  { value: "en_general", label: "英文通用场景" },
+  { value: "zh_general", label: "中文通用场景" },
+  { value: "zh_industrial", label: "中文工业设备场景" },
+];
+
 function buildModelTransferTask(overrides = {}) {
   return {
     taskId: overrides.taskId || `transfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -933,13 +939,37 @@ function downloadBlobFile(filename, blob) {
   window.URL.revokeObjectURL(url);
 }
 
-function buildInitialBenchmarkForm(deployments) {
+function resolveBenchmarkSceneForModel(model) {
+  const language = String(model?.language || "").trim().toLowerCase();
+  const datasetName = String(model?.dataset_name || "").trim().toLowerCase();
+  if (language === "en") {
+    return "en_general";
+  }
+  if (
+    datasetName.includes("industrial") ||
+    datasetName.includes("equipmentmix") ||
+    datasetName.includes("mix15k") ||
+    datasetName.includes("mfgdominant")
+  ) {
+    return "zh_industrial";
+  }
+  return "zh_general";
+}
+
+function formatBenchmarkSceneLabel(value) {
+  const matched = BENCHMARK_SCENE_OPTIONS.find((item) => item.value === String(value || "").trim());
+  return matched?.label || value || "未标注场景";
+}
+
+function buildInitialBenchmarkForm(deployments, models = []) {
   const running = deployments.find((item) => item.status === "running") || deployments[0];
+  const matchingModel = models.find((item) => item.model_id === running?.model_id);
   return {
     deploymentId: running?.deployment_id || "",
+    scene: resolveBenchmarkSceneForModel(matchingModel),
     text: "",
     label: "",
-    iterations: 3,
+    iterations: 5,
     warmupRuns: 1,
   };
 }
@@ -1128,7 +1158,7 @@ export default function App() {
   const [modelOptimizationForm, setModelOptimizationForm] = useState(buildInitialModelOptimizationForm([], null));
   const [modelTransferItems, setModelTransferItems] = useState([]);
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
-  const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([]));
+  const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([], []));
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
   const [predictSampleInfo, setPredictSampleInfo] = useState(null);
   const [predictSampleCursor, setPredictSampleCursor] = useState({});
@@ -1241,7 +1271,7 @@ export default function App() {
       if (current.deploymentId && data.deployments.some((item) => item.deployment_id === current.deploymentId)) {
         return current;
       }
-      return buildInitialBenchmarkForm(data.deployments);
+      return buildInitialBenchmarkForm(data.deployments, data.models);
     });
     setPredictForm((current) => {
       if (current.deploymentId && data.deployments.some((item) => item.deployment_id === current.deploymentId)) {
@@ -1663,6 +1693,7 @@ export default function App() {
       () =>
         createBenchmark({
           deployment_id: benchmarkForm.deploymentId,
+          scene: benchmarkForm.scene || undefined,
           text: benchmarkForm.text,
           label: benchmarkForm.label || undefined,
           iterations: Number(benchmarkForm.iterations),
@@ -8093,7 +8124,7 @@ function BenchmarksPage({
   const [statusFilter, setStatusFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
   const [sceneFilter, setSceneFilter] = useState("all");
-  const [scopeFilter, setScopeFilter] = useState("recent");
+  const [scopeFilter, setScopeFilter] = useState("effective");
   const [compareModelId, setCompareModelId] = useState("all");
   const [optimizationSourceModelId, setOptimizationSourceModelId] = useState("all");
   const [paperModelDraftId, setPaperModelDraftId] = useState("all");
@@ -8113,7 +8144,11 @@ function BenchmarksPage({
   );
 
   const benchmarkSceneOptions = useMemo(
-    () => Array.from(new Set((derived.benchmarks || []).map((item) => String(item.scene || "").trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right)),
+    () => {
+      const observed = Array.from(new Set((derived.benchmarks || []).map((item) => String(item.scene || "").trim()).filter(Boolean)));
+      const fixed = BENCHMARK_SCENE_OPTIONS.map((item) => item.value);
+      return Array.from(new Set([...fixed, ...observed])).sort((left, right) => left.localeCompare(right));
+    },
     [derived.benchmarks],
   );
 
@@ -8527,7 +8562,16 @@ function BenchmarksPage({
             <label className="stack-field">
               <span>部署实例</span>
               <select
-                onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, deploymentId: event.target.value }))}
+                onChange={(event) => {
+                  const nextDeploymentId = event.target.value;
+                  const nextDeployment = derived.deployments.find((item) => item.deployment_id === nextDeploymentId);
+                  const nextModel = derived.models.find((item) => item.model_id === nextDeployment?.model_id);
+                  onBenchmarkFormChange((current) => ({
+                    ...current,
+                    deploymentId: nextDeploymentId,
+                    scene: resolveBenchmarkSceneForModel(nextModel),
+                  }));
+                }}
                 value={benchmarkForm.deploymentId}
               >
                 {derived.runningDeployments.map((item) => (
@@ -8538,21 +8582,38 @@ function BenchmarksPage({
               </select>
             </label>
             <label className="stack-field">
-              <span>标签</span>
+              <span>基准场景</span>
+              <select
+                onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, scene: event.target.value }))}
+                value={benchmarkForm.scene || "zh_general"}
+              >
+                {BENCHMARK_SCENE_OPTIONS.map((item) => (
+                  <option key={`benchmark-create-scene-${item.value}`} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <small className="detail-note">这会告诉平台这条 benchmark 代表哪类业务文本，用于后续任务调度和部署策略读取正确证据。</small>
+            </label>
+            <label className="stack-field">
+              <span>基准标签</span>
               <input
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, label: event.target.value }))}
+                placeholder="可选，例如：工业场景换卡后复测"
                 type="text"
                 value={benchmarkForm.label}
               />
+              <small className="detail-note">标签主要用于人工区分这次测试的目的，不参与平台调度评分。</small>
             </label>
             <label className="stack-field">
-              <span>重复次数</span>
+              <span>测试轮次</span>
               <input
                 min="1"
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, iterations: event.target.value }))}
                 type="number"
                 value={benchmarkForm.iterations}
               />
+              <small className="detail-note">正式计入统计的请求轮次。轮次越多，结果越稳定，但耗时也更长。</small>
             </label>
             <label className="stack-field">
               <span>预热轮数</span>
@@ -8562,14 +8623,16 @@ function BenchmarksPage({
                 type="number"
                 value={benchmarkForm.warmupRuns}
               />
+              <small className="detail-note">预热请求不会计入最终统计，适合先让模型和运行时进入稳定状态。</small>
             </label>
             <label className="stack-field stack-field-wide">
-              <span>文本</span>
+              <span>基准文本</span>
               <textarea
                 onChange={(event) => onBenchmarkFormChange((current) => ({ ...current, text: event.target.value }))}
                 rows="4"
                 value={benchmarkForm.text}
               />
+              <small className="detail-note">建议输入与所选场景一致的代表性文本。若是工业场景，尽量使用设备、故障、制造流程相关文本。</small>
             </label>
             <div className="actions">
               <button className="btn-primary" disabled={actionBusy["create-benchmark"]} onClick={() => void onCreateBenchmark()} type="button">
@@ -8623,7 +8686,7 @@ function BenchmarksPage({
                 <option value="none">未标注场景</option>
                 {benchmarkSceneOptions.map((item) => (
                   <option key={`benchmark-scene-${item}`} value={item}>
-                    {item}
+                    {formatBenchmarkSceneLabel(item)}
                   </option>
                 ))}
               </select>
@@ -8656,7 +8719,7 @@ function BenchmarksPage({
                 setStatusFilter("all");
                 setModelFilter("all");
                 setSceneFilter("all");
-                setScopeFilter("recent");
+                setScopeFilter("effective");
               }}
               type="button"
             >
@@ -8694,7 +8757,7 @@ function BenchmarksPage({
                         <div className="table-note">{item.deployment_id || "-"}</div>
                       </td>
                       <td>
-                        <div>{item.scene || "未标注场景"}</div>
+                        <div>{formatBenchmarkSceneLabel(item.scene)}</div>
                         <div className="table-note">
                           {item.is_effective ? "最新有效记录" : item.superseded_by ? `已被 ${item.superseded_by} 覆盖` : "历史记录"}
                         </div>
