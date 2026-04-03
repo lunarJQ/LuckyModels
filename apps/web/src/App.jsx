@@ -844,6 +844,20 @@ function formatProviderSummary(deployment) {
   return providers.length ? providers.join(", ") : "待检测";
 }
 
+function formatProviderPreferenceLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "tensorrt") {
+    return "TensorRT Execution Provider";
+  }
+  if (normalized === "cuda") {
+    return "CUDA Execution Provider";
+  }
+  if (normalized === "cpu") {
+    return "CPUExecutionProvider";
+  }
+  return normalized || "自动";
+}
+
 function getDeploymentAssignedGpuIds(deployment) {
   const payload = getDeploymentHealthPayload(deployment);
   if (Array.isArray(payload.assigned_gpu_ids) && payload.assigned_gpu_ids.length) {
@@ -7129,6 +7143,20 @@ function ModelsPage({
   );
   const selectedDeploymentBackend =
     deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
+  const runtimeCapabilitySummary = useMemo(() => {
+    const cudaUsable = isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider");
+    const trtUsable = isRuntimeProviderUsable(runtimeCapabilities, "TensorrtExecutionProvider");
+    if (cudaUsable && trtUsable) {
+      return "当前环境支持 CUDA EP 与 TensorRT EP，平台会按可用性自动放出对应部署选项。";
+    }
+    if (cudaUsable) {
+      return "当前环境支持 CUDA EP，不支持 TensorRT EP；平台会显示 CUDA 部署后端，并隐藏 TensorRT 选项。";
+    }
+    if (trtUsable) {
+      return "当前环境支持 TensorRT EP，平台会显示 TensorRT 部署后端。";
+    }
+    return "当前环境仅确认 CPUExecutionProvider 可用；平台会隐藏不可用的 GPU 执行后端。";
+  }, [runtimeCapabilities]);
   const recommendationByModelId = useMemo(
     () => new Map((deploymentPolicy?.recommendations || []).map((item) => [item.model_id, item])),
     [deploymentPolicy],
@@ -7402,7 +7430,8 @@ function ModelsPage({
               </table>
             </div>
             <div className="detail-note">
-              当前平台已经实际接入的工具链优化优先级建议：先用 ORT 图优化、ORT Format 和 FP16；如果后续服务器补齐 TensorRT / CUDA 依赖，再把 TensorRT provider 作为 GPU 专项优化入口打开。
+              {runtimeCapabilitySummary}
+              目前平台内已经实际接入的工具链优化优先级建议：先用 ORT 图优化、ORT Format 和 FP16，再根据当前服务器能力选择 CPU 或 CUDA 后端。
             </div>
           </div>
         ) : null}
@@ -8295,7 +8324,8 @@ function DeploymentsPage({
                         <div className="table-note">GPU 加速：{formatBooleanLabel(item.use_gpu)}</div>
                         <div className="table-note">GPU 卡号：{formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
                         <div className="table-note">{formatExecutionSummary(item)}</div>
-                        <div className="table-note">执行后端：{formatProviderSummary(item)}</div>
+                        <div className="table-note">后端偏好：{formatProviderPreferenceLabel(item.provider_preference)}</div>
+                        <div className="table-note">实际激活：{formatProviderSummary(item)}</div>
                       </td>
                       <td><StatusPill status={item.status} /></td>
                       <td>
@@ -9830,13 +9860,15 @@ function ResourcesPage({ actionBusy, derived, onApplyGpuPoolUpdate }) {
                   <br />
                   可见 GPU：{payload.cuda_visible_devices || "全部"}
                   <br />
+                  后端偏好：{formatProviderPreferenceLabel(item.provider_preference)}
+                  <br />
                   实例数：{execution.instance_count ?? 1}
                   <br />
                   批量大小：{execution.batch_size ?? 1}
                   <br />
                   算子内 / 算子间线程：{execution.intra_op_threads ?? 0} / {execution.inter_op_threads ?? 0}
                   <br />
-                  执行后端：{providers.join(", ") || "待检测"}
+                  实际激活：{providers.join(", ") || "待检测"}
                   <br />
                   进程存活：{formatBooleanLabel(item.health?.pid_alive ?? false)}
                   <br />
