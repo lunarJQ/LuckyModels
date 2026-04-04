@@ -33,7 +33,7 @@ def inspect_runtime_capabilities(settings: Settings) -> dict[str, Any]:
             available_providers=available_providers,
             probe_model=probe_model,
         )
-        for provider_name in ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        for provider_name in ["CUDAExecutionProvider", "CPUExecutionProvider"]
     ]
     return {
         "onnxruntime_installed": True,
@@ -76,11 +76,6 @@ def _probe_provider(
         row["detail"] = "当前 onnxruntime wheel 未内置该 provider。"
         return row
     _preload_runtime_dlls(ort=ort, provider_name=provider_name)
-    if provider_name == "TensorrtExecutionProvider":
-        missing_libraries = _missing_tensorrt_runtime_libraries()
-        if missing_libraries:
-            row["detail"] = f"缺少底层运行库：{', '.join(missing_libraries)}"
-            return row
     if probe_model is None:
         row["detail"] = "平台当前没有可用于探测的 ONNX 制品，无法做运行时探测。"
         return row
@@ -99,7 +94,7 @@ def _probe_provider(
 
 
 def _preload_runtime_dlls(*, ort: Any, provider_name: str) -> None:
-    if provider_name not in {"CUDAExecutionProvider", "TensorrtExecutionProvider"}:
+    if provider_name != "CUDAExecutionProvider":
         return
     preload = getattr(ort, "preload_dlls", None)
     if callable(preload):
@@ -107,22 +102,3 @@ def _preload_runtime_dlls(*, ort: Any, provider_name: str) -> None:
             preload(directory="")
         except Exception:
             pass
-
-
-def _missing_tensorrt_runtime_libraries() -> list[str]:
-    try:
-        import ctypes
-    except ImportError:
-        return ["ctypes"]
-
-    requirements = [
-        "libnvinfer.so.10",
-        "libnvinfer_plugin.so.10",
-    ]
-    missing: list[str] = []
-    for library_name in requirements:
-        try:
-            ctypes.CDLL(library_name)
-        except OSError:
-            missing.append(library_name)
-    return missing

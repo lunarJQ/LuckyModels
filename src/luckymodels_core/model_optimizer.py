@@ -117,7 +117,7 @@ def optimize_model_package(
             optimized_artifacts[artifact_name] = relative_target
 
         if normalized_type == OPTIMIZATION_TYPE_INT8_DYNAMIC:
-            _rewrite_profiles_for_int8_cpu(target_root, manifest_data.get("profiles") or {})
+            _rewrite_profiles_for_int8(target_root, manifest_data.get("profiles") or {})
 
         _write_yaml(target_root / "manifest.yaml", manifest_data)
         _write_package_metadata(
@@ -239,13 +239,11 @@ def _run_int8_dynamic_quantization(source_path: Path, output_path: Path) -> None
         raise RuntimeError(f"INT8 dynamic quantization did not produce output: {output_path}")
 
 
-def _rewrite_profiles_for_int8_cpu(target_root: Path, profile_mapping: dict[str, str]) -> None:
+def _rewrite_profiles_for_int8(target_root: Path, profile_mapping: dict[str, str]) -> None:
     for relative_path in profile_mapping.values():
         profile_path = target_root / relative_path
         profile = load_profile(profile_path)
         profile.runtime = "onnxruntime"
-        profile.device = "cpu"
-        profile.gpu_ids = []
         profile.execution["precision"] = "int8"
         _write_yaml(profile_path, profile.model_dump(mode="python", exclude_none=True))
 

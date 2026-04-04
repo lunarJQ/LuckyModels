@@ -330,11 +330,9 @@ def _resolve_provider_preference(
     if not use_gpu:
         return "cpu"
     normalized = str(requested_preference or "").strip().lower()
-    if normalized in {"cuda", "tensorrt"}:
+    if normalized == "cuda":
         return normalized
     capabilities = inspect_runtime_capabilities(settings)
-    if _runtime_provider_usable(capabilities, "TensorrtExecutionProvider"):
-        return "tensorrt"
     if _runtime_provider_usable(capabilities, "CUDAExecutionProvider"):
         return "cuda"
     return "cpu"
@@ -350,8 +348,6 @@ def _validate_runtime_backend_choice(
     capabilities = inspect_runtime_capabilities(settings)
     if not use_gpu:
         return
-    if normalized == "tensorrt" and not _runtime_provider_usable(capabilities, "TensorrtExecutionProvider"):
-        raise HTTPException(status_code=400, detail="当前服务器环境不支持 TensorRT Execution Provider，平台已禁止创建该部署选项。")
     if normalized == "cuda" and not _runtime_provider_usable(capabilities, "CUDAExecutionProvider"):
         raise HTTPException(status_code=400, detail="当前服务器环境不支持 CUDA Execution Provider，平台已禁止创建该部署选项。")
     if normalized == "cpu":

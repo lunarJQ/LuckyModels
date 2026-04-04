@@ -210,14 +210,6 @@ def provider_list(profile_or_device: Any) -> list[str]:
     provider_preference = _resolve_provider_preference(profile_or_device)
     if provider_preference == "cpu":
         return ["CPUExecutionProvider"]
-    if provider_preference == "tensorrt":
-        providers: list[str] = []
-        if "TensorrtExecutionProvider" in available:
-            providers.append("TensorrtExecutionProvider")
-        if "CUDAExecutionProvider" in available:
-            providers.append("CUDAExecutionProvider")
-        providers.append("CPUExecutionProvider")
-        return providers
     if profile_device.lower().startswith("cuda") and "CUDAExecutionProvider" in available:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
@@ -284,36 +276,17 @@ def _resolve_provider_preference(profile_or_device: Any) -> str:
         return "cuda" if device.lower().startswith("cuda") else "cpu"
     execution = getattr(profile_or_device, "execution", {}) or {}
     preferred = str(execution.get("provider_preference", "") or "").strip().lower()
-    if preferred in {"tensorrt", "cuda", "cpu"}:
+    if preferred in {"cuda", "cpu"}:
         return preferred
     device = _resolve_profile_device(profile_or_device)
     return "cuda" if device.lower().startswith("cuda") else "cpu"
 
 
 def _build_provider_options(providers: list[str], profile: Any) -> list[dict[str, str]]:
-    execution = getattr(profile, "execution", {}) or {}
     provider_options: list[dict[str, str]] = []
-    trt_cache_dir = str(execution.get("trt_engine_cache_path", "") or "").strip()
     for provider_name in providers:
-        options: dict[str, str] = {}
-        if provider_name == "TensorrtExecutionProvider":
-            if execution.get("trt_fp16_enable") is not None:
-                options["trt_fp16_enable"] = _bool_to_provider_flag(execution.get("trt_fp16_enable"))
-            if execution.get("trt_engine_cache_enable") is not None:
-                options["trt_engine_cache_enable"] = _bool_to_provider_flag(execution.get("trt_engine_cache_enable"))
-            if trt_cache_dir:
-                Path(trt_cache_dir).mkdir(parents=True, exist_ok=True)
-                options["trt_engine_cache_path"] = trt_cache_dir
-            if execution.get("trt_builder_optimization_level") is not None:
-                options["trt_builder_optimization_level"] = str(execution.get("trt_builder_optimization_level"))
-            if execution.get("trt_timing_cache_enable") is not None:
-                options["trt_timing_cache_enable"] = _bool_to_provider_flag(execution.get("trt_timing_cache_enable"))
-        provider_options.append(options)
+        provider_options.append({})
     return provider_options
-
-
-def _bool_to_provider_flag(value: Any) -> str:
-    return "1" if bool(value) else "0"
 
 
 def load_vocab(vocab_path: str) -> dict[str, int]:

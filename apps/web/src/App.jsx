@@ -252,6 +252,199 @@ function getOptimizationSummaryForModel(modelId, details) {
   };
 }
 
+function getCreatedAtTimestamp(value) {
+  const timestamp = Date.parse(String(value || "").trim());
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareCreatedAtDesc(left, right) {
+  const timestampDiff = getCreatedAtTimestamp(right?.created_at) - getCreatedAtTimestamp(left?.created_at);
+  if (timestampDiff !== 0) {
+    return timestampDiff;
+  }
+  return String(right?.benchmark_id || "").localeCompare(String(left?.benchmark_id || ""));
+}
+
+function selectLatestPreferredBenchmark(items) {
+  const completed = (items || []).filter((item) => item?.status === "completed");
+  if (!completed.length) {
+    return null;
+  }
+  const effective = completed.filter((item) => item?.is_effective);
+  const preferredPool = effective.length ? effective : completed;
+  return [...preferredPool].sort(compareCreatedAtDesc)[0] || null;
+}
+
+function buildLatestPreferredBenchmarkCompareRows(benchmarks, deployments, modelDetails, compareModelId = "all") {
+  const deploymentMap = new Map((deployments || []).map((item) => [item.deployment_id, item]));
+  const scoped = (benchmarks || []).filter(
+    (item) => item?.status === "completed" && (compareModelId === "all" || item?.model_id === compareModelId),
+  );
+  const grouped = new Map();
+
+  scoped.forEach((item) => {
+    const key = `${item.model_id}::${item.profile_name}`;
+    const current = grouped.get(key) || {
+      model_id: item.model_id,
+      profile_name: item.profile_name,
+      items: [],
+    };
+    current.items.push(item);
+    grouped.set(key, current);
+  });
+
+  return Array.from(grouped.values())
+    .map(({ model_id, profile_name, items }) => {
+      const selected = selectLatestPreferredBenchmark(items);
+      if (!selected) {
+        return null;
+      }
+      const latestDeployment = deploymentMap.get(selected.deployment_id);
+      const execution = latestDeployment ? getDeploymentExecution(latestDeployment) : {};
+      const providers = latestDeployment ? getDeploymentProviders(latestDeployment) : [];
+      const optimizationSummary = getOptimizationSummaryForModel(model_id, modelDetails);
+      const totalRequests = Number(selected.total_requests || 0);
+      const successCount = Number(selected.success_count || 0);
+      return {
+        model_id,
+        profile_name,
+        run_count: items.length,
+        avg_latency_ms: selected.avg_latency_ms ?? null,
+        p95_latency_ms: selected.p95_latency_ms ?? null,
+        throughput_qps: selected.throughput_qps ?? null,
+        remote_avg_latency_ms: selected.remote_avg_latency_ms ?? null,
+        success_rate: totalRequests ? successCount / totalRequests : null,
+        avg_batch_size: selected.sample_response?.batch_size ?? 1,
+        instance_count: execution.instance_count ?? null,
+        intra_op_threads: execution.intra_op_threads ?? null,
+        inter_op_threads: execution.inter_op_threads ?? null,
+        max_length: execution.max_length ?? null,
+        device: latestDeployment?.device || null,
+        providers: providers.join(" / "),
+        latest_benchmark_id: selected.benchmark_id || "-",
+        latest_created_at: selected.created_at || "-",
+        latest_scene: selected.scene || "",
+        selection_mode: selected.is_effective ? "latest_effective" : "latest_completed",
+        selection_label: selected.is_effective ? "最新有效记录" : "最新完成记录",
+        selected_benchmark_id: selected.benchmark_id || "-",
+        selected_benchmark_created_at: selected.created_at || "-",
+        selected_benchmark_is_effective: Boolean(selected.is_effective),
+        optimization_type: optimizationSummary.optimizationType,
+        optimization_label: optimizationSummary.optimizationLabel,
+        source_model_id: optimizationSummary.sourceModelId,
+        comparison_root_model_id: optimizationSummary.sourceModelId || model_id,
+        is_generated_variant: optimizationSummary.isGenerated,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left.model_id !== right.model_id) {
+        return left.model_id.localeCompare(right.model_id);
+      }
+      return left.profile_name.localeCompare(right.profile_name);
+    });
+}
+
+function buildOptimizationBenchmarkCompareRows(compareRows, optimizationSourceModelId = "all") {
+  function selectRepresentativeBaselineRow(rows) {
+    if (!rows.length) {
+      return null;
+    }
+    const minLatency = Math.min(...rows.map((item) => Number(item.avg_latency_ms || Number.POSITIVE_INFINITY)));
+    const maxThroughput = Math.max(...rows.map((item) => Number(item.throughput_qps || 0)));
+    const maxSuccess = Math.max(...rows.map((item) => Number(item.success_rate || 0)));
+
+    return [...rows].sort((left, right) => {
+      const leftLatency = Number(left.avg_latency_ms || Number.POSITIVE_INFINITY);
+      const rightLatency = Number(right.avg_latency_ms || Number.POSITIVE_INFINITY);
+      const leftThroughput = Number(left.throughput_qps || 0);
+      const rightThroughput = Number(right.throughput_qps || 0);
+      const leftSuccess = Number(left.success_rate || 0);
+      const rightSuccess = Number(right.success_rate || 0);
+      const leftScore =
+        (Number.isFinite(leftLatency) && leftLatency > 0 && Number.isFinite(minLatency) ? minLatency / leftLatency : 0)
+        + (maxThroughput > 0 ? leftThroughput / maxThroughput : 0)
+        + (maxSuccess > 0 ? leftSuccess / maxSuccess : 0);
+      const rightScore =
+        (Number.isFinite(rightLatency) && rightLatency > 0 && Number.isFinite(minLatency) ? minLatency / rightLatency : 0)
+        + (maxThroughput > 0 ? rightThroughput / maxThroughput : 0)
+        + (maxSuccess > 0 ? rightSuccess / maxSuccess : 0);
+
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
+      if (leftLatency !== rightLatency) {
+        return leftLatency - rightLatency;
+      }
+      if (rightThroughput !== leftThroughput) {
+        return rightThroughput - leftThroughput;
+      }
+      return String(left.profile_name || "").localeCompare(String(right.profile_name || ""));
+    })[0] || null;
+  }
+
+  const grouped = new Map();
+  (compareRows || []).forEach((row) => {
+    const rootModelId = row.comparison_root_model_id || row.model_id;
+    const current = grouped.get(rootModelId) || [];
+    current.push(row);
+    grouped.set(rootModelId, current);
+  });
+
+  const rows = [];
+  grouped.forEach((items, rootModelId) => {
+    const hasGenerated = items.some((item) => item.is_generated_variant);
+    if (!hasGenerated || items.length <= 1) {
+      return;
+    }
+    if (optimizationSourceModelId !== "all" && rootModelId !== optimizationSourceModelId) {
+      return;
+    }
+    const baselineRows = items.filter((item) => !item.is_generated_variant && item.model_id === rootModelId);
+    const representativeBaselineRow = selectRepresentativeBaselineRow(baselineRows);
+    const bestBaselineLatency = representativeBaselineRow?.avg_latency_ms ?? null;
+    const bestBaselineThroughput = representativeBaselineRow?.throughput_qps ?? null;
+    const visibleItems = representativeBaselineRow
+      ? [representativeBaselineRow, ...items.filter((item) => item.is_generated_variant)]
+      : items.filter((item) => item.is_generated_variant);
+
+    visibleItems.forEach((item) => {
+      const latencyValue = Number(item.avg_latency_ms);
+      const throughputValue = Number(item.throughput_qps);
+      const latencyGainPct =
+        item.is_generated_variant && Number.isFinite(latencyValue) && Number.isFinite(bestBaselineLatency) && bestBaselineLatency > 0
+          ? ((bestBaselineLatency - latencyValue) / bestBaselineLatency) * 100
+          : null;
+      const throughputGainPct =
+        item.is_generated_variant && Number.isFinite(throughputValue) && Number.isFinite(bestBaselineThroughput) && bestBaselineThroughput > 0
+          ? ((throughputValue - bestBaselineThroughput) / bestBaselineThroughput) * 100
+          : null;
+      rows.push({
+        ...item,
+        baseline_best_latency_ms: bestBaselineLatency,
+        baseline_best_throughput_qps: bestBaselineThroughput,
+        baseline_profile_name: representativeBaselineRow?.profile_name || "",
+        baseline_device: representativeBaselineRow?.device || "",
+        baseline_benchmark_id: representativeBaselineRow?.latest_benchmark_id || "-",
+        latency_gain_pct: latencyGainPct,
+        throughput_gain_pct: throughputGainPct,
+        variant_label: item.is_generated_variant ? (item.optimization_label || "平台生成版本") : "原始最优版本",
+        source_root_model_id: rootModelId,
+      });
+    });
+  });
+
+  return rows.sort((left, right) => {
+    if (left.source_root_model_id !== right.source_root_model_id) {
+      return left.source_root_model_id.localeCompare(right.source_root_model_id);
+    }
+    if (left.model_id !== right.model_id) {
+      return left.model_id.localeCompare(right.model_id);
+    }
+    return left.profile_name.localeCompare(right.profile_name);
+  });
+}
+
 function getRuntimeProviderCapability(runtimeCapabilities, providerName) {
   return (runtimeCapabilities?.providers || []).find((item) => item.provider === providerName) || null;
 }
@@ -261,17 +454,10 @@ function isRuntimeProviderUsable(runtimeCapabilities, providerName) {
 }
 
 function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType = "") {
-  if (!useGpu || optimizationType === "int8_dynamic") {
+  if (!useGpu) {
     return [{ value: "cpu", label: "CPUExecutionProvider", note: "当前部署按 CPU 路径运行。" }];
   }
   const options = [];
-  if (isRuntimeProviderUsable(runtimeCapabilities, "TensorrtExecutionProvider")) {
-    options.push({
-      value: "tensorrt",
-      label: "TensorRT Execution Provider",
-      note: "优先使用 TensorRT，失败时由 ONNX Runtime 自动回退。",
-    });
-  }
   if (isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider")) {
     options.push({
       value: "cuda",
@@ -295,14 +481,6 @@ function resolveDeploymentProviderPreference(currentPreference, runtimeCapabilit
 
 function getSuggestedDeploymentPreset(modelId, details, recommendation = null) {
   const optimization = getOptimizationSummaryForModel(modelId, details);
-  if (optimization.optimizationType === "int8_dynamic") {
-    return {
-      useGpu: false,
-      gpuIds: [],
-      deviceLabel: "CPU",
-      reason: "INT8 动态量化版本当前默认按 CPU 路径部署，更符合当前 ORT 配置。",
-    };
-  }
   const useGpu = recommendation?.recommended_use_gpu ?? true;
   return {
     useGpu,
@@ -846,9 +1024,6 @@ function formatProviderSummary(deployment) {
 
 function formatProviderPreferenceLabel(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "tensorrt") {
-    return "TensorRT Execution Provider";
-  }
   if (normalized === "cuda") {
     return "CUDA Execution Provider";
   }
@@ -7145,15 +7320,8 @@ function ModelsPage({
     deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
   const runtimeCapabilitySummary = useMemo(() => {
     const cudaUsable = isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider");
-    const trtUsable = isRuntimeProviderUsable(runtimeCapabilities, "TensorrtExecutionProvider");
-    if (cudaUsable && trtUsable) {
-      return "当前环境支持 CUDA EP 与 TensorRT EP，平台会按可用性自动放出对应部署选项。";
-    }
     if (cudaUsable) {
-      return "当前环境支持 CUDA EP，不支持 TensorRT EP；平台会显示 CUDA 部署后端，并隐藏 TensorRT 选项。";
-    }
-    if (trtUsable) {
-      return "当前环境支持 TensorRT EP，平台会显示 TensorRT 部署后端。";
+      return "当前环境支持 CUDA EP，平台会显示 CUDA 部署后端。";
     }
     return "当前环境仅确认 CPUExecutionProvider 可用；平台会隐藏不可用的 GPU 执行后端。";
   }, [runtimeCapabilities]);
@@ -7184,7 +7352,6 @@ function ModelsPage({
           Number(right.predict_ready) - Number(left.predict_ready) || left.model_name.localeCompare(right.model_name),
       );
   }, [deferredSearch, derived.models, originFilter, runtimeFilter]);
-
   return (
     <>
       {canImportModels ? (
@@ -7591,7 +7758,7 @@ function ModelsPage({
             {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
               <small className="detail-note">INT8 动态量化版本当前默认固定为 CPU 部署。</small>
             ) : !getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
-              <small className="detail-note">当前服务器环境未通过 CUDA / TensorRT 运行时探测，平台已禁用 GPU 部署入口。</small>
+              <small className="detail-note">当前服务器环境未通过 CUDA 运行时探测，平台已禁用 GPU 部署入口。</small>
             ) : null}
           </label>
           <label className="stack-check">
@@ -8204,7 +8371,7 @@ function DeploymentsPage({
               {selectedDeploymentModelSummary.optimizationType === "int8_dynamic" ? (
                 <small className="detail-note">INT8 动态量化版本默认固定为 CPU 部署。</small>
               ) : !getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
-                <small className="detail-note">当前服务器环境未通过 CUDA / TensorRT 运行时探测，平台已禁用 GPU 部署入口。</small>
+                <small className="detail-note">当前服务器环境未通过 CUDA 运行时探测，平台已禁用 GPU 部署入口。</small>
               ) : null}
 	          </label>
           <label className="stack-check">
@@ -8500,60 +8667,12 @@ function BenchmarksPage({
   const benchmarkRecordPagination = useTablePagination(filteredBenchmarks, 5);
 
   const compareRows = useMemo(() => {
-    const deploymentMap = new Map(derived.deployments.map((item) => [item.deployment_id, item]));
-    const scoped = completedBenchmarks.filter((item) => compareModelId === "all" || item.model_id === compareModelId);
-    const grouped = new Map();
-    scoped.forEach((item) => {
-      const key = `${item.model_id}::${item.profile_name}`;
-      const current = grouped.get(key) || {
-        model_id: item.model_id,
-        profile_name: item.profile_name,
-        items: [],
-      };
-      current.items.push(item);
-      grouped.set(key, current);
-    });
-
-    return Array.from(grouped.values())
-      .map(({ model_id, profile_name, items }) => {
-        const totalRequests = items.reduce((sum, item) => sum + Number(item.total_requests || 0), 0);
-        const successCount = items.reduce((sum, item) => sum + Number(item.success_count || 0), 0);
-        const latest = sortByCreatedDesc(items)[0];
-        const latestDeployment = deploymentMap.get(latest?.deployment_id);
-        const execution = latestDeployment ? getDeploymentExecution(latestDeployment) : {};
-        const providers = latestDeployment ? getDeploymentProviders(latestDeployment) : [];
-        const optimizationSummary = getOptimizationSummaryForModel(model_id, derived.modelDetails);
-        return {
-          model_id,
-          profile_name,
-          run_count: items.length,
-          avg_latency_ms: meanBy(items, (item) => item.avg_latency_ms),
-          p95_latency_ms: meanBy(items, (item) => item.p95_latency_ms),
-          throughput_qps: meanBy(items, (item) => item.throughput_qps),
-          remote_avg_latency_ms: meanBy(items, (item) => item.remote_avg_latency_ms),
-          success_rate: totalRequests ? successCount / totalRequests : null,
-          avg_batch_size: meanBy(items, (item) => item.sample_response?.batch_size ?? 1),
-          instance_count: execution.instance_count ?? null,
-          intra_op_threads: execution.intra_op_threads ?? null,
-          inter_op_threads: execution.inter_op_threads ?? null,
-          max_length: execution.max_length ?? null,
-          device: latestDeployment?.device || null,
-          providers: providers.join(" / "),
-          latest_benchmark_id: latest?.benchmark_id || "-",
-          latest_created_at: latest?.created_at || "-",
-          optimization_type: optimizationSummary.optimizationType,
-          optimization_label: optimizationSummary.optimizationLabel,
-          source_model_id: optimizationSummary.sourceModelId,
-          comparison_root_model_id: optimizationSummary.sourceModelId || model_id,
-          is_generated_variant: optimizationSummary.isGenerated,
-        };
-      })
-      .sort((left, right) => {
-        if (left.model_id !== right.model_id) {
-          return left.model_id.localeCompare(right.model_id);
-        }
-        return left.profile_name.localeCompare(right.profile_name);
-      });
+    return buildLatestPreferredBenchmarkCompareRows(
+      completedBenchmarks,
+      derived.deployments,
+      derived.modelDetails,
+      compareModelId,
+    );
   }, [compareModelId, completedBenchmarks, derived.deployments, derived.modelDetails]);
   const compareRowPagination = useTablePagination(compareRows, 5);
 
@@ -8640,54 +8759,8 @@ function BenchmarksPage({
   }, [optimizationSourceModelId, optimizationSourceOptions]);
 
   const optimizationCompareRows = useMemo(() => {
-    const rows = [];
-    optimizationGroups.forEach((items, rootModelId) => {
-      const hasGenerated = items.some((item) => item.is_generated_variant);
-      if (!hasGenerated || items.length <= 1) {
-        return;
-      }
-      if (optimizationSourceModelId !== "all" && rootModelId !== optimizationSourceModelId) {
-        return;
-      }
-      const baselineRows = items.filter((item) => !item.is_generated_variant && item.model_id === rootModelId);
-      const bestBaselineLatency = baselineRows.length
-        ? Math.min(...baselineRows.map((item) => Number(item.avg_latency_ms || Number.POSITIVE_INFINITY)))
-        : null;
-      const bestBaselineThroughput = baselineRows.length
-        ? Math.max(...baselineRows.map((item) => Number(item.throughput_qps || 0)))
-        : null;
-      items.forEach((item) => {
-        const latencyValue = Number(item.avg_latency_ms);
-        const throughputValue = Number(item.throughput_qps);
-        const latencyGainPct =
-          item.is_generated_variant && Number.isFinite(latencyValue) && Number.isFinite(bestBaselineLatency) && bestBaselineLatency > 0
-            ? ((bestBaselineLatency - latencyValue) / bestBaselineLatency) * 100
-            : null;
-        const throughputGainPct =
-          item.is_generated_variant && Number.isFinite(throughputValue) && Number.isFinite(bestBaselineThroughput) && bestBaselineThroughput > 0
-            ? ((throughputValue - bestBaselineThroughput) / bestBaselineThroughput) * 100
-            : null;
-        rows.push({
-          ...item,
-          baseline_best_latency_ms: bestBaselineLatency,
-          baseline_best_throughput_qps: bestBaselineThroughput,
-          latency_gain_pct: latencyGainPct,
-          throughput_gain_pct: throughputGainPct,
-          variant_label: item.optimization_label || "原始版本",
-          source_root_model_id: rootModelId,
-        });
-      });
-    });
-    return rows.sort((left, right) => {
-      if (left.source_root_model_id !== right.source_root_model_id) {
-        return left.source_root_model_id.localeCompare(right.source_root_model_id);
-      }
-      if (left.model_id !== right.model_id) {
-        return left.model_id.localeCompare(right.model_id);
-      }
-      return left.profile_name.localeCompare(right.profile_name);
-    });
-  }, [optimizationGroups, optimizationSourceModelId]);
+    return buildOptimizationBenchmarkCompareRows(compareRows, optimizationSourceModelId);
+  }, [compareRows, optimizationSourceModelId]);
   const optimizationComparePagination = useTablePagination(optimizationCompareRows, 5);
 
   const bestOptimizationLatencyRow = useMemo(() => {
@@ -8701,6 +8774,52 @@ function BenchmarksPage({
       .filter((item) => item.is_generated_variant && item.throughput_gain_pct !== null)
       .sort((left, right) => Number(right.throughput_gain_pct) - Number(left.throughput_gain_pct))[0] || null;
   }, [optimizationCompareRows]);
+  const selectedOptimizationSourceRows = useMemo(() => {
+    if (optimizationSourceModelId === "all") {
+      return [];
+    }
+    return optimizationCompareRows.filter((item) => item.source_root_model_id === optimizationSourceModelId);
+  }, [optimizationCompareRows, optimizationSourceModelId]);
+  const selectedOptimizationSourceSummary = useMemo(() => {
+    if (!selectedOptimizationSourceRows.length) {
+      return {
+        bestLatency: null,
+        bestThroughput: null,
+        bestSuccess: null,
+        bestLatencyGain: null,
+        bestThroughputGain: null,
+      };
+    }
+    return {
+      bestLatency:
+        [...selectedOptimizationSourceRows]
+          .filter((item) => item.avg_latency_ms !== null)
+          .sort((left, right) => Number(left.avg_latency_ms) - Number(right.avg_latency_ms))[0] || null,
+      bestThroughput:
+        [...selectedOptimizationSourceRows]
+          .filter((item) => item.throughput_qps !== null)
+          .sort((left, right) => Number(right.throughput_qps) - Number(left.throughput_qps))[0] || null,
+      bestSuccess:
+        [...selectedOptimizationSourceRows]
+          .filter((item) => item.success_rate !== null)
+          .sort((left, right) => Number(right.success_rate) - Number(left.success_rate))[0] || null,
+      bestLatencyGain:
+        [...selectedOptimizationSourceRows]
+          .filter((item) => item.is_generated_variant && item.latency_gain_pct !== null)
+          .sort((left, right) => Number(right.latency_gain_pct) - Number(left.latency_gain_pct))[0] || null,
+      bestThroughputGain:
+        [...selectedOptimizationSourceRows]
+          .filter((item) => item.is_generated_variant && item.throughput_gain_pct !== null)
+          .sort((left, right) => Number(right.throughput_gain_pct) - Number(left.throughput_gain_pct))[0] || null,
+    };
+  }, [selectedOptimizationSourceRows]);
+  const optimizationChartMaxima = useMemo(() => {
+    return {
+      latency: Math.max(...selectedOptimizationSourceRows.map((item) => Number(item.avg_latency_ms || 0)), 1),
+      throughput: Math.max(...selectedOptimizationSourceRows.map((item) => Number(item.throughput_qps || 0)), 1),
+      success: Math.max(...selectedOptimizationSourceRows.map((item) => Number(item.success_rate || 0)), 1),
+    };
+  }, [selectedOptimizationSourceRows]);
 
   function handleExportFilteredBenchmarks() {
     if (!filteredBenchmarks.length) {
@@ -9081,7 +9200,7 @@ function BenchmarksPage({
         <SectionHeader
           kicker="论文截图专区"
           title="论文截图视图"
-          note="选择单个模型后，一键生成更适合论文截图的配置模板对比条形图和结论卡片。导出文件仍会下载到你本地浏览器默认下载目录。"
+          note="选择单个模型后，一键生成更适合论文截图的配置模板对比条形图和结论卡片。这里的性能值优先使用各配置模板最新有效 benchmark，没有有效记录时才回退到最新完成记录。"
           right={
             <div className="actions">
               <button className="btn-primary" disabled={!compareModelOptions.length} onClick={handleGeneratePaperView} type="button">
@@ -9118,7 +9237,7 @@ function BenchmarksPage({
                 <div className="paper-hero-kicker">可用于论文</div>
                 <h3>{paperModelId}</h3>
                 <p>
-                  当前页面已经按配置模板聚合了该模型的已完成基准记录，可直接用于论文截图、性能趋势说明和实验对比表整理。
+                  当前页面按配置模板选取该模型最新的 benchmark 记录做正式对比，优先使用最新有效记录；如果某个模板还没有有效记录，就回退到该模板最新完成记录，可直接用于论文截图和实验结论整理。
                 </p>
                 <div className="tag-list">
                   <span className="tag">模板数：{selectedPaperModelRows.length}</span>
@@ -9224,7 +9343,7 @@ function BenchmarksPage({
         <SectionHeader
           kicker="模板对比"
           title="配置模板对比视图"
-          note="按模型聚合已完成基准测试，直接比较不同配置模板的平均延迟、P95、吞吐量和成功率。CSV 导出会由浏览器下载到你本地电脑。"
+          note="按模型比较不同配置模板的最新 benchmark 表现。每个模型/模板组合优先取最新有效记录，没有有效记录时回退到最新完成记录。CSV 导出会由浏览器下载到你本地电脑。"
           right={
             <div className="actions">
               <button disabled={!compareRows.length} onClick={handleExportCompareRows} type="button">
@@ -9249,7 +9368,7 @@ function BenchmarksPage({
           </div>
           <div className="filter-foot">
             <div className="filter-meta">
-              当前聚合 {compareRows.length} 个模型/模板组合，基于 {completedBenchmarks.length} 条已完成基准记录。
+              当前展示 {compareRows.length} 个模型/模板组合。性能值来自各组合的最新优先 benchmark，历史上共参考 {completedBenchmarks.length} 条已完成记录。
             </div>
           </div>
         </div>
@@ -9260,22 +9379,22 @@ function BenchmarksPage({
               <MetricCard
                 title="最低平均延迟"
                 value={bestLatencyRow ? Number(bestLatencyRow.avg_latency_ms).toFixed(3) : "-"}
-                note={bestLatencyRow ? `${bestLatencyRow.model_id} · ${bestLatencyRow.profile_name}` : "暂无"}
+                note={bestLatencyRow ? `当前对比中延迟最优：${bestLatencyRow.model_id} · ${bestLatencyRow.profile_name}` : "当前还没有可比较模板"}
               />
               <MetricCard
                 title="最高吞吐量"
                 value={bestThroughputRow ? Number(bestThroughputRow.throughput_qps).toFixed(3) : "-"}
-                note={bestThroughputRow ? `${bestThroughputRow.model_id} · ${bestThroughputRow.profile_name}` : "暂无"}
+                note={bestThroughputRow ? `当前对比中吞吐最优：${bestThroughputRow.model_id} · ${bestThroughputRow.profile_name}` : "当前还没有可比较模板"}
               />
               <MetricCard
                 title="对比组合数"
                 value={compareRows.length}
-                note={compareModelId === "all" ? "全部模型" : compareModelId}
+                note={compareModelId === "all" ? "当前按全部模型的模板组合做正式对比" : `当前仅比较模型 ${compareModelId}`}
               />
               <MetricCard
                 title="已完成记录"
                 value={completedBenchmarks.length}
-                note="仅“已完成”基准记录纳入聚合"
+                note="仅已完成 benchmark 参与筛选，单个组合优先取最新有效记录"
               />
             </div>
             <div className="table-wrap compare-table-wrap">
@@ -9284,7 +9403,7 @@ function BenchmarksPage({
                 <tr>
                   <th>模型</th>
                   <th>配置模板</th>
-                  <th>样本数</th>
+                  <th>历史完成次数</th>
                   <th>平均延迟</th>
                   <th>P95</th>
                   <th>吞吐量</th>
@@ -9307,6 +9426,7 @@ function BenchmarksPage({
                       <td>
                         <strong>{item.latest_benchmark_id}</strong>
                         <div className="table-note">{item.latest_created_at}</div>
+                        <div className="table-note">{item.selection_label} · {formatBenchmarkSceneLabel(item.latest_scene)}</div>
                       </td>
                     </tr>
                   ))}
@@ -9334,7 +9454,7 @@ function BenchmarksPage({
         <SectionHeader
           kicker="优化对比"
           title="原始模型与优化版本对比"
-          note="按“源模型”归并原始版本及其平台生成的优化版本，直接比较优化前后在 benchmark 上的延迟、吞吐和成功率变化。"
+          note="集中展示模型优化工作台生成模型与原始模型的 benchmark 对比结果。按“源模型”归并原始版本及其平台生成的优化版本，直接比较优化前后在最新 benchmark 上的延迟、吞吐和成功率变化。"
           right={
             <div className="actions">
               <button disabled={!optimizationCompareRows.length} onClick={handleExportOptimizationCompareRows} type="button">
@@ -9366,30 +9486,138 @@ function BenchmarksPage({
 
         {optimizationCompareRows.length ? (
           <>
+            {optimizationSourceModelId !== "all" && selectedOptimizationSourceRows.length ? (
+              <>
+                <div className="paper-summary-grid">
+                  <article className="paper-hero-card">
+                    <div className="paper-hero-kicker">可用于论文</div>
+                    <h3>{optimizationSourceModelId}</h3>
+                    <p>
+                      当前页面已按所选源模型整理出原始模型与平台生成优化版本的正式 benchmark 对比结果。
+                      这里原始模型只保留一个最优对照版本参与展示，优化版本则分别与这个对照版本比较。
+                      各版本数值优先取最新有效记录，没有有效记录时再回退到最新完成记录，适合直接截图写入优化实验小节。
+                    </p>
+                    <div className="tag-list">
+                      <span className="tag">版本条目：{selectedOptimizationSourceRows.length}</span>
+                      <span className="tag">生成版本：{selectedOptimizationSourceRows.filter((item) => item.is_generated_variant).length}</span>
+                      <span className="tag">原始对照：单一最优版本</span>
+                    </div>
+                  </article>
+                  <MetricCard
+                    title="最低平均延迟"
+                    value={selectedOptimizationSourceSummary.bestLatency ? formatFixed(selectedOptimizationSourceSummary.bestLatency.avg_latency_ms) : "-"}
+                    note={selectedOptimizationSourceSummary.bestLatency ? `${selectedOptimizationSourceSummary.bestLatency.model_id} · ${selectedOptimizationSourceSummary.bestLatency.profile_name}` : "暂无"}
+                  />
+                  <MetricCard
+                    title="最高吞吐量"
+                    value={selectedOptimizationSourceSummary.bestThroughput ? formatFixed(selectedOptimizationSourceSummary.bestThroughput.throughput_qps) : "-"}
+                    note={selectedOptimizationSourceSummary.bestThroughput ? `${selectedOptimizationSourceSummary.bestThroughput.model_id} · ${selectedOptimizationSourceSummary.bestThroughput.profile_name}` : "暂无"}
+                  />
+                  <MetricCard
+                    title="最佳延迟收益"
+                    value={selectedOptimizationSourceSummary.bestLatencyGain ? formatSignedPercentDelta(selectedOptimizationSourceSummary.bestLatencyGain.latency_gain_pct, 1) : "-"}
+                    note={selectedOptimizationSourceSummary.bestLatencyGain ? `${selectedOptimizationSourceSummary.bestLatencyGain.model_id} · ${selectedOptimizationSourceSummary.bestLatencyGain.profile_name}` : "暂无优化收益"}
+                  />
+                  <MetricCard
+                    title="最佳吞吐收益"
+                    value={selectedOptimizationSourceSummary.bestThroughputGain ? formatSignedPercentDelta(selectedOptimizationSourceSummary.bestThroughputGain.throughput_gain_pct, 1) : "-"}
+                    note={selectedOptimizationSourceSummary.bestThroughputGain ? `${selectedOptimizationSourceSummary.bestThroughputGain.model_id} · ${selectedOptimizationSourceSummary.bestThroughputGain.profile_name}` : "暂无优化收益"}
+                  />
+                </div>
+
+                <div className="paper-chart-grid">
+                  <article className="paper-chart-card">
+                    <div className="paper-chart-title">平均延迟对比</div>
+                    <div className="paper-chart-note">单位毫秒，越低越好</div>
+                    <div className="paper-bar-list">
+                      {selectedOptimizationSourceRows.map((item) => (
+                        <div className="paper-bar-row" key={`${item.source_root_model_id}-${item.model_id}-${item.profile_name}-latency`}>
+                          <div className="paper-bar-label">
+                            <strong>{item.variant_label || item.model_id}</strong>
+                            <span>{item.profile_name} / {item.device || "-"}</span>
+                          </div>
+                          <div className="paper-bar-track">
+                            <div
+                              className="paper-bar-fill paper-bar-latency"
+                              style={{ width: `${Math.max((Number(item.avg_latency_ms || 0) / optimizationChartMaxima.latency) * 100, 6)}%` }}
+                            />
+                            <span className="paper-bar-value">{formatFixed(item.avg_latency_ms)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+
+                  <article className="paper-chart-card">
+                    <div className="paper-chart-title">吞吐量对比</div>
+                    <div className="paper-chart-note">单位 QPS，越高越好</div>
+                    <div className="paper-bar-list">
+                      {selectedOptimizationSourceRows.map((item) => (
+                        <div className="paper-bar-row" key={`${item.source_root_model_id}-${item.model_id}-${item.profile_name}-throughput`}>
+                          <div className="paper-bar-label">
+                            <strong>{item.variant_label || item.model_id}</strong>
+                            <span>{item.profile_name} / {item.providers || "-"}</span>
+                          </div>
+                          <div className="paper-bar-track">
+                            <div
+                              className="paper-bar-fill paper-bar-throughput"
+                              style={{ width: `${Math.max((Number(item.throughput_qps || 0) / optimizationChartMaxima.throughput) * 100, 6)}%` }}
+                            />
+                            <span className="paper-bar-value">{formatFixed(item.throughput_qps)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+
+                  <article className="paper-chart-card">
+                    <div className="paper-chart-title">成功率对比</div>
+                    <div className="paper-chart-note">按总请求数统计</div>
+                    <div className="paper-bar-list">
+                      {selectedOptimizationSourceRows.map((item) => (
+                        <div className="paper-bar-row" key={`${item.source_root_model_id}-${item.model_id}-${item.profile_name}-success`}>
+                          <div className="paper-bar-label">
+                            <strong>{item.variant_label || item.model_id}</strong>
+                            <span>{item.selection_label} / {formatBenchmarkSceneLabel(item.latest_scene)}</span>
+                          </div>
+                          <div className="paper-bar-track">
+                            <div
+                              className="paper-bar-fill paper-bar-success"
+                              style={{ width: `${Math.max((Number(item.success_rate || 0) / optimizationChartMaxima.success) * 100, 6)}%` }}
+                            />
+                            <span className="paper-bar-value">{formatPercent(item.success_rate)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                </div>
+              </>
+            ) : null}
             <div className="metrics">
               <MetricCard
                 title="优化源模型数"
                 value={new Set(optimizationCompareRows.map((item) => item.source_root_model_id)).size}
-                note="至少同时包含原始版本和平台生成优化版本"
+                note="统计范围内至少同时包含原始版本和平台生成版本的源模型数"
               />
               <MetricCard
                 title="最佳延迟收益"
                 value={bestOptimizationLatencyRow ? formatSignedPercentDelta(bestOptimizationLatencyRow.latency_gain_pct, 1) : "-"}
-                note={bestOptimizationLatencyRow ? `${bestOptimizationLatencyRow.model_id} · ${bestOptimizationLatencyRow.profile_name}` : "暂无"}
+                note={bestOptimizationLatencyRow ? `当前筛选中延迟收益最高：${bestOptimizationLatencyRow.model_id} · ${bestOptimizationLatencyRow.profile_name}` : "当前没有可计算收益的优化版本"}
               />
               <MetricCard
                 title="最佳吞吐收益"
                 value={bestOptimizationThroughputRow ? formatSignedPercentDelta(bestOptimizationThroughputRow.throughput_gain_pct, 1) : "-"}
-                note={bestOptimizationThroughputRow ? `${bestOptimizationThroughputRow.model_id} · ${bestOptimizationThroughputRow.profile_name}` : "暂无"}
+                note={bestOptimizationThroughputRow ? `当前筛选中吞吐收益最高：${bestOptimizationThroughputRow.model_id} · ${bestOptimizationThroughputRow.profile_name}` : "当前没有可计算收益的优化版本"}
               />
               <MetricCard
                 title="当前筛选"
                 value={optimizationSourceModelId === "all" ? "全部源模型" : optimizationSourceModelId}
-                note="用于单独查看某个原始模型与其优化版本"
+                note={optimizationSourceModelId === "all" ? "适合看全平台优化概览；若要截图建议先选定单个源模型" : "当前已切到单一源模型，可直接截图上方展示卡"}
               />
             </div>
             <div className="banner banner-muted">
-              这张表看什么：先看“版本类型”区分原始版本和平台生成版本；再看“相对原始最好延迟 / 吞吐收益”，它们是相对于同一源模型下原始版本最佳 benchmark 结果计算出来的收益百分比。
+              这张表看什么：这里专门看模型优化工作台生成版本和原模型之间的正式 benchmark 差异。每个源模型只保留一个“原始最优版本”作为对照基线，其余平台生成版本都相对于这一个基线计算延迟收益和吞吐收益，更适合论文里的基线对比表达。
             </div>
             <div className="table-wrap compare-table-wrap">
               <table>
@@ -9413,10 +9641,10 @@ function BenchmarksPage({
                       <td>
                         <strong>{item.source_root_model_id}</strong>
                         <div className="table-note">
-                          原始最好延迟 {item.baseline_best_latency_ms !== null ? Number(item.baseline_best_latency_ms).toFixed(3) : "-"} ms
+                          对照版本 {item.baseline_profile_name || "-"} / {item.baseline_device || "-"}
                         </div>
                         <div className="table-note">
-                          原始最好吞吐 {item.baseline_best_throughput_qps !== null ? Number(item.baseline_best_throughput_qps).toFixed(3) : "-"} QPS
+                          对照延迟 {item.baseline_best_latency_ms !== null ? Number(item.baseline_best_latency_ms).toFixed(3) : "-"} ms · 对照吞吐 {item.baseline_best_throughput_qps !== null ? Number(item.baseline_best_throughput_qps).toFixed(3) : "-"} QPS
                         </div>
                       </td>
                       <td>
@@ -9447,6 +9675,7 @@ function BenchmarksPage({
                       <td>
                         <strong>{item.latest_benchmark_id}</strong>
                         <div className="table-note">{item.latest_created_at}</div>
+                        <div className="table-note">{item.selection_label} · {formatBenchmarkSceneLabel(item.latest_scene)}</div>
                       </td>
                     </tr>
                   ))}

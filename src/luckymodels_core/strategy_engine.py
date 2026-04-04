@@ -367,7 +367,6 @@ def build_deployment_policy(
             cross_layer_tags,
             coordination_note,
         ) = _apply_cross_layer_policy_adjustments(
-            model=model,
             service_tier=service_tier,
             demand_level=demand_level,
             residency_mode=residency_mode,
@@ -2689,7 +2688,6 @@ def _pick_gpu_device(
 
 def _apply_cross_layer_policy_adjustments(
     *,
-    model: ModelSummary,
     service_tier: str,
     demand_level: str,
     residency_mode: str,

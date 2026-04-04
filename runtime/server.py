@@ -41,7 +41,8 @@ if MANIFEST_PATH and PROFILE_PATH:
             loaded_profile.device = "cpu"
             loaded_profile.gpu_ids = []
             loaded_profile.execution["provider_preference"] = "cpu"
-        if GPU_IDS_ENV.strip():
+        elif GPU_IDS_ENV.strip():
+            loaded_profile.device = "cuda"
             loaded_profile.gpu_ids = [
                 int(value.strip())
                 for value in GPU_IDS_ENV.split(",")
@@ -49,6 +50,8 @@ if MANIFEST_PATH and PROFILE_PATH:
             ]
         if PROVIDER_PREFERENCE_ENV:
             loaded_profile.execution["provider_preference"] = PROVIDER_PREFERENCE_ENV
+            if not FORCE_CPU and PROVIDER_PREFERENCE_ENV == "cuda":
+                loaded_profile.device = "cuda"
         adapter_cls = build_adapter(loaded_manifest.manifest.runtime_adapter)
         adapter = adapter_cls(loaded_manifest, loaded_profile)
         adapter.load()
