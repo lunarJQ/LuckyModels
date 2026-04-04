@@ -55,6 +55,8 @@ Responsible for:
 - registering versions and profiles
 - storing deployment records
 - exposing management APIs
+- storing routing decisions and prediction archives
+- storing explicit feedback and online calibration snapshots
 
 The control plane should not contain model-specific inference logic.
 
@@ -85,6 +87,21 @@ Responsible for:
 
 In 1.0, the important thing is to preserve the interfaces and file structure for observability even if not every monitoring component is fully wired yet.
 
+### 3.5 Strategy Layer
+
+The current implementation also includes a strategy layer on top of the control plane:
+
+- task routing
+- routing feedback overview
+- deployment-policy recommendation
+- cross-layer coordination between routing value and deployment actions
+
+This layer is driven by three evidence sources:
+
+- latest effective benchmark records
+- prediction archive evidence without explicit feedback
+- explicit routing/archive feedback with faster calibration
+
 ## 4. Core Domain Objects
 
 `LuckyModels` manages these first-class objects:
@@ -96,6 +113,10 @@ In 1.0, the important thing is to preserve the interfaces and file structure for
 - `Deployment`
 - `BenchmarkTask`
 - `BenchmarkResult`
+- `PredictionArchive`
+- `TaskRoutingDecision`
+- `TaskRoutingFeedback`
+- `DeploymentPolicyRecommendation`
 
 In this repository, the first implementation emphasizes artifact, profile, and deployment objects because they are the minimum needed for a working model-library control plane.
 
@@ -135,4 +156,9 @@ Priority order:
 5. Add benchmark execution
 6. Add container launch orchestration
 
-This repository implements steps 1 through 4 as the initial foundation.
+The current repository has already moved beyond the initial foundation and now also includes:
+
+- effective benchmark replacement logic
+- task-routing execution and archive persistence
+- explicit feedback write-back
+- deployment-policy recommendation with GPU pool awareness
