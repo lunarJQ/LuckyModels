@@ -92,11 +92,12 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         feedback_records=feedback_store.list_feedback(),
         activity_tracker=get_inference_activity_tracker(),
     )
+    effective_scene = str(response.context_features.get("scene") or request.scene or "").strip() or None
     decision = feedback_store.create_decision(
         TaskRoutingDecisionRecord(
             decision_id=f"trd-{uuid4().hex[:12]}",
             request_text=request.text,
-            scene=request.scene,
+            scene=effective_scene,
             objective=response.objective,
             requested_language=response.requested_language,
             inferred_language=response.inferred_language,
@@ -136,6 +137,8 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         "adaptive_unsupervised_adjustments": response.adaptive_unsupervised_adjustments,
         "adaptive_feedback_adjustments": response.adaptive_feedback_adjustments,
         "selected_model_ids": [item.model_id for item in response.selected_deployments],
+        "requested_model_family": request.model_family,
+        "effective_scene": effective_scene,
     }
     archive = prediction_store.create(
         deployment_id=decision.decision_id,
@@ -143,7 +146,7 @@ def run_task_strategy(request: TaskRoutingRequest) -> TaskRoutingResponse:
         profile_name=response.objective,
         archive_source="task_routing",
         service_url=None,
-        scene=request.scene,
+        scene=effective_scene,
         request_text=request.text,
         request_texts=[],
         options=dict(request.options or {}),

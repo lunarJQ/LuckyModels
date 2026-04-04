@@ -54,12 +54,24 @@ def run_task_routing_strategy(
     activity_tracker: InferenceActivityTracker | None = None,
 ) -> TaskRoutingResponse:
     inferred_language = request.language or infer_language(request.text)
-    difficulty = estimate_difficulty(request.text)
-    context_features = analyze_request_context(
+    preliminary_context = analyze_request_context(
         text=request.text,
         scene=request.scene,
         inferred_language=inferred_language,
     )
+    effective_scene = _resolve_effective_request_scene(
+        requested_scene=request.scene,
+        inferred_language=inferred_language,
+        inferred_domain=str(preliminary_context.get("domain") or "general"),
+    )
+    difficulty = estimate_difficulty(request.text)
+    context_features = analyze_request_context(
+        text=request.text,
+        scene=effective_scene,
+        inferred_language=inferred_language,
+    )
+    if request.model_family:
+        context_features["model_family_filter"] = str(request.model_family).strip().lower()
     base_objective_weights = _build_objective_weights(
         objective=request.objective,
         difficulty=difficulty,
@@ -112,6 +124,7 @@ def run_task_routing_strategy(
         prediction_archives=prediction_archives,
         requested_language=inferred_language,
         candidate_model_ids=request.candidate_model_ids,
+        requested_model_family=request.model_family,
         objective=request.objective,
         context_features=context_features,
         objective_weights=objective_weights,
@@ -367,6 +380,7 @@ def build_deployment_policy(
             cross_layer_tags,
             coordination_note,
         ) = _apply_cross_layer_policy_adjustments(
+            model_id=model.model_id,
             service_tier=service_tier,
             demand_level=demand_level,
             residency_mode=residency_mode,
@@ -515,6 +529,22 @@ def analyze_request_context(
         "scene": scene or "",
         "language": inferred_language,
     }
+
+
+def _resolve_effective_request_scene(
+    *,
+    requested_scene: str | None,
+    inferred_language: str,
+    inferred_domain: str,
+) -> str:
+    normalized_scene = _normalize_scene(requested_scene)
+    if normalized_scene:
+        return normalized_scene
+    if inferred_language == "en":
+        return "en_general"
+    if inferred_language == "zh":
+        return "zh_industrial" if inferred_domain == "industrial" else "zh_general"
+    return ""
 
 
 def infer_domain(*, text: str, scene: str | None) -> str:
@@ -676,6 +706,19 @@ def _objective_feedback_gain(objective: str, key: str) -> float:
         },
     }
     return gain_table.get(normalized_objective, gain_table["balanced"]).get(key, 1.0)
+
+
+def _objective_primary_feedback_keys(objective: str) -> list[str]:
+    normalized_objective = str(objective or "balanced").strip().lower()
+    primary_keys = {
+        "accuracy": ["accuracy"],
+        "coverage": ["coverage"],
+        "latency": ["latency"],
+        "resource": ["resource"],
+        "domain": ["domain"],
+        "balanced": ["accuracy", "coverage", "stability"],
+    }
+    return list(primary_keys.get(normalized_objective, []))
 
 
 def _build_benchmark_weight_adjustments(
@@ -959,6 +1002,7 @@ def _build_decision_feedback_weight_adjustments(
     evidence_scale = _progressive_evidence_scale(evidence_count, target_count=10)
     accepted_avg = _average_weight_vectors(accepted_vectors)
     rejected_avg = _average_weight_vectors(rejected_vectors)
+    accepted_ratio = (len(accepted_vectors) / evidence_count) if evidence_count else 0.0
 
     for key in adjustments:
         delta = 0.0
@@ -967,6 +1011,20 @@ def _build_decision_feedback_weight_adjustments(
         if rejected_avg:
             delta -= (rejected_avg.get(key, 0.0) - base_weights.get(key, 0.0)) * 0.24 * evidence_scale * _objective_feedback_gain(objective, key)
         adjustments[key] = round(max(min(delta, 0.035), -0.035), 4)
+
+    # When explicit feedback is predominantly positive, keep the current
+    # objective's primary dimension from drifting negative just because the
+    # accepted historical weight snapshots are slightly more balanced.
+    if accepted_vectors and accepted_ratio >= 0.5:
+        objective_floor_scale = max(evidence_scale, 0.12)
+        for key in _objective_primary_feedback_keys(objective):
+            positive_floor = (
+                0.0008 + 0.0022 * accepted_ratio
+            ) * objective_floor_scale * _objective_feedback_gain(objective, key)
+            adjustments[key] = round(
+                max(adjustments.get(key, 0.0), min(0.004, positive_floor)),
+                4,
+            )
 
     non_zero = {key: value for key, value in adjustments.items() if abs(value) > 0.0001}
     if non_zero:
@@ -1208,6 +1266,7 @@ def _build_task_candidates(
     prediction_archives: list[PredictionArchiveRecord],
     requested_language: str,
     candidate_model_ids: list[str],
+    requested_model_family: str | None,
     objective: str,
     context_features: dict[str, Any],
     objective_weights: dict[str, float],
@@ -1231,6 +1290,7 @@ def _build_task_candidates(
         archives_by_model[item.model_id].append(item)
 
     allowed_models = set(candidate_model_ids or [])
+    normalized_model_family = str(requested_model_family or "").strip().lower()
     candidates: list[TaskRoutingCandidate] = []
     for deployment in deployments:
         if deployment.status != "running" or not deployment.service_url:
@@ -1239,6 +1299,8 @@ def _build_task_candidates(
         if model is None:
             continue
         if model.language != requested_language:
+            continue
+        if normalized_model_family and str(model.model_family or "").strip().lower() != normalized_model_family:
             continue
         if not _scene_matches_model(request_scene, model):
             continue
@@ -2688,6 +2750,7 @@ def _pick_gpu_device(
 
 def _apply_cross_layer_policy_adjustments(
     *,
+    model_id: str,
     service_tier: str,
     demand_level: str,
     residency_mode: str,
@@ -2750,7 +2813,7 @@ def _apply_cross_layer_policy_adjustments(
     if high_value and not recommended_use_gpu and ranked and service_tier != "cold":
         selected = _pick_gpu_device(
             eligible[: min(2 if prefer_stable_gpu else 3, len(eligible))] or ranked[:1],
-            model_id=model.model_id,
+            model_id=model_id,
             prefer_first=prefer_stable_gpu,
         )
         if selected is not None:
@@ -2774,7 +2837,7 @@ def _apply_cross_layer_policy_adjustments(
             if ranked and recommended_use_gpu:
                 selected = _pick_gpu_device(
                     eligible[: min(2, len(eligible))] or ranked[:1],
-                    model_id=model.model_id,
+                    model_id=model_id,
                     prefer_first=True,
                 )
                 if selected is not None:

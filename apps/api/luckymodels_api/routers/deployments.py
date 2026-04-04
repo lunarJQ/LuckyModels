@@ -74,17 +74,24 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
     deployment.profile_path = model.resolved_profiles[request.profile_name]
     deployment.service_url = store.ensure_service_url(deployment)
     settings = get_settings()
-    deployment.provider_preference = _resolve_provider_preference(
-        requested_preference=request.provider_preference,
-        use_gpu=deployment.use_gpu,
-        settings=settings,
-    )
     deployment.log_path = str(settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
     deployment.use_gpu, deployment.gpu_ids, device_note = _resolve_runtime_device(
         model=model,
         requested_use_gpu=deployment.use_gpu,
         requested_gpu_ids=deployment.gpu_ids,
+        profile_path=deployment.profile_path,
+    )
+    deployment.provider_preference = _resolve_provider_preference(
+        requested_preference=request.provider_preference,
+        use_gpu=deployment.use_gpu,
+        settings=settings,
+    )
+    deployment.device = _resolve_display_device(
+        use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
+        profile_device=deployment.device,
+        gpu_ids=deployment.gpu_ids,
     )
     _validate_runtime_backend_choice(
         settings=settings,
@@ -239,12 +246,19 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         model=model,
         requested_use_gpu=deployment.use_gpu,
         requested_gpu_ids=deployment.gpu_ids,
+        profile_path=deployment.profile_path,
     )
     settings = get_settings()
     deployment.provider_preference = _resolve_provider_preference(
         requested_preference=deployment.provider_preference,
         use_gpu=deployment.use_gpu,
         settings=settings,
+    )
+    deployment.device = _resolve_display_device(
+        use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
+        profile_device=deployment.device,
+        gpu_ids=deployment.gpu_ids,
     )
     _validate_runtime_backend_choice(
         settings=settings,
@@ -312,13 +326,36 @@ def _hydrate_deployment_runtime_snapshot(deployment: DeploymentRecord) -> Deploy
         return deployment
 
     deployment.profile_runtime = profile.runtime
-    deployment.device = "cpu" if not deployment.use_gpu else profile.device
     if not deployment.gpu_ids and profile.gpu_ids:
         deployment.gpu_ids = list(profile.gpu_ids)
     if not deployment.provider_preference:
         deployment.provider_preference = str(profile.execution.get("provider_preference", "") or "").strip() or None
+    deployment.device = _resolve_display_device(
+        use_gpu=deployment.use_gpu,
+        provider_preference=deployment.provider_preference,
+        profile_device=profile.device,
+        gpu_ids=deployment.gpu_ids,
+    )
     deployment.execution = profile.execution
     return deployment
+
+
+def _resolve_display_device(
+    *,
+    use_gpu: bool,
+    provider_preference: str | None,
+    profile_device: str | None,
+    gpu_ids: list[int] | None,
+) -> str:
+    if not use_gpu:
+        return "cpu"
+    if str(provider_preference or "").strip().lower() == "cuda":
+        return "cuda"
+    if gpu_ids:
+        return "cuda"
+    if str(profile_device or "").strip().lower().startswith("cuda"):
+        return "cuda"
+    return "cuda"
 
 
 def _resolve_provider_preference(
@@ -366,7 +403,12 @@ def _resolve_runtime_device(
     model,
     requested_use_gpu: bool,
     requested_gpu_ids: list[int] | None,
+    profile_path: str | None = None,
 ) -> tuple[bool, list[int], str | None]:
+    cpu_force_note = _resolve_cpu_preferred_runtime_note(model=model, profile_path=profile_path)
+    if cpu_force_note:
+        return (False, [], cpu_force_note)
+
     if not requested_use_gpu:
         return (False, [], None)
 
@@ -396,6 +438,28 @@ def _resolve_runtime_device(
         )
 
     return (False, [], f"gpu_insufficient_auto_fallback_cpu_required_{int(required_memory_mb)}mb")
+
+
+def _resolve_cpu_preferred_runtime_note(*, model, profile_path: str | None) -> str | None:
+    try:
+        if profile_path and Path(profile_path).exists():
+            profile = load_profile(Path(profile_path))
+            precision = str(profile.execution.get("precision", "") or "").strip().lower()
+            if "int8" in precision:
+                return "int8_profile_force_cpu"
+    except Exception:  # noqa: BLE001
+        pass
+
+    model_hints = " ".join(
+        [
+            str(getattr(getattr(model, "summary", None), "model_id", "") or ""),
+            str(getattr(getattr(model, "summary", None), "model_name", "") or ""),
+        ]
+    ).strip().lower()
+    if "int8" in model_hints:
+        return "int8_model_force_cpu"
+
+    return None
 
 
 def _estimate_required_gpu_memory_mb(*, package_root: str | None, stage_count: int) -> float:

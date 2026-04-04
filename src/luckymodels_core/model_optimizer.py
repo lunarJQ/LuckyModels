@@ -244,6 +244,8 @@ def _rewrite_profiles_for_int8(target_root: Path, profile_mapping: dict[str, str
         profile_path = target_root / relative_path
         profile = load_profile(profile_path)
         profile.runtime = "onnxruntime"
+        profile.device = "cpu"
+        profile.gpu_ids = []
         profile.execution["precision"] = "int8"
         _write_yaml(profile_path, profile.model_dump(mode="python", exclude_none=True))
 

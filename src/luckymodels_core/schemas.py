@@ -351,7 +351,8 @@ class TaskRoutingRequest(BaseModel):
     objective: str = "accuracy"
     language: str | None = None
     scene: str | None = None
-    max_models: int = 3
+    max_models: int | None = None
+    model_family: str | None = None
     candidate_model_ids: list[str] = Field(default_factory=list)
     options: dict[str, Any] = Field(default_factory=dict)
 
