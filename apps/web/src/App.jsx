@@ -7061,23 +7061,6 @@ function DeploymentPolicyPage({
                         >
                           按建议新建
                         </button>
-                        {row.recommendation.gpu_pressure_action === "migrate_to_cpu" ? (
-                          <button
-                            onClick={() =>
-                              void onCreateDeployment({
-                                model_id: row.recommendation.model_id,
-                                profile_name: row.recommendation.fallback_profile_name,
-                                launch_runtime: true,
-                                use_gpu: false,
-                                gpu_ids: [],
-                                notes: "manual_cpu_fallback",
-                              })
-                            }
-                            type="button"
-                          >
-                            新建 CPU 迁移实例
-                          </button>
-                        ) : null}
                       </div>
                     </td>
                   </tr>
