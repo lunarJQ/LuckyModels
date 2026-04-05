@@ -264,6 +264,25 @@ def create_inference_session(model_path: str, providers: list[str], profile: Any
     )
 
 
+def infer_fixed_sequence_length(session: Any, input_name: str = "input_ids") -> int | None:
+    inputs = list(getattr(session, "get_inputs", lambda: [])() or [])
+    if not inputs:
+        return None
+
+    ordered_inputs = [
+        *[item for item in inputs if str(getattr(item, "name", "")) == input_name],
+        *[item for item in inputs if str(getattr(item, "name", "")) != input_name],
+    ]
+    for input_meta in ordered_inputs:
+        shape = list(getattr(input_meta, "shape", []) or [])
+        if len(shape) < 2:
+            continue
+        sequence_dim = shape[1]
+        if isinstance(sequence_dim, int) and sequence_dim > 0:
+            return int(sequence_dim)
+    return None
+
+
 def _resolve_profile_device(profile_or_device: Any) -> str:
     if hasattr(profile_or_device, "device"):
         return str(getattr(profile_or_device, "device", "cpu") or "cpu")

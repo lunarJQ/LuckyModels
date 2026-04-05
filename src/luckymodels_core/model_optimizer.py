@@ -276,6 +276,12 @@ def list_supported_optimization_types() -> list[dict[str, Any]]:
                 "label": OPTIMIZATION_LABELS[optimization_type],
                 "alias_suffix": OPTIMIZATION_ALIAS_SUFFIX[optimization_type],
                 "note": note,
+                "requirement": {
+                    OPTIMIZATION_TYPE_ORT_GRAPH: "要求当前环境支持 onnxruntime SessionOptions 图优化导出。",
+                    OPTIMIZATION_TYPE_ORT_FORMAT: "要求当前环境支持 onnxruntime SessionOptions 与 ORT 格式导出。",
+                    OPTIMIZATION_TYPE_FP16: "要求当前环境具备 ONNX 读写与 FP16 转换工具链。",
+                    OPTIMIZATION_TYPE_INT8_DYNAMIC: "要求当前环境具备 onnxruntime 动态量化工具链。",
+                }[optimization_type],
             }
         )
     return results

@@ -149,6 +149,11 @@ class ModelOptimizationOption(BaseModel):
     label: str
     alias_suffix: str
     note: str
+    requirement: str = ""
+    enabled: bool = True
+    gpu_available: bool = False
+    detail: str = ""
+    deployment_scope: str = ""
 
 
 class ModelOptimizationOptions(BaseModel):

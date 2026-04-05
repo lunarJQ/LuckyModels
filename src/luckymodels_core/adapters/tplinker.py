@@ -9,6 +9,7 @@ from .base import BaseAdapter
 from .bert_utils import (
     build_handshaking_index,
     create_inference_session,
+    infer_fixed_sequence_length,
     load_bert_tokenizer,
     load_relation_maps,
     provider_list,
@@ -30,6 +31,7 @@ class TPLinkerAdapter(BaseAdapter):
         self.id2relation: dict[int, str] = {}
         self.relation2id: dict[str, int] = {}
         self.tokenizer = None
+        self.runtime_max_length: int | None = None
 
     def load(self) -> None:
         import onnxruntime as ort  # type: ignore
@@ -48,6 +50,7 @@ class TPLinkerAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.runtime_max_length = infer_fixed_sequence_length(self.session, input_name="input_ids")
         self.providers = list(self.session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -61,6 +64,7 @@ class TPLinkerAdapter(BaseAdapter):
             "session_backend": self.session_backend,
             "providers": self.providers,
             "execution": self.profile.execution,
+            "runtime_max_length": self.runtime_max_length,
             "predict_ready": True,
         }
 
@@ -84,7 +88,8 @@ class TPLinkerAdapter(BaseAdapter):
 
         started = perf_counter()
         options = options or {}
-        max_length = int(options.get("max_length") or self.manifest.manifest.inference.max_length)
+        configured_max_length = int(options.get("max_length") or self.manifest.manifest.inference.max_length)
+        max_length = int(self.runtime_max_length or configured_max_length)
         tokenized = tokenize_with_offsets(self.tokenizer, text, max_length=max_length)
         ent_logits, head_rel_logits, tail_rel_logits = self.session.run(
             None,

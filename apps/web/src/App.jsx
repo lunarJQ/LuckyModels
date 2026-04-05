@@ -11,6 +11,7 @@ import {
   deletePredictionArchive,
   exportModelPackage,
   fetchAuthSession,
+  getBenchmarkSampleText,
   getDatasetSampleText,
   getDeploymentPolicy,
   getDeploymentPolicyAutomation,
@@ -56,6 +57,69 @@ const initialData = {
   datasetCatalog: null,
   taskRoutingFeedbackOverview: null,
 };
+
+const initialLoadProgress = {
+  phase: "idle",
+  percent: 0,
+  label: "等待加载",
+  detail: "",
+};
+
+function hasCurrentPermission(currentPermissions, permissionId) {
+  return new Set(currentPermissions || []).has(permissionId);
+}
+
+function buildBootstrapStageItems(currentPermissions, currentUser, currentPhase) {
+  const canViewModels = hasCurrentPermission(currentPermissions, "models.view");
+  const canViewDeployments = hasCurrentPermission(currentPermissions, "deployments.view");
+  const canViewBenchmarks = hasCurrentPermission(currentPermissions, "benchmarks.view");
+  const canViewPredictions = hasCurrentPermission(currentPermissions, "predictions.view");
+  const canRunTaskRouting = hasCurrentPermission(currentPermissions, "task_routing.run");
+  const canViewResources = hasCurrentPermission(currentPermissions, "resources.view");
+  const canViewUsers = hasCurrentPermission(currentPermissions, "users.view");
+  const isAdmin = Boolean(currentUser?.is_admin);
+
+  return [
+    {
+      key: "base",
+      title: "基础清单",
+      note: isAdmin
+        ? "平台概览、模型、部署、基准、结果反馈与治理入口"
+        : [
+          "平台概览",
+          canViewModels ? "模型资产" : "",
+          canViewDeployments ? "部署实例" : "",
+          canViewBenchmarks ? "基准记录" : "",
+          canViewPredictions ? "结果反馈" : "",
+          canRunTaskRouting ? "任务调度" : "",
+        ].filter(Boolean).join("、") || "当前身份可见基础数据",
+      active: ["bootstrap", "base", "base-done", "deployment-health", "model-details", "ready"].includes(currentPhase),
+      done: ["base-done", "deployment-health", "model-details", "ready"].includes(currentPhase),
+    },
+    {
+      key: "deployment-health",
+      title: "运行状态",
+      note: canViewDeployments
+        ? canViewResources
+          ? "部署健康、服务可达性与资源相关状态补充"
+          : "部署健康与服务可达性补充"
+        : "当前身份无需补充部署健康详情",
+      active: ["deployment-health", "model-details", "ready"].includes(currentPhase),
+      done: ["model-details", "ready"].includes(currentPhase),
+    },
+    {
+      key: "model-details",
+      title: "模型详情",
+      note: canViewModels
+        ? canViewUsers
+          ? "模型能力、配置模板、限制信息与权限收口整理"
+          : "模型能力、配置模板与限制信息整理"
+        : "当前身份无需读取模型详情，直接进入主页面整理",
+      active: ["model-details", "ready"].includes(currentPhase),
+      done: ["ready"].includes(currentPhase),
+    },
+  ];
+}
 
 const DEFAULT_PREDICT_TEXT = "LuckyModels provides a stable fallback sample for relation extraction.";
 const DEFAULT_PREDICT_DATASETS = [
@@ -199,9 +263,10 @@ function buildInitialModelImportForm(importOptions) {
 function buildInitialModelOptimizationForm(models, optimizationOptions) {
   const preferred = models.find((model) => model.predict_ready) || models[0];
   const optionList = optimizationOptions?.options || [];
+  const enabledOptionList = optionList.filter((item) => item.enabled !== false);
   return {
     modelId: preferred?.model_id || "",
-    optimizationType: optionList[0]?.code || "ort_graph",
+    optimizationType: enabledOptionList[0]?.code || optionList[0]?.code || "",
     alias: "",
   };
 }
@@ -282,6 +347,11 @@ function isCpuPinnedOptimization(optimizationType = "") {
   return String(optimizationType || "").trim().toLowerCase().includes("int8");
 }
 
+function isGpuRestrictedOptimization(optimizationType = "") {
+  const normalized = String(optimizationType || "").trim().toLowerCase();
+  return normalized.includes("int8") || normalized === "ort_format";
+}
+
 function getCreatedAtTimestamp(value) {
   const timestamp = Date.parse(String(value || "").trim());
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -348,7 +418,8 @@ function buildLatestPreferredBenchmarkCompareRows(benchmarks, deployments, model
         instance_count: execution.instance_count ?? null,
         intra_op_threads: execution.intra_op_threads ?? null,
         inter_op_threads: execution.inter_op_threads ?? null,
-        max_length: execution.max_length ?? null,
+        configured_max_length: getDeploymentConfiguredMaxLength(latestDeployment),
+        actual_max_length: getDeploymentActualRuntimeMaxLength(latestDeployment),
         device: latestDeployment?.device || null,
         providers: providers.join(" / "),
         latest_benchmark_id: selected.benchmark_id || "-",
@@ -495,7 +566,22 @@ function isRuntimeProviderUsable(runtimeCapabilities, providerName) {
   return Boolean(getRuntimeProviderCapability(runtimeCapabilities, providerName)?.runtime_usable);
 }
 
-function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType = "") {
+function getGpuPoolScope(gpuStatus) {
+  const gpuPoolState = gpuStatus?.gpu_pool_state || {};
+  const visibleGpuIds = Array.isArray(gpuPoolState.visible_gpu_ids) ? gpuPoolState.visible_gpu_ids : [];
+  const allowedGpuIds = Array.isArray(gpuPoolState.effective_gpu_ids) ? gpuPoolState.effective_gpu_ids : [];
+  const disabledGpuIds = Array.isArray(gpuPoolState.disabled_gpu_ids) ? gpuPoolState.disabled_gpu_ids : [];
+  const platformGpuCompletelyDisabled = visibleGpuIds.length > 0 && allowedGpuIds.length === 0;
+  return {
+    visibleGpuIds,
+    allowedGpuIds,
+    disabledGpuIds,
+    platformGpuCompletelyDisabled,
+  };
+}
+
+function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType = "", gpuStatus = null) {
+  const { platformGpuCompletelyDisabled } = getGpuPoolScope(gpuStatus);
   if (isCpuPinnedOptimization(optimizationType)) {
     return [{
       value: "cpu",
@@ -503,8 +589,24 @@ function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationTy
       note: "INT8 动态量化版本默认固定为 CPU 部署，避免 GPU 路径出现明显性能劣化。",
     }];
   }
+  if (String(optimizationType || "").trim().toLowerCase() === "ort_format") {
+    return [{
+      value: "cpu",
+      label: "CPUExecutionProvider",
+      note: "ORT Format 版本当前仅作为 CPU 正式部署候选；平台不将其作为当前环境下的稳定 GPU 路径。",
+    }];
+  }
+  if (useGpu && platformGpuCompletelyDisabled) {
+    return [];
+  }
   if (!useGpu) {
-    return [{ value: "cpu", label: "CPUExecutionProvider", note: "当前部署按 CPU 路径运行。" }];
+    return [{
+      value: "cpu",
+      label: "CPUExecutionProvider",
+      note: platformGpuCompletelyDisabled
+        ? "平台当前已停用全部 GPU，本次部署仅按 CPU 路径运行。若后续重新启用 GPU，这里会自动恢复可选 GPU 后端。"
+        : "当前部署按 CPU 路径运行。",
+    }];
   }
   const options = [];
   if (isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider")) {
@@ -517,12 +619,12 @@ function getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationTy
   return options;
 }
 
-function hasGpuDeploymentBackend(runtimeCapabilities, optimizationType = "") {
-  return getDeploymentBackendOptions(runtimeCapabilities, true, optimizationType).some((item) => item.value !== "cpu");
+function hasGpuDeploymentBackend(runtimeCapabilities, optimizationType = "", gpuStatus = null) {
+  return getDeploymentBackendOptions(runtimeCapabilities, true, optimizationType, gpuStatus).some((item) => item.value !== "cpu");
 }
 
-function resolveDeploymentProviderPreference(currentPreference, runtimeCapabilities, useGpu, optimizationType = "") {
-  const options = getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType);
+function resolveDeploymentProviderPreference(currentPreference, runtimeCapabilities, useGpu, optimizationType = "", gpuStatus = null) {
+  const options = getDeploymentBackendOptions(runtimeCapabilities, useGpu, optimizationType, gpuStatus);
   if (!options.length) {
     return "cpu";
   }
@@ -532,18 +634,49 @@ function resolveDeploymentProviderPreference(currentPreference, runtimeCapabilit
   return options[0].value;
 }
 
-function getSuggestedDeploymentPreset(modelId, details, recommendation = null) {
+function getGpuDeploymentDisabledNote(runtimeCapabilities, optimizationType = "", gpuStatus = null) {
+  const { platformGpuCompletelyDisabled } = getGpuPoolScope(gpuStatus);
+  if (isCpuPinnedOptimization(optimizationType)) {
+    return "当前模型属于 INT8 动态量化版本，平台默认固定为 CPU 部署。";
+  }
+  if (String(optimizationType || "").trim().toLowerCase() === "ort_format") {
+    return "当前模型属于 ORT Format 版本，平台当前仅把它作为 CPU 正式部署候选。";
+  }
+  if (platformGpuCompletelyDisabled) {
+    return "平台当前已停用全部 GPU，如需使用 GPU，请先到“运行资源”页重新启用至少一张卡。";
+  }
+  return "当前服务器环境未通过 CUDA 运行时探测，平台已禁用 GPU 部署入口。";
+}
+
+function getSuggestedDeploymentPreset(modelId, details, recommendation = null, gpuStatus = null) {
   const optimization = getOptimizationSummaryForModel(modelId, details);
-  const useGpu = isCpuPinnedOptimization(optimization.optimizationType)
+  const { platformGpuCompletelyDisabled } = getGpuPoolScope(gpuStatus);
+  const useGpu = isGpuRestrictedOptimization(optimization.optimizationType)
     ? false
-    : (recommendation?.recommended_use_gpu ?? true);
+    : platformGpuCompletelyDisabled
+      ? false
+      : (recommendation?.recommended_use_gpu ?? true);
   return {
     useGpu,
     gpuIds: useGpu ? (recommendation?.recommended_gpu_ids || []) : [],
     deviceLabel: recommendation?.recommended_device_label || (useGpu ? "GPU" : "CPU"),
-    reason: optimization.optimizationLabel
-      ? `当前模型为${optimization.optimizationLabel}版本，可继续按推荐设备部署。`
+    reason: platformGpuCompletelyDisabled
+      ? "平台当前已停用全部 GPU，因此该模型会先按 CPU 路径创建部署；后续若重新启用 GPU，部署策略会自动重新纳入 GPU 候选。 "
+      : optimization.optimizationLabel
+      ? (
+        String(optimization.optimizationType || "").trim().toLowerCase() === "ort_format"
+          ? `当前模型为${optimization.optimizationLabel}版本，平台默认按 CPU 路径部署，避免误走未稳定验证的 GPU 路径。`
+          : `当前模型为${optimization.optimizationLabel}版本，可继续按推荐设备部署。`
+      )
       : "当前模型按部署策略推荐设备创建。",
+  };
+}
+
+function extractDeploymentPolicyAdaptationFlags(notes) {
+  const noteText = String(notes || "");
+  return {
+    quickDeployAutoAdapted: noteText.includes("deployment_policy_quick_deploy_auto_adapted:"),
+    invalidGpuAutoAdapted: noteText.includes("deployment_policy_invalid_gpu_request_auto_adapted:"),
   };
 }
 
@@ -1054,8 +1187,46 @@ function getDeploymentHealthPayload(deployment) {
 }
 
 function getDeploymentExecution(deployment) {
+  if (!deployment) {
+    return {};
+  }
   const payload = getDeploymentHealthPayload(deployment);
   return payload.execution || deployment.execution || {};
+}
+
+function getDeploymentConfiguredMaxLength(deployment) {
+  const execution = getDeploymentExecution(deployment);
+  const value = Number(execution.max_length);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function getDeploymentActualRuntimeMaxLength(deployment) {
+  const payload = getDeploymentHealthPayload(deployment);
+  const value = Number(payload.runtime_max_length);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function formatRuntimeLengthSummary(configuredMaxLength, actualMaxLength) {
+  if (configuredMaxLength && actualMaxLength) {
+    if (configuredMaxLength === actualMaxLength) {
+      return `${actualMaxLength}`;
+    }
+    return `配 ${configuredMaxLength} / 实 ${actualMaxLength}`;
+  }
+  if (actualMaxLength) {
+    return `实 ${actualMaxLength}`;
+  }
+  if (configuredMaxLength) {
+    return `配 ${configuredMaxLength}`;
+  }
+  return "-";
+}
+
+function formatDeploymentRuntimeLengthSummary(deployment) {
+  return formatRuntimeLengthSummary(
+    getDeploymentConfiguredMaxLength(deployment),
+    getDeploymentActualRuntimeMaxLength(deployment),
+  );
 }
 
 function getDeploymentProviders(deployment) {
@@ -1246,6 +1417,13 @@ function resolveBenchmarkSceneForModel(model) {
 function formatBenchmarkSceneLabel(value) {
   const matched = BENCHMARK_SCENE_OPTIONS.find((item) => item.value === String(value || "").trim());
   return matched?.label || value || "未标注场景";
+}
+
+function formatBenchmarkDeploymentOptionLabel(item) {
+  if (!item) {
+    return "";
+  }
+  return [item.deployment_id, item.model_id, item.profile_name].filter(Boolean).join(" · ");
 }
 
 function buildInitialBenchmarkForm(deployments, models = []) {
@@ -1439,6 +1617,7 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [loginForm, setLoginForm] = useState(buildInitialLoginForm());
   const [loadStatus, setLoadStatus] = useState("正在加载");
+  const [loadProgress, setLoadProgress] = useState(initialLoadProgress);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState({ type: "ok", text: "" });
   const [actionBusy, setActionBusy] = useState({});
@@ -1447,6 +1626,7 @@ export default function App() {
   const [modelTransferItems, setModelTransferItems] = useState([]);
   const [deploymentForm, setDeploymentForm] = useState(buildInitialDeploymentForm([], {}));
   const [benchmarkForm, setBenchmarkForm] = useState(buildInitialBenchmarkForm([], []));
+  const [benchmarkSampleInfo, setBenchmarkSampleInfo] = useState(null);
   const [predictForm, setPredictForm] = useState(buildInitialPredictForm([], []));
   const [predictSampleInfo, setPredictSampleInfo] = useState(null);
   const [predictSampleCursor, setPredictSampleCursor] = useState({});
@@ -1458,6 +1638,7 @@ export default function App() {
   const [deploymentPolicyAutomationForm, setDeploymentPolicyAutomationForm] = useState(buildInitialDeploymentPolicyAutomationForm());
   const [selectedHealth, setSelectedHealth] = useState(null);
   const [selectedLogs, setSelectedLogs] = useState(null);
+  const benchmarkSampleRequestKeyRef = useRef("");
 
   function addModelTransferTask(task) {
     setModelTransferItems((current) => [task, ...current]);
@@ -1496,13 +1677,14 @@ export default function App() {
       if (current.modelId && data.models.some((item) => item.model_id === current.modelId)) {
         const profiles = Object.keys(data.modelDetails[current.modelId]?.resolved_profiles || {});
         const optimization = getOptimizationSummaryForModel(current.modelId, data.modelDetails);
-        const allowGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, optimization.optimizationType);
+        const allowGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, optimization.optimizationType, data.gpuStatus);
         const nextUseGpu = current.useGpu && allowGpu;
         const nextProviderPreference = resolveDeploymentProviderPreference(
           current.providerPreference,
           data.runtimeCapabilities,
           nextUseGpu,
           optimization.optimizationType,
+          data.gpuStatus,
         );
         if (profiles.includes(current.profileName)) {
           if (nextUseGpu === current.useGpu && nextProviderPreference === current.providerPreference) {
@@ -1524,7 +1706,7 @@ export default function App() {
       }
       const initial = buildInitialDeploymentForm(data.models, data.modelDetails);
       const initialOptimization = getOptimizationSummaryForModel(initial.modelId, data.modelDetails);
-      const initialUseGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, initialOptimization.optimizationType);
+      const initialUseGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, initialOptimization.optimizationType, data.gpuStatus);
       return {
         ...initial,
         useGpu: initialUseGpu,
@@ -1533,22 +1715,24 @@ export default function App() {
           data.runtimeCapabilities,
           initialUseGpu,
           initialOptimization.optimizationType,
+          data.gpuStatus,
         ),
       };
     });
-  }, [data.models, data.modelDetails, data.runtimeCapabilities]);
+  }, [data.models, data.modelDetails, data.runtimeCapabilities, data.gpuStatus]);
 
   useEffect(() => {
     if (!deploymentForm.modelId) {
       return;
     }
     const optimization = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
-    const shouldUseGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, optimization.optimizationType) && deploymentForm.useGpu;
+    const shouldUseGpu = hasGpuDeploymentBackend(data.runtimeCapabilities, optimization.optimizationType, data.gpuStatus) && deploymentForm.useGpu;
     const nextProviderPreference = resolveDeploymentProviderPreference(
       deploymentForm.providerPreference,
       data.runtimeCapabilities,
       shouldUseGpu,
       optimization.optimizationType,
+      data.gpuStatus,
     );
     if (
       shouldUseGpu !== deploymentForm.useGpu
@@ -1566,7 +1750,7 @@ export default function App() {
           : current
       ));
     }
-  }, [data.modelDetails, data.runtimeCapabilities, deploymentForm.modelId, deploymentForm.providerPreference, deploymentForm.useGpu, deploymentForm.gpuIdsText]);
+  }, [data.modelDetails, data.runtimeCapabilities, data.gpuStatus, deploymentForm.modelId, deploymentForm.providerPreference, deploymentForm.useGpu, deploymentForm.gpuIdsText]);
 
   useEffect(() => {
     if (!data.importOptions?.families?.length) {
@@ -1588,15 +1772,16 @@ export default function App() {
       return;
     }
     setModelOptimizationForm((current) => {
+      const enabledOptions = data.optimizationOptions.options.filter((item) => item.enabled !== false);
       const safeModelId =
         current.modelId && data.models.some((item) => item.model_id === current.modelId)
           ? current.modelId
           : (data.models.find((item) => item.predict_ready) || data.models[0])?.model_id || "";
       const safeOptimizationType =
         current.optimizationType &&
-        data.optimizationOptions.options.some((item) => item.code === current.optimizationType)
+        data.optimizationOptions.options.some((item) => item.code === current.optimizationType && item.enabled !== false)
           ? current.optimizationType
-          : (data.optimizationOptions.options[0]?.code || "ort_graph");
+          : (enabledOptions[0]?.code || data.optimizationOptions.options[0]?.code || "");
       return {
         ...current,
         modelId: safeModelId,
@@ -1648,6 +1833,60 @@ export default function App() {
       return { ...current, text: sampleText };
     });
   }, [data.report]);
+
+  async function hydrateBenchmarkSample(deploymentId, scene, { force = false, excludeCaseId = "" } = {}) {
+    if (!deploymentId) {
+      benchmarkSampleRequestKeyRef.current = "";
+      setBenchmarkSampleInfo(null);
+      return;
+    }
+    const requestKey = `${deploymentId}::${String(scene || "")}`;
+    if (!force && benchmarkSampleRequestKeyRef.current === requestKey) {
+      return;
+    }
+    benchmarkSampleRequestKeyRef.current = requestKey;
+    setBenchmarkSampleInfo(null);
+    setActionBusy((current) => ({ ...current, [`benchmark-sample-${deploymentId}`]: true }));
+    try {
+      const sample = await getBenchmarkSampleText(deploymentId, scene, excludeCaseId);
+      const text = String(sample?.text || data.datasetCatalog?.default_fallback_text || DEFAULT_PREDICT_TEXT);
+      setBenchmarkSampleInfo(sample);
+      setBenchmarkForm((current) => (
+        current.deploymentId === deploymentId && String(current.scene || "") === String(scene || "")
+          ? { ...current, text }
+          : current
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallbackText = data.datasetCatalog?.default_fallback_text || DEFAULT_PREDICT_TEXT;
+      setBenchmarkSampleInfo({
+        deployment_id: deploymentId,
+        dataset_name: "-",
+        dataset_source: "-",
+        dataset_split: null,
+        case_id: null,
+        text: fallbackText,
+        is_fallback: true,
+        detail: message,
+      });
+      setBenchmarkForm((current) => (
+        current.deploymentId === deploymentId && String(current.scene || "") === String(scene || "")
+          ? { ...current, text: fallbackText }
+          : current
+      ));
+    } finally {
+      setActionBusy((current) => ({ ...current, [`benchmark-sample-${deploymentId}`]: false }));
+    }
+  }
+
+  useEffect(() => {
+    if (!benchmarkForm.deploymentId) {
+      benchmarkSampleRequestKeyRef.current = "";
+      setBenchmarkSampleInfo(null);
+      return;
+    }
+    void hydrateBenchmarkSample(benchmarkForm.deploymentId, benchmarkForm.scene, { force: false });
+  }, [benchmarkForm.deploymentId, benchmarkForm.scene]);
 
   async function hydratePredictSample(datasetKey, { advance = false } = {}) {
     const resolvedDatasetKey = resolvePredictDatasetKey(datasetKey);
@@ -1704,12 +1943,38 @@ export default function App() {
     if (!silent) {
       setLoadError("");
       setLoadStatus("正在加载");
+      setLoadProgress({
+        phase: "bootstrap",
+        percent: 4,
+        label: "正在建立控制台会话",
+        detail: "准备开始同步平台真实数据。",
+      });
     }
     try {
-      const next = await loadDashboardData(sessionOverride || authSession);
+      const next = await loadDashboardData(
+        sessionOverride || authSession,
+        silent
+          ? null
+          : (progress) => {
+            startTransition(() => {
+              setLoadProgress({
+                phase: progress?.phase || "loading",
+                percent: Number(progress?.percent) || 0,
+                label: progress?.label || "正在加载",
+                detail: progress?.detail || "",
+              });
+            });
+          },
+      );
       startTransition(() => {
         setData(next);
         setLoadStatus("已加载");
+        setLoadProgress({
+          phase: "ready",
+          percent: 100,
+          label: "控制台数据已就绪",
+          detail: "主页面已完成初始化。",
+        });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1718,6 +1983,14 @@ export default function App() {
       }
       setLoadError(message);
       setLoadStatus("加载失败");
+      if (!silent) {
+        setLoadProgress((current) => ({
+          phase: current?.phase || "failed",
+          percent: current?.percent || 0,
+          label: current?.label || "控制台初始化失败",
+          detail: current?.detail || "首轮数据加载未完成，请重试。",
+        }));
+      }
     }
   }
 
@@ -1728,10 +2001,17 @@ export default function App() {
       await logoutSession().catch(() => null);
       setAuthSession({ authenticated: false, current_user: null, current_permissions: [] });
       setLoadStatus("等待登录");
+      setLoadProgress(initialLoadProgress);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setLoadError(message);
       setLoadStatus("认证检查失败");
+      setLoadProgress({
+        phase: "auth-failed",
+        percent: 0,
+        label: "认证检查失败",
+        detail: message,
+      });
     } finally {
       setAuthChecking(false);
     }
@@ -1792,6 +2072,7 @@ export default function App() {
       setSelectedHealth(null);
       setSelectedLogs(null);
       setLoadStatus("已退出");
+      setLoadProgress(initialLoadProgress);
       setNotice({ type: "ok", text: "已退出当前账号。" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1815,7 +2096,7 @@ export default function App() {
 
     const requestedModelId = payloadOverride?.model_id || deploymentForm.modelId;
     const optimizationType = getOptimizationSummaryForModel(requestedModelId, data.modelDetails).optimizationType;
-    const useGpu = isCpuPinnedOptimization(optimizationType)
+    const useGpu = isGpuRestrictedOptimization(optimizationType)
       ? false
       : (payloadOverride?.use_gpu ?? deploymentForm.useGpu);
     if (!useGpu) {
@@ -1839,10 +2120,40 @@ export default function App() {
         data.runtimeCapabilities,
         resolvedUseGpu,
         optimizationType,
+        data.gpuStatus,
       ),
       notes: payloadOverride?.notes ?? deploymentForm.notes ?? undefined,
     };
-    await runAction("create-deployment", () => createDeployment(payload), `部署已创建：${payload.model_id}`);
+    const result = await runAction("create-deployment", () => createDeployment(payload), "");
+    const adaptationDetails = [];
+    const adaptationFlags = extractDeploymentPolicyAdaptationFlags(result?.notes);
+    if (result?.profile_name && result.profile_name !== payload.profile_name) {
+      adaptationDetails.push(`Profile 已自动调整为 ${result.profile_name}`);
+    }
+    if (Boolean(result?.use_gpu) !== Boolean(payload.use_gpu)) {
+      adaptationDetails.push(`设备已自动调整为 ${result?.use_gpu ? "GPU" : "CPU"}`);
+    }
+    if (JSON.stringify(result?.gpu_ids || []) !== JSON.stringify(payload.gpu_ids || [])) {
+      adaptationDetails.push(`GPU 卡号已自动调整为 ${formatGpuIds(result?.gpu_ids || [])}`);
+    }
+    if (
+      String(result?.provider_preference || "").trim().toLowerCase() !==
+      String(payload.provider_preference || "").trim().toLowerCase()
+    ) {
+      adaptationDetails.push(`后端偏好已自动调整为 ${formatProviderPreferenceLabel(result?.provider_preference)}`);
+    }
+    const noticeParts = [];
+    if (adaptationFlags.invalidGpuAutoAdapted) {
+      noticeParts.push(`你填写的 GPU 卡号不可用，平台已改按部署策略自动适配`);
+    } else if (adaptationDetails.length) {
+      noticeParts.push(`平台已按部署策略自动适配：${adaptationDetails.join("；")}`);
+    }
+    setNotice({
+      type: "ok",
+      text: noticeParts.length
+        ? `部署已创建：${payload.model_id}。${noticeParts.join("；")}。`
+        : `部署已创建：${payload.model_id}`,
+    });
   }
 
   async function handleImportModel() {
@@ -1931,6 +2242,16 @@ export default function App() {
     }
     if (!modelOptimizationForm.optimizationType) {
       setNotice({ type: "error", text: "请先选择一个优化方式。" });
+      return;
+    }
+    const selectedOptimization = (data.optimizationOptions?.options || []).find(
+      (item) => item.code === modelOptimizationForm.optimizationType,
+    );
+    if (selectedOptimization && selectedOptimization.enabled === false) {
+      setNotice({
+        type: "error",
+        text: selectedOptimization.detail || "当前运行环境不支持该优化方式。",
+      });
       return;
     }
     const selectedModel = data.models.find((item) => item.model_id === modelOptimizationForm.modelId);
@@ -2045,6 +2366,18 @@ export default function App() {
         }),
       "基准测试已创建。",
     );
+  }
+
+  async function handleRefreshBenchmarkSample(payloadOverride = {}) {
+    const deploymentId = payloadOverride.deploymentId || benchmarkForm.deploymentId;
+    const scene = payloadOverride.scene !== undefined ? payloadOverride.scene : benchmarkForm.scene;
+    const excludeCaseId = payloadOverride.excludeCaseId !== undefined
+      ? payloadOverride.excludeCaseId
+      : (benchmarkSampleInfo?.case_id || "");
+    await hydrateBenchmarkSample(deploymentId, scene, {
+      force: true,
+      excludeCaseId,
+    });
   }
 
   async function handleDeleteBenchmark(benchmarkId) {
@@ -2517,11 +2850,39 @@ export default function App() {
     return <LoginPage actionBusy={actionBusy} authChecking={false} loadError={loadError} loginForm={loginForm} notice={notice} onLogin={() => void handleLogin()} onLoginFormChange={setLoginForm} />;
   }
 
+  const isInitialDashboardLoading = authSession?.authenticated && data.summary === null && loadStatus === "正在加载";
+  const isInitialDashboardLoadFailed = authSession?.authenticated && data.summary === null && loadStatus === "加载失败";
+
+  if (isInitialDashboardLoading) {
+    return (
+      <BootstrapLoadingPage
+        currentPermissions={authSession.current_permissions || []}
+        currentUser={authSession.current_user}
+        loadProgress={loadProgress}
+        loadStatus={loadStatus}
+      />
+    );
+  }
+
+  if (isInitialDashboardLoadFailed) {
+    return (
+      <BootstrapLoadingPage
+        currentPermissions={authSession.current_permissions || []}
+        currentUser={authSession.current_user}
+        loadError={loadError}
+        loadProgress={loadProgress}
+        loadStatus={loadStatus}
+        onRetry={() => void refreshAll()}
+      />
+    );
+  }
+
   return (
     <Shell
       actionBusy={actionBusy}
       authSession={authSession}
       benchmarkForm={benchmarkForm}
+      benchmarkSampleInfo={benchmarkSampleInfo}
       data={data}
       deploymentForm={deploymentForm}
       derived={derived}
@@ -2563,6 +2924,7 @@ export default function App() {
       onUpdateAccessUser={handleUpdateAccessUser}
       onInspectDeployment={handleInspectDeployment}
       onPredict={handlePredict}
+      onRefreshBenchmarkSample={handleRefreshBenchmarkSample}
       onRefreshPredictSample={handleRefreshPredictSample}
       onSelectPredictDeployment={handleSelectPredictDeployment}
       onPredictFormChange={setPredictForm}
@@ -2705,6 +3067,117 @@ function LoginPage({ actionBusy, authChecking, loadError, loginForm, notice, onL
   );
 }
 
+function BootstrapLoadingPage({
+  currentPermissions = [],
+  currentUser,
+  loadStatus,
+  loadProgress = initialLoadProgress,
+  loadError = "",
+  onRetry = null,
+}) {
+  const isFailed = Boolean(loadError);
+  const progressPercent = Math.max(0, Math.min(100, Number(loadProgress?.percent) || 0));
+  const stageItems = buildBootstrapStageItems(currentPermissions, currentUser, loadProgress?.phase);
+  const userFacingSummary = currentUser?.is_admin
+    ? "管理员视角会同步更多治理与资源信息，因此首轮初始化通常更完整。"
+    : "当前按普通用户可见范围初始化页面，不会额外加载你无权访问的治理与资源模块。";
+  return (
+    <main className="bootstrap-shell">
+      <section className="bootstrap-stage">
+        <article className="bootstrap-hero card">
+          <div className="bootstrap-kicker">LuckyModels Control Center</div>
+          <h1>{isFailed ? "控制台初始化失败" : "正在进入控制台"}</h1>
+          <p className="bootstrap-desc">
+            {isFailed
+              ? "平台登录已经完成，但首轮数据还没有成功加载。可以直接重试，不会影响当前登录状态。"
+              : "正在同步模型、部署、基准、结果反馈与运行资源信息。首轮数据尚未就绪前，页面不会再先显示一组误导性的 0 值。"}
+          </p>
+          <div className="bootstrap-pill-row">
+            <span className="hero-pill">当前用户：{currentUser?.display_name || currentUser?.username || "已登录"}</span>
+            <span className="hero-pill">状态：{loadStatus || (isFailed ? "加载失败" : "正在加载")}</span>
+            <span className="hero-pill">{isFailed ? "等待重试" : `进度：${progressPercent}%`}</span>
+          </div>
+          <div className="bootstrap-progress">
+            <div className="bootstrap-progress-track">
+              <div className="bootstrap-progress-fill" style={{ width: `${progressPercent}%` }} />
+            </div>
+            <div className="bootstrap-progress-meta">
+              <strong>{loadProgress?.label || (isFailed ? "控制台初始化失败" : "正在同步真实数据")}</strong>
+              <span>{loadProgress?.detail || (isFailed ? "请重试后重新进入主页面。" : "请稍候，平台正在拉取首轮真实数据。")}</span>
+              <span>{userFacingSummary}</span>
+            </div>
+          </div>
+          {loadError ? <div className="banner banner-error">{loadError}</div> : null}
+          <div className="bootstrap-actions">
+            {onRetry ? (
+              <button className="btn-primary" onClick={onRetry} type="button">
+                重新加载
+              </button>
+            ) : (
+              <div className="bootstrap-inline-note">首次加载通常会稍慢一些，等所有核心接口返回后再进入主页面。</div>
+            )}
+          </div>
+        </article>
+
+        <section className="bootstrap-stage-grid">
+          {stageItems.map((item) => (
+            <article className={`bootstrap-stage-card card ${item.active ? "is-active" : ""} ${item.done ? "is-done" : ""}`} key={item.key}>
+              <div className="bootstrap-stage-badge">{item.done ? "已完成" : item.active ? "进行中" : "等待中"}</div>
+              <strong>{item.title}</strong>
+              <span>{item.note}</span>
+            </article>
+          ))}
+        </section>
+
+        <section className="bootstrap-summary-grid">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <article className="bootstrap-summary-card card" key={`bootstrap-summary-${index}`}>
+              <div className="bootstrap-skeleton bootstrap-skeleton-title" />
+              <div className="bootstrap-skeleton bootstrap-skeleton-value" />
+              <div className="bootstrap-skeleton bootstrap-skeleton-note" />
+            </article>
+          ))}
+        </section>
+
+        <section className="bootstrap-panel-grid">
+          <article className="bootstrap-panel card">
+            <div className="bootstrap-panel-head">
+              <div className="bootstrap-skeleton bootstrap-skeleton-title wide" />
+              <div className="bootstrap-skeleton bootstrap-skeleton-tag" />
+            </div>
+            <div className="bootstrap-row-list">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <div className="bootstrap-row" key={`bootstrap-row-left-${index}`}>
+                  <div className="bootstrap-skeleton bootstrap-skeleton-line" />
+                  <div className="bootstrap-skeleton bootstrap-skeleton-line short" />
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="bootstrap-panel card">
+            <div className="bootstrap-panel-head">
+              <div className="bootstrap-skeleton bootstrap-skeleton-title wide" />
+              <div className="bootstrap-skeleton bootstrap-skeleton-tag" />
+            </div>
+            <div className="bootstrap-chart-area">
+              <div className="bootstrap-skeleton bootstrap-skeleton-chart" />
+            </div>
+            <div className="bootstrap-row-list compact">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div className="bootstrap-row" key={`bootstrap-row-right-${index}`}>
+                  <div className="bootstrap-skeleton bootstrap-skeleton-line" />
+                  <div className="bootstrap-skeleton bootstrap-skeleton-line short" />
+                </div>
+              ))}
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+  );
+}
+
 function GuardedPage({ allowed, children, fallbackPath, title, note }) {
   if (allowed) {
     return children;
@@ -2737,6 +3210,7 @@ function Shell(props) {
     actionBusy,
     authSession,
     benchmarkForm,
+    benchmarkSampleInfo,
     data,
     deploymentForm,
     derived,
@@ -2770,6 +3244,7 @@ function Shell(props) {
     onUpdateAccessUser,
     onInspectDeployment,
     onPredict,
+    onRefreshBenchmarkSample,
     onRefreshPredictSample,
     onSelectPredictDeployment,
     onPredictFormChange,
@@ -3076,10 +3551,12 @@ function Shell(props) {
               <BenchmarksPage
                 actionBusy={actionBusy}
                 benchmarkForm={benchmarkForm}
+                benchmarkSampleInfo={benchmarkSampleInfo}
                 derived={derived}
                 onBenchmarkFormChange={onBenchmarkFormChange}
                 onCreateBenchmark={onCreateBenchmark}
                 onDeleteBenchmark={onDeleteBenchmark}
+                onRefreshBenchmarkSample={onRefreshBenchmarkSample}
               />,
             )}
             {renderGuardedRoute(
@@ -7177,7 +7654,7 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
 
       <section className="page-shell card section-shell">
         <SectionHeader kicker="任务调度反馈" title="任务调度反馈列表" note="这一表优先展示真实任务调度记录，同时补充接入历史最近决策记录，便于在同一处查看完整任务调度留痕和反馈。" />
-        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。已生成真实留痕的记录保留完整输入、权重快照和反馈入口；没有真实留痕的历史最近决策，也会补成只读记录接进来。</div>
+        <div className="banner banner-muted">这张表看什么：一行就是一次任务调度记录。这里主要保留目标、路径、融合方式、参与模型和反馈入口；没有真实留痕的历史最近决策，也会补成只读记录接进来。</div>
         {mergedTaskRoutingArchives.length ? (
           <div className="table-wrap">
             <table className="archive-table">
@@ -7186,7 +7663,6 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                   <th>归档信息</th>
                   <th>目标与场景</th>
                   <th>输入文本</th>
-                  <th>调度快照</th>
                   <th>反馈</th>
                   <th>操作</th>
                 </tr>
@@ -7195,8 +7671,6 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                 {pagedMergedTaskRoutingArchives
                   .map((item) => {
                     const routingModels = (item.task_routing_selected_model_ids || []).join(" / ");
-                    const weightSnapshotText = formatWeightSnapshot(item.task_routing_weight_snapshot);
-                    const adjustmentSnapshotText = formatWeightSnapshot(item.task_routing_adjustment_snapshot);
                     const displayId = item.task_routing_decision_id || item.archive_id;
                     const isSupplementalDecision = Boolean(item.is_supplemental_decision);
                     return (
@@ -7216,24 +7690,15 @@ function ArchivePage({ actionBusy, derived, onDeletePredictionArchive, onExportP
                           <div className="table-note">场景：{item.scene || "-"}</div>
                           <div className="table-note">语言：{item.inferred_language || "-"}</div>
                           <div className="table-note">参与模型：{routingModels || "-"}</div>
+                          <div className="archive-result-grid">
+                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
+                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
+                          </div>
                         </div>
                       </td>
                       <td>
                         <div className="archive-input">
                           {item.request_text || item.request_texts?.[0] || "该历史任务调度记录未保留原始输入文本。"}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="archive-cell-stack">
-                          <div className="archive-result-grid">
-                            <span className="archive-result-chip">延迟 {escapeValue(item.latency_ms)} ms</span>
-                            <span className="archive-result-chip">三元组 {escapeValue(item.triple_count)}</span>
-                          </div>
-                          <div className="table-note">权重快照：{weightSnapshotText}</div>
-                          <div className="table-note">调整快照：{adjustmentSnapshotText}</div>
-                          <div className="table-note">
-                            {isSupplementalDecision ? "该条为最近决策补充记录，优先用于补足历史任务调度留痕。" : "这条记录的反馈会同步给任务调度学习逻辑。"}
-                          </div>
                         </div>
                       </td>
                       <td className="archive-feedback-cell">
@@ -7401,27 +7866,38 @@ function ModelsPage({
   const canManageModels = derived.currentAccessUser?.is_admin;
   const familyOptions = data.importOptions?.families || [];
   const optimizationOptions = data.optimizationOptions?.options || [];
+  const enabledOptimizationOptions = optimizationOptions.filter((item) => item.enabled !== false);
   const runtimeCapabilities = data.runtimeCapabilities;
+  const gpuPoolScope = getGpuPoolScope(data.gpuStatus);
+  const allowedGpuIds = gpuPoolScope.allowedGpuIds;
+  const platformGpuCompletelyDisabled = gpuPoolScope.platformGpuCompletelyDisabled;
   const uploadTransferItems = modelTransferItems.filter((item) => item.direction !== "optimize");
   const optimizationTransferItems = modelTransferItems.filter((item) => item.direction === "optimize");
   const selectedFamilyOption = familyOptions.find((item) => item.code === modelImportForm.modelFamily) || familyOptions[0];
   const selectedOptimizationOption =
     optimizationOptions.find((item) => item.code === modelOptimizationForm.optimizationType) || optimizationOptions[0];
+  const optimizationSelectionEnabled = Boolean(
+    selectedOptimizationOption && selectedOptimizationOption.enabled !== false,
+  );
   const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, data.modelDetails);
   const deploymentBackendOptions = getDeploymentBackendOptions(
     runtimeCapabilities,
     deploymentForm.useGpu,
     selectedDeploymentModelSummary.optimizationType,
+    data.gpuStatus,
   );
   const selectedDeploymentBackend =
     deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
   const runtimeCapabilitySummary = useMemo(() => {
+    if (platformGpuCompletelyDisabled) {
+      return "服务器运行时能力仍会照常探测，但平台当前已停用全部 GPU；因此部署入口和优化工作台都会统一按 CPU 路径约束。";
+    }
     const cudaUsable = isRuntimeProviderUsable(runtimeCapabilities, "CUDAExecutionProvider");
     if (cudaUsable) {
       return "当前环境支持 CUDA EP，平台会显示 CUDA 部署后端。";
     }
     return "当前环境仅确认 CPUExecutionProvider 可用；平台会隐藏不可用的 GPU 执行后端。";
-  }, [runtimeCapabilities]);
+  }, [platformGpuCompletelyDisabled, runtimeCapabilities]);
   const recommendationByModelId = useMemo(
     () => new Map((deploymentPolicy?.recommendations || []).map((item) => [item.model_id, item])),
     [deploymentPolicy],
@@ -7637,6 +8113,12 @@ function ModelsPage({
           这块解决的是运行时工具链优化，不是调度策略。当前支持 ORT 图优化、ORT Format、FP16 精度优化和 INT8 动态量化。
           生成后的优化制品会作为新的正式模型接入平台，后续可按普通模型继续部署、基准测试和管理。
         </div>
+        {platformGpuCompletelyDisabled ? (
+          <div className="detail-note">
+            当前平台已停用全部 GPU，所以下方“GPU 可用”会统一显示为“否”。
+            这不代表优化方式本身不能生成制品，而是表示平台当前不会把这些制品当作正式 GPU 部署候选。
+          </div>
+        ) : null}
         {runtimeCapabilities ? (
           <div className="stack-block">
             <div className="section-intro">
@@ -7697,6 +8179,48 @@ function ModelsPage({
             </div>
           </div>
         ) : null}
+        <div className="stack-block">
+            <div className="section-intro">
+              <strong>当前优化方式可用性看什么</strong>
+              <div className="detail-note">
+                这里先看“工作台能不能生成这种优化制品”，再看“平台当前允不允许它走 GPU 部署”。若某种方式显示为不可用，下面表单会同步禁选，避免提交后才报错。
+              </div>
+            </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>优化方式</th>
+                  <th>当前环境可用</th>
+                  <th>GPU 可用</th>
+                  <th>能力边界</th>
+                  <th>要求</th>
+                  <th>提示信息</th>
+                </tr>
+              </thead>
+              <tbody>
+                {optimizationOptions.map((item) => (
+                  <tr key={`optimization-availability-${item.code}`}>
+                    <td>
+                      <strong>{item.label}</strong>
+                      <div className="table-note mono">{item.code}</div>
+                    </td>
+                    <td>{formatBooleanLabel(item.enabled !== false)}</td>
+                    <td>{formatBooleanLabel(item.gpu_available)}</td>
+                    <td>{item.deployment_scope || item.note || "-"}</td>
+                    <td>{item.requirement || "-"}</td>
+                    <td>{item.detail || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="detail-note">
+            当前可直接使用 {enabledOptimizationOptions.length} / {optimizationOptions.length} 种优化方式。
+            “当前环境可用”只表示工作台能否生成对应优化制品；“GPU 可用”表示平台当前是否允许它作为正式 GPU 部署候选。
+            {platformGpuCompletelyDisabled ? " 当前平台已停用全部 GPU，因此这一列会统一显示为“否”。" : allowedGpuIds.length ? ` 当前平台允许的 GPU 为：${allowedGpuIds.join(", ")}。` : ""}
+          </div>
+        </div>
         <div className="form-grid">
           <label className="stack-field">
             <span>源模型</span>
@@ -7720,12 +8244,16 @@ function ModelsPage({
               value={modelOptimizationForm.optimizationType}
             >
               {optimizationOptions.map((item) => (
-                <option key={`optimization-${item.code}`} value={item.code}>
-                  {item.label}
+                <option disabled={item.enabled === false} key={`optimization-${item.code}`} value={item.code}>
+                  {item.label}{item.enabled === false ? "（当前不可用）" : ""}
                 </option>
               ))}
             </select>
-            <small className="detail-note">{selectedOptimizationOption?.note || "选择一种优化方式后，平台会生成新的模型制品包。"}</small>
+            <small className="detail-note">
+              {selectedOptimizationOption?.note || "选择一种优化方式后，平台会生成新的模型制品包。"}
+              {selectedOptimizationOption?.deployment_scope ? ` ${selectedOptimizationOption.deployment_scope}` : ""}
+              {selectedOptimizationOption?.detail ? ` ${selectedOptimizationOption.detail}` : ""}
+            </small>
           </label>
           <label className="stack-field">
             <span>优化别名</span>
@@ -7740,7 +8268,12 @@ function ModelsPage({
           <div className="actions">
             <button
               className="btn-primary"
-              disabled={actionBusy["optimize-model"] || !modelOptimizationForm.modelId || !modelOptimizationForm.optimizationType}
+              disabled={
+                actionBusy["optimize-model"]
+                || !modelOptimizationForm.modelId
+                || !modelOptimizationForm.optimizationType
+                || !optimizationSelectionEnabled
+              }
               onClick={() => void onOptimizeModel()}
               type="button"
             >
@@ -7748,6 +8281,11 @@ function ModelsPage({
             </button>
           </div>
         </div>
+        {!optimizationSelectionEnabled && selectedOptimizationOption ? (
+          <div className="detail-note">
+            当前所选优化方式暂不可用：{selectedOptimizationOption.detail || "请改选表格中标记为可用的优化方式。"}
+          </div>
+        ) : null}
         {optimizationTransferItems.length ? (
           <div className="transfer-list">
             {optimizationTransferItems.map((item) => {
@@ -7839,6 +8377,7 @@ function ModelsPage({
                 runtimeCapabilities,
                 deploymentForm.useGpu,
                 selectedDeploymentModelSummary.optimizationType,
+                data.gpuStatus,
               )}
             >
               {deploymentBackendOptions.map((item) => (
@@ -7860,6 +8399,7 @@ function ModelsPage({
               type="text"
               value={deploymentForm.gpuIdsText}
             />
+            <small className="detail-note">若填写了平台禁用或当前不合适的 GPU 卡号，创建时会自动回退到部署策略推荐方案，并在成功后提示你。</small>
           </label>
           <label className="stack-field">
             <span>备注</span>
@@ -7873,7 +8413,7 @@ function ModelsPage({
             <input
               checked={deploymentForm.useGpu}
               disabled={
-                !getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length
+                !getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType, data.gpuStatus).length
               }
               onChange={(event) =>
                 onDeploymentFormChange((current) => ({
@@ -7884,6 +8424,7 @@ function ModelsPage({
                     runtimeCapabilities,
                     event.target.checked,
                     selectedDeploymentModelSummary.optimizationType,
+                    data.gpuStatus,
                   ),
                   gpuIdsText: event.target.checked ? current.gpuIdsText : "",
                 }))
@@ -7891,8 +8432,10 @@ function ModelsPage({
               type="checkbox"
             />
             使用 GPU
-            {!getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
-              <small className="detail-note">当前服务器环境未通过 CUDA 运行时探测，平台已禁用 GPU 部署入口。</small>
+            {!getDeploymentBackendOptions(runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType, data.gpuStatus).length ? (
+              <small className="detail-note">
+                {getGpuDeploymentDisabledNote(runtimeCapabilities, selectedDeploymentModelSummary.optimizationType, data.gpuStatus)}
+              </small>
             ) : null}
           </label>
           <label className="stack-check">
@@ -7974,7 +8517,7 @@ function ModelsPage({
               data.modelDetails,
               recommendation?.recommended_profile_name || "default",
             );
-            const deploymentPreset = getSuggestedDeploymentPreset(model.model_id, data.modelDetails, recommendation);
+            const deploymentPreset = getSuggestedDeploymentPreset(model.model_id, data.modelDetails, recommendation, data.gpuStatus);
             const quickDeployUseGpu = deploymentPreset.useGpu;
             const quickDeployGpuIds = deploymentPreset.gpuIds;
             return (
@@ -8342,11 +8885,14 @@ function DeploymentsPage({
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageDeployments = currentPermissions.includes("deployments.manage");
   const canViewResources = currentPermissions.includes("resources.view");
+  const gpuPoolScope = getGpuPoolScope(data.gpuStatus);
+  const platformGpuCompletelyDisabled = gpuPoolScope.platformGpuCompletelyDisabled;
   const selectedDeploymentModelSummary = getOptimizationSummaryForModel(deploymentForm.modelId, derived.modelDetails);
   const deploymentBackendOptions = getDeploymentBackendOptions(
     data.runtimeCapabilities,
     deploymentForm.useGpu,
     selectedDeploymentModelSummary.optimizationType,
+    data.gpuStatus,
   );
   const selectedDeploymentBackend =
     deploymentBackendOptions.find((item) => item.value === deploymentForm.providerPreference) || deploymentBackendOptions[0] || null;
@@ -8385,6 +8931,8 @@ function DeploymentsPage({
       batch_size: getDeploymentExecution(item).batch_size ?? 1,
       intra_op_threads: getDeploymentExecution(item).intra_op_threads ?? 0,
       inter_op_threads: getDeploymentExecution(item).inter_op_threads ?? 0,
+      configured_max_length: getDeploymentConfiguredMaxLength(item) ?? "",
+      actual_runtime_max_length: getDeploymentActualRuntimeMaxLength(item) ?? "",
       providers: formatProviderSummary(item),
       service_url: item.service_url || "",
       pid: item.pid || "",
@@ -8406,6 +8954,12 @@ function DeploymentsPage({
         <div className="banner banner-muted">
           如果某个部署实例是在 2026-03-28 这次配置模板更新前创建且一直没有重启，它仍可能运行旧参数。重启一次后，新的线程数、实例数和批量配置才会真正生效。
         </div>
+        {platformGpuCompletelyDisabled ? (
+          <div className="detail-note">
+            平台当前已停用全部 GPU，因此这里的新建部署会统一按 CPU 路径创建。
+            若后续在“运行资源”页重新启用 GPU，部署入口会自动恢复 GPU 选项。
+          </div>
+        ) : null}
         <div className="form-grid">
 	          <label className="stack-field">
 	            <span>模型</span>
@@ -8449,6 +9003,7 @@ function DeploymentsPage({
                 data.runtimeCapabilities,
                 deploymentForm.useGpu,
                 selectedDeploymentModelSummary.optimizationType,
+                data.gpuStatus,
               )}
             >
               {deploymentBackendOptions.map((item) => (
@@ -8483,7 +9038,7 @@ function DeploymentsPage({
 	            <input
 	              checked={deploymentForm.useGpu}
                 disabled={
-                  !getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length
+                  !getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType, data.gpuStatus).length
                 }
 	              onChange={(event) =>
 	                onDeploymentFormChange((current) => ({
@@ -8494,6 +9049,7 @@ function DeploymentsPage({
                     data.runtimeCapabilities,
                     event.target.checked,
                     selectedDeploymentModelSummary.optimizationType,
+                    data.gpuStatus,
                   ),
                   gpuIdsText: event.target.checked ? current.gpuIdsText : "",
                 }))
@@ -8501,8 +9057,10 @@ function DeploymentsPage({
               type="checkbox"
 	            />
 	            使用 GPU
-              {!getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType).length ? (
-                <small className="detail-note">当前服务器环境未通过 CUDA 运行时探测，平台已禁用 GPU 部署入口。</small>
+              {!getDeploymentBackendOptions(data.runtimeCapabilities, true, selectedDeploymentModelSummary.optimizationType, data.gpuStatus).length ? (
+                <small className="detail-note">
+                  {getGpuDeploymentDisabledNote(data.runtimeCapabilities, selectedDeploymentModelSummary.optimizationType, data.gpuStatus)}
+                </small>
               ) : null}
 	          </label>
           <label className="stack-check">
@@ -8622,6 +9180,7 @@ function DeploymentsPage({
                         <div className="table-note">GPU 加速：{formatBooleanLabel(item.use_gpu)}</div>
                         <div className="table-note">GPU 卡号：{formatGpuIds(getDeploymentAssignedGpuIds(item))}</div>
                         <div className="table-note">{formatExecutionSummary(item)}</div>
+                        <div className="table-note">推理长度：{formatDeploymentRuntimeLengthSummary(item)}</div>
                         <div className="table-note">后端偏好：{formatProviderPreferenceLabel(item.provider_preference)}</div>
                         <div className="table-note">实际激活：{formatProviderSummary(item)}</div>
                       </td>
@@ -8688,11 +9247,15 @@ function DeploymentsPage({
 function BenchmarksPage({
   actionBusy,
   benchmarkForm,
+  benchmarkSampleInfo,
   derived,
   onBenchmarkFormChange,
   onCreateBenchmark,
   onDeleteBenchmark,
+  onRefreshBenchmarkSample,
 }) {
+  const [deploymentSearch, setDeploymentSearch] = useState("");
+  const [deploymentDropdownOpen, setDeploymentDropdownOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
@@ -8705,6 +9268,11 @@ function BenchmarksPage({
   const deferredSearch = useDeferredValue(search);
   const currentPermissions = derived.currentAccessPermissions || [];
   const canManageBenchmarks = currentPermissions.includes("benchmarks.manage");
+  const benchmarkDeploymentComboboxRef = useRef(null);
+  const selectedBenchmarkDeployment = useMemo(
+    () => (derived.runningDeployments || []).find((item) => item.deployment_id === benchmarkForm.deploymentId) || null,
+    [benchmarkForm.deploymentId, derived.runningDeployments],
+  );
 
   const completedBenchmarks = useMemo(
     () => sortByCreatedDesc(derived.benchmarks).filter((item) => item.status === "completed"),
@@ -8724,6 +9292,42 @@ function BenchmarksPage({
     },
     [derived.benchmarks],
   );
+
+  const filteredRunningDeployments = useMemo(() => {
+    const normalizedSearch = String(deploymentSearch || "").trim();
+    const selectedLabel = selectedBenchmarkDeployment
+      ? formatBenchmarkDeploymentOptionLabel(selectedBenchmarkDeployment)
+      : "";
+    if (!normalizedSearch || (selectedLabel && normalizedSearch === selectedLabel)) {
+      return derived.runningDeployments || [];
+    }
+    return (derived.runningDeployments || []).filter((item) =>
+      matchesKeyword(
+        [item.deployment_id, item.model_id, item.profile_name, item.notes],
+        deploymentSearch,
+      ),
+    );
+  }, [deploymentSearch, derived.runningDeployments, selectedBenchmarkDeployment]);
+  const refreshTargetDeploymentId = selectedBenchmarkDeployment?.deployment_id
+    || (filteredRunningDeployments.length === 1 ? filteredRunningDeployments[0].deployment_id : "");
+
+  useEffect(() => {
+    setDeploymentSearch(
+      selectedBenchmarkDeployment
+        ? formatBenchmarkDeploymentOptionLabel(selectedBenchmarkDeployment)
+        : (benchmarkForm.deploymentId || ""),
+    );
+  }, [benchmarkForm.deploymentId, selectedBenchmarkDeployment]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!benchmarkDeploymentComboboxRef.current?.contains(event.target)) {
+        setDeploymentDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
 
   useEffect(() => {
     if (modelFilter !== "all" && !benchmarkModelOptions.includes(modelFilter)) {
@@ -8961,6 +9565,70 @@ function BenchmarksPage({
     };
   }, [selectedOptimizationSourceRows]);
 
+  function applyBenchmarkDeploymentSelection(nextDeployment) {
+    if (!nextDeployment) {
+      return false;
+    }
+    const nextModel = derived.models.find((item) => item.model_id === nextDeployment.model_id);
+    setDeploymentSearch(formatBenchmarkDeploymentOptionLabel(nextDeployment));
+    setDeploymentDropdownOpen(false);
+    onBenchmarkFormChange((current) => ({
+      ...current,
+      deploymentId: nextDeployment.deployment_id,
+      scene: resolveBenchmarkSceneForModel(nextModel),
+    }));
+    return true;
+  }
+
+  function resolveBenchmarkDeploymentSelection(searchValue) {
+    const normalizedSearch = String(searchValue || "").trim();
+    if (!normalizedSearch) {
+      setDeploymentSearch("");
+      setDeploymentDropdownOpen(false);
+      onBenchmarkFormChange((current) => ({ ...current, deploymentId: "" }));
+      return null;
+    }
+    const normalizedLower = normalizedSearch.toLowerCase();
+    const exactMatch = (derived.runningDeployments || []).find((item) => {
+      const deploymentId = String(item.deployment_id || "").trim().toLowerCase();
+      const modelId = String(item.model_id || "").trim().toLowerCase();
+      const profileName = String(item.profile_name || "").trim().toLowerCase();
+      const fullLabel = formatBenchmarkDeploymentOptionLabel(item).toLowerCase();
+      return (
+        deploymentId === normalizedLower ||
+        modelId === normalizedLower ||
+        `${modelId} ${profileName}` === normalizedLower ||
+        fullLabel === normalizedLower
+      );
+    });
+    if (exactMatch) {
+      applyBenchmarkDeploymentSelection(exactMatch);
+      return exactMatch;
+    }
+    if (filteredRunningDeployments.length === 1) {
+      const singleMatch = filteredRunningDeployments[0];
+      applyBenchmarkDeploymentSelection(singleMatch);
+      return singleMatch;
+    }
+    return null;
+  }
+
+  async function handleRefreshBenchmarkSampleRequest() {
+    const resolvedDeployment =
+      resolveBenchmarkDeploymentSelection(deploymentSearch) ||
+      selectedBenchmarkDeployment;
+    if (!resolvedDeployment) {
+      return;
+    }
+    const resolvedModel = derived.models.find((item) => item.model_id === resolvedDeployment.model_id);
+    const resolvedScene = benchmarkForm.scene || resolveBenchmarkSceneForModel(resolvedModel);
+    await onRefreshBenchmarkSample({
+      deploymentId: resolvedDeployment.deployment_id,
+      scene: resolvedScene,
+      excludeCaseId: benchmarkSampleInfo?.case_id || "",
+    });
+  }
+
   function handleExportFilteredBenchmarks() {
     if (!filteredBenchmarks.length) {
       return;
@@ -9019,6 +9687,8 @@ function BenchmarksPage({
         remote_avg_latency_ms: item.remote_avg_latency_ms?.toFixed(3) ?? "",
         success_rate: item.success_rate ?? "",
         avg_batch_size: item.avg_batch_size?.toFixed(2) ?? "",
+        configured_max_length: item.configured_max_length ?? "",
+        actual_max_length: item.actual_max_length ?? "",
         latest_benchmark_id: item.latest_benchmark_id,
         latest_created_at: item.latest_created_at,
       })),
@@ -9065,7 +9735,8 @@ function BenchmarksPage({
         instance_count: item.instance_count ?? "",
         intra_op_threads: item.intra_op_threads ?? "",
         inter_op_threads: item.inter_op_threads ?? "",
-        max_length: item.max_length ?? "",
+        configured_max_length: item.configured_max_length ?? "",
+        actual_max_length: item.actual_max_length ?? "",
         avg_latency_ms: item.avg_latency_ms?.toFixed(3) ?? "",
         p95_latency_ms: item.p95_latency_ms?.toFixed(3) ?? "",
         throughput_qps: item.throughput_qps?.toFixed(3) ?? "",
@@ -9087,30 +9758,98 @@ function BenchmarksPage({
     <>
       {canManageBenchmarks ? (
       <section className="page-shell card section-shell">
-        <SectionHeader kicker="新建基准" title="新建基准测试" note="为运行中的部署实例发起基准测试，并将结果写回平台。" />
+        <SectionHeader kicker="新建基准" title="新建基准测试" note="基准测试改为手动发起。选择运行中的部署实例后，可在这里重复发起测试，并将结果写回平台。" />
         {derived.runningDeployments.length ? (
           <div className="form-grid">
             <label className="stack-field">
               <span>部署实例</span>
-              <select
-                onChange={(event) => {
-                  const nextDeploymentId = event.target.value;
-                  const nextDeployment = derived.deployments.find((item) => item.deployment_id === nextDeploymentId);
-                  const nextModel = derived.models.find((item) => item.model_id === nextDeployment?.model_id);
-                  onBenchmarkFormChange((current) => ({
-                    ...current,
-                    deploymentId: nextDeploymentId,
-                    scene: resolveBenchmarkSceneForModel(nextModel),
-                  }));
-                }}
-                value={benchmarkForm.deploymentId}
-              >
-                {derived.runningDeployments.map((item) => (
-                  <option key={item.deployment_id} value={item.deployment_id}>
-                    {item.deployment_id} · {item.model_id}
-                  </option>
-                ))}
-              </select>
+              <div className="stack-combobox" ref={benchmarkDeploymentComboboxRef}>
+                <div className={`stack-combobox-control ${deploymentDropdownOpen ? "is-open" : ""}`}>
+                  <input
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setDeploymentSearch(nextValue);
+                      setDeploymentDropdownOpen(true);
+                      const nextDeployment = (derived.runningDeployments || []).find((item) => item.deployment_id === nextValue);
+                      if (nextDeployment) {
+                        applyBenchmarkDeploymentSelection(nextDeployment);
+                      } else if (!nextValue.trim()) {
+                        onBenchmarkFormChange((current) => ({ ...current, deploymentId: "" }));
+                      }
+                    }}
+                    onFocus={() => setDeploymentDropdownOpen(true)}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setDeploymentDropdownOpen(true);
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setDeploymentDropdownOpen(false);
+                        setDeploymentSearch(
+                          selectedBenchmarkDeployment
+                            ? formatBenchmarkDeploymentOptionLabel(selectedBenchmarkDeployment)
+                            : "",
+                        );
+                        return;
+                      }
+                      if (event.key !== "Enter") {
+                        return;
+                      }
+                      event.preventDefault();
+                      const matched = resolveBenchmarkDeploymentSelection(event.currentTarget.value);
+                      if (!matched && selectedBenchmarkDeployment) {
+                        setDeploymentSearch(formatBenchmarkDeploymentOptionLabel(selectedBenchmarkDeployment));
+                      }
+                    }}
+                    placeholder="输入 deployment_id / model_id / profile 搜索并选择"
+                    type="text"
+                    value={deploymentSearch}
+                  />
+                  <button
+                    className="stack-combobox-toggle"
+                    onClick={() => setDeploymentDropdownOpen((current) => !current)}
+                    type="button"
+                  >
+                    {deploymentDropdownOpen ? "▲" : "▼"}
+                  </button>
+                </div>
+                {deploymentDropdownOpen ? (
+                  <div className="stack-combobox-menu">
+                    {filteredRunningDeployments.length ? (
+                      filteredRunningDeployments.map((item) => {
+                        const isActive = selectedBenchmarkDeployment?.deployment_id === item.deployment_id;
+                        return (
+                          <button
+                            className={`stack-combobox-option ${isActive ? "is-active" : ""}`}
+                            key={item.deployment_id}
+                            onClick={() => applyBenchmarkDeploymentSelection(item)}
+                            type="button"
+                          >
+                            <strong>{item.deployment_id}</strong>
+                            <span>{item.model_id} · {item.profile_name}</span>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="stack-combobox-empty">没有匹配的运行中实例</div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <small className="detail-note">
+                当前可选 {filteredRunningDeployments.length} / {derived.runningDeployments.length} 个运行中实例；已存在完整基准记录的实例也会继续保留在下拉列表中。
+              </small>
+              <small className="detail-note">
+                {selectedBenchmarkDeployment
+                  ? `当前已选：${formatBenchmarkDeploymentOptionLabel(selectedBenchmarkDeployment)}`
+                  : filteredRunningDeployments.length === 1 && deploymentSearch.trim()
+                    ? `已定位到唯一候选：${formatBenchmarkDeploymentOptionLabel(filteredRunningDeployments[0])}，按回车或失焦即可自动选中。`
+                    : deploymentSearch.trim()
+                      ? "继续输入或从下拉中选中实例；若只剩一个候选，回车或点出输入框会自动选中。"
+                      : "输入 deployment_id、model_id 或 profile 后，下拉列表会在这个输入框里同步筛选。"}
+              </small>
             </label>
             <label className="stack-field">
               <span>基准场景</span>
@@ -9124,7 +9863,7 @@ function BenchmarksPage({
                   </option>
                 ))}
               </select>
-              <small className="detail-note">这会告诉平台这条 benchmark 代表哪类业务文本，用于后续任务调度和部署策略读取正确证据。</small>
+              <small className="detail-note">这会告诉平台这次手动测试对应哪类业务文本，用于后续任务调度和部署策略读取正确证据。</small>
             </label>
             <label className="stack-field">
               <span>基准标签</span>
@@ -9163,11 +9902,28 @@ function BenchmarksPage({
                 rows="4"
                 value={benchmarkForm.text}
               />
-              <small className="detail-note">建议输入与所选场景一致的代表性文本。若是工业场景，尽量使用设备、故障、制造流程相关文本。</small>
+              {benchmarkSampleInfo ? (
+                <small className="detail-note">
+                  当前文本已按所选实例自动适配，并优先取该实例训练数据集中的随机样本：
+                  {benchmarkSampleInfo.dataset_name || "-"}
+                  {benchmarkSampleInfo.dataset_split ? ` · ${benchmarkSampleInfo.dataset_split}` : ""}
+                  {benchmarkSampleInfo.case_id ? ` · ${benchmarkSampleInfo.case_id}` : ""}
+                  {benchmarkSampleInfo.dataset_source ? ` · 来源 ${benchmarkSampleInfo.dataset_source}` : ""}
+                  {benchmarkSampleInfo.is_fallback ? " · 当前为回退样本" : ""}
+                </small>
+              ) : null}
+              <small className="detail-note">切换部署实例或基准场景后，这里的文本会自动重新适配；若需要另一条训练集样本，可点击下方按钮重新随机生成。</small>
             </label>
             <div className="actions">
               <button className="btn-primary" disabled={actionBusy["create-benchmark"]} onClick={() => void onCreateBenchmark()} type="button">
                 新建基准
+              </button>
+              <button
+                disabled={!refreshTargetDeploymentId || actionBusy[`benchmark-sample-${refreshTargetDeploymentId}`]}
+                onClick={() => void handleRefreshBenchmarkSampleRequest()}
+                type="button"
+              >
+                随机生成样本
               </button>
             </div>
           </div>
@@ -9452,7 +10208,7 @@ function BenchmarksPage({
                     <div className="paper-bar-row" key={`${item.model_id}-${item.profile_name}-success`}>
                       <div className="paper-bar-label">
                         <strong>{item.profile_name}</strong>
-                        <span>最大长度 {item.max_length ?? "-"} / 设备 {item.device || "-"}</span>
+                        <span>推理长度 {formatRuntimeLengthSummary(item.configured_max_length, item.actual_max_length)} / 设备 {item.device || "-"}</span>
                       </div>
                       <div className="paper-bar-track">
                         <div
@@ -9861,7 +10617,7 @@ function BenchmarksPage({
                   <th>实例数</th>
                   <th>算子内线程</th>
                   <th>算子间线程</th>
-                  <th>最大长度</th>
+                  <th>推理长度</th>
                   <th>平均延迟</th>
                   <th>P95</th>
                   <th>吞吐量</th>
@@ -9881,7 +10637,7 @@ function BenchmarksPage({
                     <td>{item.instance_count ?? "-"}</td>
                     <td>{item.intra_op_threads ?? "-"}</td>
                     <td>{item.inter_op_threads ?? "-"}</td>
-                    <td>{item.max_length ?? "-"}</td>
+                    <td>{formatRuntimeLengthSummary(item.configured_max_length, item.actual_max_length)}</td>
                     <td>{formatFixed(item.avg_latency_ms)}</td>
                     <td>{formatFixed(item.p95_latency_ms)}</td>
                     <td>{formatFixed(item.throughput_qps)}</td>
@@ -10234,6 +10990,8 @@ function ResourcesPage({ actionBusy, derived, onApplyGpuPoolUpdate }) {
                   批量大小：{execution.batch_size ?? 1}
                   <br />
                   算子内 / 算子间线程：{execution.intra_op_threads ?? 0} / {execution.inter_op_threads ?? 0}
+                  <br />
+                  推理长度：{formatDeploymentRuntimeLengthSummary(item)}
                   <br />
                   实际激活：{providers.join(", ") || "待检测"}
                   <br />

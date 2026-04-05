@@ -50,7 +50,28 @@ export async function logoutSession() {
   });
 }
 
-export async function loadDashboardData(session = null) {
+function emitDashboardLoadProgress(onProgress, payload) {
+  if (typeof onProgress !== "function") {
+    return;
+  }
+  onProgress(payload);
+}
+
+function joinNaturalLanguage(items = []) {
+  const filtered = items.filter(Boolean);
+  if (!filtered.length) {
+    return "";
+  }
+  if (filtered.length === 1) {
+    return filtered[0];
+  }
+  if (filtered.length === 2) {
+    return `${filtered[0]}、${filtered[1]}`;
+  }
+  return `${filtered.slice(0, -1).join("、")}、${filtered[filtered.length - 1]}`;
+}
+
+export async function loadDashboardData(session = null, onProgress = null) {
   const canViewModels = hasPermission(session, "models.view");
   const canImportModels = hasPermission(session, "models.import");
   const canViewDeployments = hasPermission(session, "deployments.view");
@@ -60,6 +81,32 @@ export async function loadDashboardData(session = null) {
   const canViewUsers = hasPermission(session, "users.view");
   const canRunTaskRouting = hasPermission(session, "task_routing.run");
   const canManageStrategies = hasPermission(session, "strategies.manage") || Boolean(session?.current_user?.is_admin);
+  const visibleScopes = joinNaturalLanguage([
+    "平台概览",
+    canViewModels ? "模型资产" : "",
+    canViewDeployments ? "部署实例" : "",
+    canViewBenchmarks ? "基准记录" : "",
+    canViewPredictions ? "结果反馈" : "",
+    canRunTaskRouting ? "任务调度" : "",
+    canViewResources ? "运行资源" : "",
+    canViewUsers ? "权限信息" : "",
+  ]);
+
+  emitDashboardLoadProgress(onProgress, {
+    phase: "bootstrap",
+    percent: 8,
+    label: "正在建立控制台会话",
+    detail: "准备按当前账号权限同步平台数据。",
+  });
+
+  emitDashboardLoadProgress(onProgress, {
+    phase: "base",
+    percent: 28,
+    label: "正在同步平台概览与基础清单",
+    detail: visibleScopes
+      ? `正在按当前身份同步：${visibleScopes}。`
+      : "正在按当前身份同步平台基础数据。",
+  });
 
   const [summary, models, deployments, benchmarks, predictionArchives, report, capabilityMatrix, gpuStatus, accessOverview, importOptions, optimizationOptions, runtimeCapabilities, datasetCatalog, taskRoutingFeedbackOverview] = await Promise.all([
     fetchJSON("/api/v1/system/summary"),
@@ -77,6 +124,24 @@ export async function loadDashboardData(session = null) {
     canViewPredictions ? fetchJSON("/api/v1/datasets/catalog").catch(() => ({ datasets: [], default_fallback_text: "" })) : Promise.resolve({ datasets: [], default_fallback_text: "" }),
     canRunTaskRouting ? fetchJSON("/api/v1/strategies/task-routing/feedback/overview").catch(() => null) : Promise.resolve(null),
   ]);
+
+  emitDashboardLoadProgress(onProgress, {
+    phase: "base-done",
+    percent: 52,
+    label: "基础清单已完成",
+    detail: `已拿到 ${models.length} 个模型、${deployments.length} 条部署、${benchmarks.length} 条基准记录。`,
+  });
+
+  emitDashboardLoadProgress(onProgress, {
+    phase: "deployment-health",
+    percent: 68,
+    label: "正在补充运行实例健康状态",
+    detail: !canViewDeployments
+      ? "当前身份不需要读取部署健康详情，正在进入下一步。"
+      : deployments.length
+      ? `正在检查 ${deployments.length} 条部署中的运行状态与健康信息。`
+      : "当前没有部署记录需要补充健康状态。",
+  });
 
   const deploymentEntries = await Promise.all(
     deployments.map(async (deployment) => {
@@ -100,6 +165,17 @@ export async function loadDashboardData(session = null) {
     }),
   );
 
+  emitDashboardLoadProgress(onProgress, {
+    phase: "model-details",
+    percent: 84,
+    label: "正在补充模型详情与能力信息",
+    detail: !canViewModels
+      ? "当前身份不需要读取模型详情，正在完成最后整理。"
+      : models.length
+      ? `正在读取 ${models.length} 个模型的配置模板、manifest 与能力边界。`
+      : "当前没有模型需要补充详情。",
+  });
+
   const modelDetailsEntries = canViewModels
     ? await Promise.all(
       models.map(async (model) => {
@@ -108,6 +184,13 @@ export async function loadDashboardData(session = null) {
       }),
     )
     : [];
+
+  emitDashboardLoadProgress(onProgress, {
+    phase: "ready",
+    percent: 100,
+    label: "控制台数据已就绪",
+    detail: "正在进入主页面。",
+  });
 
   return {
     summary,
@@ -135,6 +218,19 @@ export async function runCasrelDemo() {
 export async function getDatasetSampleText(datasetName, index = 0) {
   return fetchJSON(
     `/api/v1/datasets/sample-text?dataset_name=${encodeURIComponent(datasetName)}&index=${encodeURIComponent(index)}`,
+  );
+}
+
+export async function getBenchmarkSampleText(deploymentId, scene = "", excludeCaseId = "") {
+  const params = new URLSearchParams({ deployment_id: String(deploymentId || "") });
+  if (scene) {
+    params.set("scene", String(scene));
+  }
+  if (excludeCaseId) {
+    params.set("exclude_case_id", String(excludeCaseId));
+  }
+  return fetchJSON(
+    `/api/v1/benchmarks/sample-text?${params.toString()}`,
   );
 }
 

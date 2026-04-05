@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ DATASET_ALIASES = {
 }
 
 DEFAULT_ONLINE_SAMPLE_TEXT = "LuckyModels provides a stable fallback sample for relation extraction."
+_RANDOM = random.SystemRandom()
 
 
 def resolve_dataset_key(dataset_name: str | None) -> str:
@@ -35,30 +37,59 @@ def get_dataset_eval_cases(
     *,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    dataset_key = resolve_dataset_key(dataset_name)
-    if dataset_key == "webnlg":
-        payload = _load_webnlg_cases()
-    elif dataset_key == "nyt":
-        payload = _load_nyt_cases()
-    elif dataset_key == "scierc":
-        payload = _load_scierc_cases()
-    elif dataset_key == "duie":
-        payload = _load_duie_cases()
-    elif dataset_key == "equipmentmix15k":
-        payload = _load_equipmentmix_cases()
-    else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
+    payload = _load_dataset_cases(dataset_name)
     records = payload["records"]
     if limit is not None:
         records = records[: max(0, int(limit))]
     return {
-        "dataset_key": dataset_key,
+        "dataset_key": payload["dataset_key"],
         "dataset_name": payload["dataset_name"],
         "dataset_source": payload["dataset_source"],
         "record_count": len(records),
         "records": records,
     }
+
+
+def get_dataset_random_sample_text(
+    dataset_name: str,
+    *,
+    split_preference: str = "train",
+    exclude_case_id: str | None = None,
+    fallback_text: str = DEFAULT_ONLINE_SAMPLE_TEXT,
+) -> dict[str, Any]:
+    dataset_key = resolve_dataset_key(dataset_name)
+    payload = _load_dataset_cases(dataset_name, split_preference=split_preference)
+    records = payload.get("records") or []
+    if not records:
+        return {
+            "dataset_key": dataset_key,
+            "dataset_name": payload.get("dataset_name") or _dataset_label_for_key(dataset_key),
+            "dataset_source": payload.get("dataset_source") or "-",
+            "record_count": 0,
+            "effective_index": 0,
+            "dataset_split": split_preference,
+            "case_id": None,
+            "text": fallback_text,
+            "triple_count": 0,
+            "is_fallback": True,
+            "detail": f"No records found for dataset: {dataset_name}",
+        }
+    candidate_indexes = list(range(len(records)))
+    if exclude_case_id:
+        remaining_indexes = [
+            index for index, record in enumerate(records) if str(record.get("case_id") or "") != str(exclude_case_id)
+        ]
+        if remaining_indexes:
+            candidate_indexes = remaining_indexes
+    effective_index = _RANDOM.choice(candidate_indexes)
+    return _build_sample_payload(
+        dataset_key=dataset_key,
+        dataset_name=payload.get("dataset_name") or _dataset_label_for_key(dataset_key),
+        dataset_source=payload.get("dataset_source") or "-",
+        records=records,
+        effective_index=effective_index,
+        fallback_text=fallback_text,
+    )
 
 
 def list_dataset_catalog() -> list[dict[str, Any]]:
@@ -90,18 +121,14 @@ def get_dataset_sample_text(
         if not records:
             raise ValueError(f"No evaluation records found for dataset: {dataset_name}")
         effective_index = max(0, int(index)) % len(records)
-        record = records[effective_index]
-        return {
-            "dataset_key": dataset_key,
-            "dataset_name": payload.get("dataset_name") or dataset_key,
-            "dataset_source": payload.get("dataset_source") or "-",
-            "record_count": len(records),
-            "effective_index": effective_index,
-            "case_id": record.get("case_id"),
-            "text": record.get("text") or fallback_text,
-            "triple_count": record.get("triple_count", 0),
-            "is_fallback": False,
-        }
+        return _build_sample_payload(
+            dataset_key=dataset_key,
+            dataset_name=payload.get("dataset_name") or dataset_key,
+            dataset_source=payload.get("dataset_source") or "-",
+            records=records,
+            effective_index=effective_index,
+            fallback_text=fallback_text,
+        )
     except Exception as exc:
         return {
             "dataset_key": dataset_key,
@@ -109,6 +136,7 @@ def get_dataset_sample_text(
             "dataset_source": "-",
             "record_count": 0,
             "effective_index": 0,
+            "dataset_split": None,
             "case_id": None,
             "text": fallback_text,
             "triple_count": 0,
@@ -140,15 +168,73 @@ def export_dataset_eval_cases(
     }
 
 
-def _load_webnlg_cases() -> dict[str, Any]:
+def _load_dataset_cases(
+    dataset_name: str,
+    *,
+    split_preference: str | None = None,
+) -> dict[str, Any]:
+    dataset_key = resolve_dataset_key(dataset_name)
+    try:
+        if dataset_key == "webnlg":
+            payload = _load_webnlg_cases(split_preference=split_preference)
+        elif dataset_key == "nyt":
+            payload = _load_nyt_cases(split_preference=split_preference)
+        elif dataset_key == "scierc":
+            payload = _load_scierc_cases(split_preference=split_preference)
+        elif dataset_key == "duie":
+            payload = _load_duie_cases(split_preference=split_preference)
+        elif dataset_key == "equipmentmix15k":
+            payload = _load_equipmentmix_cases(split_preference=split_preference)
+        else:
+            raise ValueError(f"Unsupported dataset: {dataset_name}")
+    except FileNotFoundError:
+        if split_preference:
+            return _load_dataset_cases(dataset_name, split_preference=None)
+        raise
+    return {
+        "dataset_key": dataset_key,
+        **payload,
+    }
+
+
+def _build_sample_payload(
+    *,
+    dataset_key: str,
+    dataset_name: str,
+    dataset_source: str,
+    records: list[dict[str, Any]],
+    effective_index: int,
+    fallback_text: str,
+) -> dict[str, Any]:
+    record = records[effective_index]
+    return {
+        "dataset_key": dataset_key,
+        "dataset_name": dataset_name,
+        "dataset_source": dataset_source,
+        "record_count": len(records),
+        "effective_index": effective_index,
+        "dataset_split": record.get("dataset_split"),
+        "case_id": record.get("case_id"),
+        "text": record.get("text") or fallback_text,
+        "triple_count": record.get("triple_count", 0),
+        "is_fallback": False,
+    }
+
+
+def _load_webnlg_cases(*, split_preference: str | None = None) -> dict[str, Any]:
     dataset_root = _get_webnlg_root()
-    generated_path = dataset_root / "new_dev.json"
-    if generated_path.exists():
-        source_path = generated_path
-        records = _load_jsonl_records(generated_path)
+    requested_split = str(split_preference or "").strip().lower()
+    if requested_split == "train":
+        source_path = dataset_root / "train.json"
+        records = _rebuild_webnlg_records(dataset_root, split_name="train")
     else:
-        source_path = dataset_root / "dev.json"
-        records = _rebuild_webnlg_records(dataset_root)
+        generated_path = dataset_root / "new_dev.json"
+        if generated_path.exists():
+            source_path = generated_path
+            records = _load_jsonl_records(generated_path)
+        else:
+            source_path = dataset_root / "dev.json"
+            records = _rebuild_webnlg_records(dataset_root, split_name="dev")
 
     prepared: list[dict[str, Any]] = []
     for index, record in enumerate(records):
@@ -169,9 +255,9 @@ def _load_webnlg_cases() -> dict[str, Any]:
             continue
         prepared.append(
             {
-                "case_id": f"webnlg-dev-{index:05d}",
+                "case_id": f"webnlg-{requested_split or 'dev'}-{index:05d}",
                 "dataset_index": index,
-                "dataset_split": "dev",
+                "dataset_split": requested_split or "dev",
                 "text": record.get("sentText", ""),
                 "triple_count": len(triples),
                 "triples": triples,
@@ -179,14 +265,15 @@ def _load_webnlg_cases() -> dict[str, Any]:
         )
 
     return {
-        "dataset_name": "WebNLG dev",
+        "dataset_name": f"WebNLG {requested_split or 'dev'}",
         "dataset_source": _display_path(source_path),
         "records": prepared,
     }
 
 
-def _load_nyt_cases() -> dict[str, Any]:
-    source_path = get_settings().root_dir / "datasets" / "NYT" / "test_triples.json"
+def _load_nyt_cases(*, split_preference: str | None = None) -> dict[str, Any]:
+    split = "train" if str(split_preference or "").strip().lower() == "train" else "test"
+    source_path = get_settings().root_dir / "datasets" / "NYT" / f"{split}_triples.json"
     with source_path.open("r", encoding="utf-8") as handle:
         records = json.load(handle)
 
@@ -207,22 +294,22 @@ def _load_nyt_cases() -> dict[str, Any]:
             continue
         prepared.append(
             {
-                "case_id": f"nyt-test-{index:05d}",
+                "case_id": f"nyt-{split}-{index:05d}",
                 "dataset_index": index,
-                "dataset_split": "test",
+                "dataset_split": split,
                 "text": record.get("text", ""),
                 "triple_count": len(triples),
                 "triples": triples,
             }
         )
     return {
-        "dataset_name": "NYT test",
+        "dataset_name": f"NYT {split}",
         "dataset_source": _display_path(source_path),
         "records": prepared,
     }
 
 
-def _load_scierc_cases() -> dict[str, Any]:
+def _load_scierc_cases(*, split_preference: str | None = None) -> dict[str, Any]:
     raw_root = get_settings().root_dir / "datasets" / "sciERC_raw" / "raw_data"
     prepared: list[dict[str, Any]] = []
     for ann_path in sorted(raw_root.glob("*.ann")):
@@ -287,15 +374,9 @@ def _load_scierc_cases() -> dict[str, Any]:
     }
 
 
-def _load_duie_cases() -> dict[str, Any]:
-    source_path = (
-        get_settings().root_dir
-        / "datasets"
-        / "DuIE2.0-main"
-        / "duie_dev.json"
-        / "duie_dev.json"
-        / "duie_dev.json"
-    )
+def _load_duie_cases(*, split_preference: str | None = None) -> dict[str, Any]:
+    split = "train" if str(split_preference or "").strip().lower() == "train" else "dev"
+    source_path = _resolve_duie_split_path(split)
     records = _load_jsonl_records(source_path)
     prepared: list[dict[str, Any]] = []
     for index, record in enumerate(records):
@@ -321,27 +402,28 @@ def _load_duie_cases() -> dict[str, Any]:
             continue
         prepared.append(
             {
-                "case_id": f"duie-dev-{index:05d}",
+                "case_id": f"duie-{split}-{index:05d}",
                 "dataset_index": index,
-                "dataset_split": "dev",
+                "dataset_split": split,
                 "text": record.get("text", ""),
                 "triple_count": len(triples),
                 "triples": triples,
             }
         )
     return {
-        "dataset_name": "DuIE2.0 dev",
+        "dataset_name": f"DuIE2.0 {split}",
         "dataset_source": _display_path(source_path),
         "records": prepared,
     }
 
 
-def _load_equipmentmix_cases() -> dict[str, Any]:
+def _load_equipmentmix_cases(*, split_preference: str | None = None) -> dict[str, Any]:
+    split = "train" if str(split_preference or "").strip().lower() == "train" else "test"
     source_path = (
         get_settings().root_dir
         / "datasets"
         / "IndustrialEquipmentMix15k_mfgDominant"
-        / "test_triples.json"
+        / f"{split}_triples.json"
     )
     with source_path.open("r", encoding="utf-8") as handle:
         records = json.load(handle)
@@ -363,16 +445,16 @@ def _load_equipmentmix_cases() -> dict[str, Any]:
             continue
         prepared.append(
             {
-                "case_id": f"equipmentmix-test-{index:05d}",
+                "case_id": f"equipmentmix-{split}-{index:05d}",
                 "dataset_index": index,
-                "dataset_split": "test",
+                "dataset_split": split,
                 "text": record.get("text", ""),
                 "triple_count": len(triples),
                 "triples": triples,
             }
         )
     return {
-        "dataset_name": "IndustrialEquipmentMix15k test",
+        "dataset_name": f"IndustrialEquipmentMix15k {split}",
         "dataset_source": _display_path(source_path),
         "records": prepared,
     }
@@ -392,14 +474,26 @@ def _extract_duie_object_text(value: Any) -> str:
     return ""
 
 
-def _rebuild_webnlg_records(dataset_root: Path) -> list[dict[str, Any]]:
-    dev_path = dataset_root / "dev.json"
+def _resolve_duie_split_path(split: str) -> Path:
+    normalized = "train" if split == "train" else "dev"
+    return (
+        get_settings().root_dir
+        / "datasets"
+        / "DuIE2.0-main"
+        / f"duie_{normalized}.json"
+        / f"duie_{normalized}.json"
+        / f"duie_{normalized}.json"
+    )
+
+
+def _rebuild_webnlg_records(dataset_root: Path, *, split_name: str = "dev") -> list[dict[str, Any]]:
+    split_path = dataset_root / f"{split_name}.json"
     rel_path = dataset_root / "relations2id.json"
     words_path = dataset_root / "words2id.json"
-    if not dev_path.exists():
-        raise FileNotFoundError(f"WebNLG dev split not found: {dev_path}")
+    if not split_path.exists():
+        raise FileNotFoundError(f"WebNLG {split_name} split not found: {split_path}")
 
-    with dev_path.open("r", encoding="utf-8") as handle:
+    with split_path.open("r", encoding="utf-8") as handle:
         token_ids, triple_specs = json.load(handle)
     with words_path.open("r", encoding="utf-8") as handle:
         words2id = json.load(handle)

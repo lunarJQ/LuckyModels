@@ -41,6 +41,7 @@ from luckymodels_core.settings import get_settings
 from ..dependencies import (
     get_benchmark_store,
     get_deployment_store,
+    get_gpu_pool_store,
     get_prediction_store,
     get_registry,
     get_task_routing_feedback_store,
@@ -65,11 +66,31 @@ def get_supported_model_import_options() -> ModelImportOptions:
 @router.get("/models/optimization-options", response_model=ModelOptimizationOptions)
 def get_supported_model_optimization_options() -> ModelOptimizationOptions:
     require_admin()
+    gpu_status = _collect_model_optimization_gpu_status()
     runtime_capabilities = inspect_runtime_capabilities(get_settings())
     options = [
-        item
+        {
+            **item,
+            "enabled": _is_optimization_type_enabled(
+                optimization_type=item["code"],
+                runtime_capabilities=runtime_capabilities,
+            ),
+            "gpu_available": _is_optimization_type_gpu_available(
+                optimization_type=item["code"],
+                runtime_capabilities=runtime_capabilities,
+                gpu_status=gpu_status,
+            ),
+            "detail": _build_optimization_type_detail(
+                optimization_type=item["code"],
+                runtime_capabilities=runtime_capabilities,
+                gpu_status=gpu_status,
+            ),
+            "deployment_scope": _build_optimization_type_scope(
+                optimization_type=item["code"],
+                gpu_status=gpu_status,
+            ),
+        }
         for item in list_supported_optimization_types()
-        if item["code"] != "ort_format" or runtime_capabilities.get("features", {}).get("ort_format_export")
     ]
     return ModelOptimizationOptions(options=options)
 
@@ -185,17 +206,24 @@ def get_model(model_id: str) -> ModelDetail:
 @router.post("/models/{model_id}/optimize", response_model=ModelOptimizationResult)
 def optimize_model(model_id: str, payload: ModelOptimizeRequest) -> ModelOptimizationResult:
     require_admin()
+    runtime_capabilities = inspect_runtime_capabilities(get_settings())
     try:
         model = get_registry().get_model(model_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     try:
-        if (
-            payload.optimization_type == "ort_format"
-            and not inspect_runtime_capabilities(get_settings()).get("features", {}).get("ort_format_export")
+        if not _is_optimization_type_enabled(
+            optimization_type=payload.optimization_type,
+            runtime_capabilities=runtime_capabilities,
         ):
-            raise HTTPException(status_code=400, detail="当前运行环境不支持 ORT Format 导出，平台已禁用该优化选项。")
+            raise HTTPException(
+                status_code=400,
+                detail=_build_optimization_type_detail(
+                    optimization_type=payload.optimization_type,
+                    runtime_capabilities=runtime_capabilities,
+                ),
+            )
         return optimize_model_package(
             settings=get_settings(),
             model=model,
@@ -353,6 +381,169 @@ def prepare_model_eval_cases(model_id: str, limit: int = 128) -> dict[str, objec
         "dataset_name": dataset_name,
         **payload,
     }
+
+
+def _is_optimization_type_enabled(
+    *,
+    optimization_type: str,
+    runtime_capabilities: dict[str, object] | None,
+) -> bool:
+    runtime_capabilities = runtime_capabilities or {}
+    features = runtime_capabilities.get("features", {}) if isinstance(runtime_capabilities, dict) else {}
+    normalized_type = str(optimization_type or "").strip().lower()
+    if normalized_type == "ort_graph":
+        return bool(features.get("ort_graph_optimization"))
+    if normalized_type == "ort_format":
+        return bool(features.get("ort_format_export"))
+    if normalized_type == "fp16":
+        try:
+            import onnx  # noqa: F401
+            from onnxruntime.transformers.float16 import convert_float_to_float16  # noqa: F401
+        except Exception:
+            return False
+        return True
+    if normalized_type == "int8_dynamic":
+        try:
+            from onnxruntime.quantization import QuantType, quantize_dynamic  # noqa: F401
+        except Exception:
+            return False
+        return True
+    return False
+
+
+def _build_optimization_type_detail(
+    *,
+    optimization_type: str,
+    runtime_capabilities: dict[str, object] | None,
+    gpu_status: dict[str, object] | None = None,
+) -> str:
+    runtime_capabilities = runtime_capabilities or {}
+    features = runtime_capabilities.get("features", {}) if isinstance(runtime_capabilities, dict) else {}
+    gpu_status = gpu_status or {}
+    normalized_type = str(optimization_type or "").strip().lower()
+    gpu_globally_disabled = _is_platform_gpu_globally_disabled(gpu_status)
+    if normalized_type == "ort_graph":
+        if gpu_globally_disabled:
+            return "当前平台已将全部 GPU 停用；该方式仍可生成优化制品，但当前不作为 GPU 部署候选。"
+        return (
+            "当前环境支持通过 SessionOptions 导出图优化 ONNX 制品。"
+            if features.get("ort_graph_optimization")
+            else "当前 onnxruntime 环境未提供稳定的图优化导出能力，平台已禁用该方式。"
+        )
+    if normalized_type == "ort_format":
+        if gpu_globally_disabled:
+            return "当前平台已将全部 GPU 停用；该方式可导出 .ort 制品，但当前仅按 CPU 路径使用。"
+        return (
+            "当前环境支持导出 .ort 格式制品；这只表示导出能力可用，不等于 GPU 部署路径已稳定验证。"
+            if features.get("ort_format_export")
+            else "当前 onnxruntime 环境不支持 ORT Format 导出，平台已禁用该方式。"
+        )
+    if normalized_type == "fp16":
+        if gpu_globally_disabled:
+            return "当前平台已将全部 GPU 停用；该方式可生成 FP16 制品，但当前不作为 GPU 部署候选。"
+        try:
+            import onnx  # noqa: F401
+            from onnxruntime.transformers.float16 import convert_float_to_float16  # noqa: F401
+        except Exception as exc:
+            return f"当前环境缺少 FP16 转换依赖：{exc}"
+        return "当前环境已具备 FP16 转换所需工具链。"
+    if normalized_type == "int8_dynamic":
+        if gpu_globally_disabled:
+            return "当前平台已将全部 GPU 停用；该方式本就默认按 CPU 路径部署。"
+        try:
+            from onnxruntime.quantization import QuantType, quantize_dynamic  # noqa: F401
+        except Exception as exc:
+            return f"当前环境缺少 INT8 动态量化依赖：{exc}"
+        return "当前环境已具备 INT8 动态量化所需工具链。"
+    return "当前环境未提供该优化方式的能力说明。"
+
+
+def _is_optimization_type_gpu_available(
+    *,
+    optimization_type: str,
+    runtime_capabilities: dict[str, object] | None,
+    gpu_status: dict[str, object] | None = None,
+) -> bool:
+    runtime_capabilities = runtime_capabilities or {}
+    gpu_status = gpu_status or {}
+    providers = runtime_capabilities.get("providers", []) if isinstance(runtime_capabilities, dict) else []
+    if _is_platform_gpu_globally_disabled(gpu_status):
+        return False
+    cuda_usable = any(
+        isinstance(item, dict)
+        and str(item.get("provider", "")).strip() == "CUDAExecutionProvider"
+        and bool(item.get("runtime_usable"))
+        for item in providers
+    )
+    normalized_type = str(optimization_type or "").strip().lower()
+    if normalized_type == "ort_graph":
+        return bool(cuda_usable)
+    if normalized_type == "ort_format":
+        return False
+    if normalized_type == "fp16":
+        return bool(cuda_usable)
+    if normalized_type == "int8_dynamic":
+        return False
+    return False
+
+
+def _build_optimization_type_scope(
+    *,
+    optimization_type: str,
+    gpu_status: dict[str, object] | None = None,
+) -> str:
+    gpu_status = gpu_status or {}
+    normalized_type = str(optimization_type or "").strip().lower()
+    if normalized_type == "ort_graph":
+        if _is_platform_gpu_globally_disabled(gpu_status):
+            return "生成优化后的 ONNX 制品。当前平台 GPU 范围已全部停用，因此当前只按 CPU 路径使用。"
+        return "生成优化后的 ONNX 制品。当前平台优先按 ONNX 路径部署，CPU 与 GPU 路径都可作为正式候选。"
+    if normalized_type == "ort_format":
+        return "生成 .ort 制品。当前平台已验证 CPU 部署链路；GPU 路径不作为当前环境下的稳定能力承诺。"
+    if normalized_type == "fp16":
+        if _is_platform_gpu_globally_disabled(gpu_status):
+            return "生成 FP16 ONNX 制品。虽然工具链支持该转换，但当前平台 GPU 范围已全部停用，因此当前只按 CPU 路径使用。"
+        return "生成 FP16 ONNX 制品。当前平台主要面向 GPU 推理场景使用。"
+    if normalized_type == "int8_dynamic":
+        return "生成 INT8 动态量化制品。当前平台默认按 CPU 路径部署与验证。"
+    return "按平台当前环境与部署策略决定。"
+
+
+def _collect_model_optimization_gpu_status() -> dict[str, object]:
+    visible_gpu_ids = []
+    try:
+        import subprocess
+        result = subprocess.run(  # noqa: S603
+            [
+                "nvidia-smi",
+                "--query-gpu=index",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        visible_gpu_ids = [
+            int(item.strip())
+            for item in str(result.stdout or "").splitlines()
+            if str(item).strip()
+        ]
+    except Exception:
+        visible_gpu_ids = []
+    state = get_gpu_pool_store().resolve(visible_gpu_ids)
+    return {
+        "visible_gpu_ids": state.visible_gpu_ids,
+        "effective_gpu_ids": state.effective_gpu_ids,
+        "disabled_gpu_ids": state.disabled_gpu_ids,
+    }
+
+
+def _is_platform_gpu_globally_disabled(gpu_status: dict[str, object] | None) -> bool:
+    gpu_status = gpu_status or {}
+    effective_gpu_ids = gpu_status.get("effective_gpu_ids")
+    if isinstance(effective_gpu_ids, list):
+        return len(effective_gpu_ids) == 0
+    return False
 
 
 def _collect_limitations(
