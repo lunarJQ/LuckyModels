@@ -16,6 +16,12 @@ from .benchmark_evidence import (
     select_latest_effective_benchmarks,
     select_scene_relevant_benchmarks,
 )
+from .deployment_revision import (
+    archive_matches_current_revision,
+    benchmark_matches_current_revision,
+    initialize_deployment_revision_metadata,
+    revision_policy_for,
+)
 from .inference_activity_tracker import InferenceActivityTracker
 from .schemas import (
     BenchmarkRecord,
@@ -1307,29 +1313,17 @@ def _build_task_candidates(
         if allowed_models and deployment.model_id not in allowed_models:
             continue
 
-        deployment_benchmarks = _pick_deployment_benchmark_evidence(
+        benchmark_signal = _build_deployment_benchmark_signal(
+            deployment=deployment,
             benchmark_by_deployment=benchmark_by_deployment,
             benchmark_by_model=benchmark_by_model,
-            deployment_id=deployment.deployment_id,
-            model_id=deployment.model_id,
             request_scene=request_scene,
         )
-        avg_p95 = _mean_numeric(item.p95_latency_ms for item in deployment_benchmarks)
-        avg_success = _mean_numeric(
-            (
-                item.success_count / item.total_requests
-                if item.total_requests
-                else None
-            )
-            for item in deployment_benchmarks
-        )
-        recent_requests = len(archives_by_deployment.get(deployment.deployment_id, []))
-        avg_triple_count = _mean_numeric(
-            item.triple_count for item in archives_by_deployment.get(deployment.deployment_id, [])
-        )
+        avg_p95 = _safe_float(benchmark_signal.get("avg_p95_latency_ms"))
+        avg_success = _safe_float(benchmark_signal.get("avg_success_rate"))
         domain_match = _candidate_domain_match(context_features.get("domain"), model.dataset_name)
         resource_cost_level = _resource_cost_level(deployment)
-        candidate_archives = _match_candidate_archives(
+        archive_feedback_summary = _build_candidate_archive_signal(
             deployment=deployment,
             model=model,
             deployment_archives=archives_by_deployment.get(deployment.deployment_id, []),
@@ -1338,7 +1332,8 @@ def _build_task_candidates(
             request_domain=str(context_features.get("domain") or "general"),
             requested_language=requested_language,
         )
-        archive_feedback_summary = _build_candidate_archive_feedback_summary(candidate_archives)
+        recent_requests = int(archive_feedback_summary.get("archive_count") or 0)
+        avg_triple_count = _safe_float(archive_feedback_summary.get("avg_triple_count"))
         score_breakdown = _selection_score_breakdown(
             objective=objective,
             success_rate=avg_success,
@@ -1508,6 +1503,224 @@ def _archive_matches_request_context(
         if archive_scene != normalized_scene and archive_scene not in {request_domain, "general"}:
             return False
     return True
+
+
+def _summarize_benchmark_records(records: list[BenchmarkRecord]) -> dict[str, float | int | None]:
+    if not records:
+        return {
+            "evidence_count": 0,
+            "avg_p95_latency_ms": None,
+            "avg_success_rate": None,
+        }
+    return {
+        "evidence_count": len(records),
+        "avg_p95_latency_ms": _mean_numeric(item.p95_latency_ms for item in records),
+        "avg_success_rate": _mean_numeric(
+            (
+                item.success_count / item.total_requests
+                if item.total_requests
+                else None
+            )
+            for item in records
+        ),
+    }
+
+
+def _revision_prior_influence(prior_cap: float, current_count: int, target_count: int) -> float:
+    progress = _progressive_evidence_scale(current_count, target_count=max(1, target_count))
+    return max(0.0, float(prior_cap)) * max(0.0, 1.0 - progress)
+
+
+def _blend_optional_metric(
+    primary_value: float | None,
+    prior_value: float | None,
+    prior_weight: float,
+) -> float | None:
+    if primary_value is None:
+        return prior_value
+    if prior_value is None or prior_weight <= 0:
+        return primary_value
+    return round((float(primary_value) + float(prior_value) * prior_weight) / (1.0 + prior_weight), 6)
+
+
+def _build_deployment_benchmark_signal(
+    *,
+    deployment: DeploymentRecord,
+    benchmark_by_deployment: dict[str, list[BenchmarkRecord]],
+    benchmark_by_model: dict[str, list[BenchmarkRecord]],
+    request_scene: str | None,
+) -> dict[str, float | int | None]:
+    deployment = initialize_deployment_revision_metadata(deployment)
+    deployment_records = select_scene_relevant_benchmarks(
+        benchmark_by_deployment.get(deployment.deployment_id, []),
+        request_scene=request_scene,
+        allowed_statuses={"completed"},
+    )
+    current_records = [
+        item for item in deployment_records if benchmark_matches_current_revision(item, deployment)
+    ]
+    prior_records = [
+        item for item in deployment_records if not benchmark_matches_current_revision(item, deployment)
+    ]
+    fallback_records = select_scene_relevant_benchmarks(
+        [
+            item
+            for item in benchmark_by_model.get(deployment.model_id, [])
+            if item.deployment_id != deployment.deployment_id
+        ],
+        request_scene=request_scene,
+        allowed_statuses={"completed"},
+    )
+    primary_records = current_records or fallback_records
+    if not primary_records and prior_records:
+        return _summarize_benchmark_records(prior_records)
+    if not primary_records:
+        return _summarize_benchmark_records([])
+
+    primary_summary = _summarize_benchmark_records(primary_records)
+    prior_summary = _summarize_benchmark_records(prior_records)
+    benchmark_target = int(revision_policy_for(deployment).get("benchmark_target", 1) or 1)
+    prior_weight = _revision_prior_influence(
+        float(revision_policy_for(deployment).get("benchmark", 0.0) or 0.0),
+        int(primary_summary.get("evidence_count") or 0),
+        benchmark_target,
+    )
+    return {
+        "evidence_count": int(round((primary_summary.get("evidence_count") or 0) + (prior_summary.get("evidence_count") or 0) * prior_weight)),
+        "avg_p95_latency_ms": _blend_optional_metric(
+            _safe_float(primary_summary.get("avg_p95_latency_ms")),
+            _safe_float(prior_summary.get("avg_p95_latency_ms")),
+            prior_weight,
+        ),
+        "avg_success_rate": _blend_optional_metric(
+            _safe_float(primary_summary.get("avg_success_rate")),
+            _safe_float(prior_summary.get("avg_success_rate")),
+            prior_weight,
+        ),
+    }
+
+
+def _blend_archive_feedback_summaries(
+    *,
+    primary_summary: dict[str, float | int | None],
+    prior_summary: dict[str, float | int | None],
+    deployment: DeploymentRecord,
+) -> dict[str, float | int | None]:
+    policy = revision_policy_for(deployment)
+    archive_target = int(policy.get("archive_target", 3) or 3)
+    primary_archive_count = int(primary_summary.get("archive_count") or 0)
+    primary_feedback_count = int(primary_summary.get("effective_feedback_count") or 0)
+    archive_prior_weight = _revision_prior_influence(
+        float(policy.get("archive", 0.0) or 0.0),
+        primary_archive_count,
+        archive_target,
+    )
+    feedback_prior_weight = _revision_prior_influence(
+        float(policy.get("feedback", 0.0) or 0.0),
+        primary_feedback_count,
+        archive_target,
+    )
+    latency_feedback_prior_weight = _revision_prior_influence(
+        float(policy.get("latency_feedback", 0.0) or 0.0),
+        int(primary_summary.get("latency_high_count") or 0),
+        archive_target,
+    )
+
+    def weighted_count(key: str, weight: float) -> int:
+        return int(
+            round(
+                float(primary_summary.get(key) or 0)
+                + float(prior_summary.get(key) or 0) * weight
+            )
+        )
+
+    primary_empty = float(primary_summary.get("empty_rate") or 0.0) * float(primary_archive_count or 0)
+    prior_empty = float(prior_summary.get("empty_rate") or 0.0) * float(prior_summary.get("archive_count") or 0)
+    weighted_archive_count = max(0.0, float(primary_archive_count) + float(prior_summary.get("archive_count") or 0) * archive_prior_weight)
+    weighted_empty_count = primary_empty + prior_empty * archive_prior_weight
+    effective_feedback_count = weighted_count("effective_feedback_count", feedback_prior_weight)
+    satisfied_count = weighted_count("satisfied_count", feedback_prior_weight)
+    unsatisfied_count = weighted_count("unsatisfied_count", feedback_prior_weight)
+    unsatisfied_with_reason_count = weighted_count("unsatisfied_with_reason_count", feedback_prior_weight)
+    unsatisfied_without_reason_count = weighted_count("unsatisfied_without_reason_count", feedback_prior_weight)
+    missing_too_many_count = weighted_count("missing_too_many_count", feedback_prior_weight)
+    false_positive_too_many_count = weighted_count("false_positive_too_many_count", feedback_prior_weight)
+    latency_high_count = weighted_count("latency_high_count", latency_feedback_prior_weight)
+    return {
+        "archive_count": int(round(weighted_archive_count)),
+        "effective_feedback_count": effective_feedback_count,
+        "satisfied_count": satisfied_count,
+        "unsatisfied_count": unsatisfied_count,
+        "unsatisfied_with_reason_count": unsatisfied_with_reason_count,
+        "unsatisfied_without_reason_count": unsatisfied_without_reason_count,
+        "missing_too_many_count": missing_too_many_count,
+        "false_positive_too_many_count": false_positive_too_many_count,
+        "latency_high_count": latency_high_count,
+        "satisfied_rate": (satisfied_count / effective_feedback_count) if effective_feedback_count else None,
+        "avg_latency_ms": _blend_optional_metric(
+            _safe_float(primary_summary.get("avg_latency_ms")),
+            _safe_float(prior_summary.get("avg_latency_ms")),
+            archive_prior_weight,
+        ),
+        "avg_triple_count": _blend_optional_metric(
+            _safe_float(primary_summary.get("avg_triple_count")),
+            _safe_float(prior_summary.get("avg_triple_count")),
+            archive_prior_weight,
+        ),
+        "empty_rate": (weighted_empty_count / weighted_archive_count) if weighted_archive_count > 0 else 0.0,
+    }
+
+
+def _build_candidate_archive_signal(
+    *,
+    deployment: DeploymentRecord,
+    model: ModelSummary,
+    deployment_archives: list[PredictionArchiveRecord],
+    model_archives: list[PredictionArchiveRecord],
+    request_scene: str | None,
+    request_domain: str,
+    requested_language: str,
+) -> dict[str, float | int | None]:
+    deployment = initialize_deployment_revision_metadata(deployment)
+    matched_deployment_archives = [
+        item
+        for item in deployment_archives
+        if _archive_matches_request_context(
+            archive=item,
+            model=model,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+        )
+    ]
+    current_archives = [
+        item for item in matched_deployment_archives if archive_matches_current_revision(item, deployment)
+    ]
+    prior_archives = [
+        item for item in matched_deployment_archives if not archive_matches_current_revision(item, deployment)
+    ]
+    fallback_archives = [
+        item
+        for item in model_archives
+        if item.deployment_id != deployment.deployment_id
+        and _archive_matches_request_context(
+            archive=item,
+            model=model,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+        )
+    ]
+    primary_archives = current_archives or fallback_archives
+    if not primary_archives and prior_archives:
+        return _build_candidate_archive_feedback_summary(prior_archives)
+    if not primary_archives:
+        return _build_candidate_archive_feedback_summary([])
+    return _blend_archive_feedback_summaries(
+        primary_summary=_build_candidate_archive_feedback_summary(primary_archives),
+        prior_summary=_build_candidate_archive_feedback_summary(prior_archives),
+        deployment=deployment,
+    )
 
 
 def _match_candidate_archives(
@@ -2133,28 +2346,16 @@ def _build_model_score_summaries(
                 if not _scene_matches_model(scene, model):
                     continue
 
-                deployment_benchmarks = _pick_deployment_benchmark_evidence(
+                benchmark_signal = _build_deployment_benchmark_signal(
+                    deployment=deployment,
                     benchmark_by_deployment=benchmark_by_deployment,
                     benchmark_by_model=benchmark_by_model,
-                    deployment_id=deployment.deployment_id,
-                    model_id=deployment.model_id,
                     request_scene=scene,
                 )
-                avg_p95 = _mean_numeric(item.p95_latency_ms for item in deployment_benchmarks)
-                avg_success = _mean_numeric(
-                    (
-                        item.success_count / item.total_requests
-                        if item.total_requests
-                        else None
-                    )
-                    for item in deployment_benchmarks
-                )
-                recent_requests = len(archives_by_deployment.get(deployment.deployment_id, []))
-                avg_triple_count = _mean_numeric(
-                    item.triple_count for item in archives_by_deployment.get(deployment.deployment_id, [])
-                )
+                avg_p95 = _safe_float(benchmark_signal.get("avg_p95_latency_ms"))
+                avg_success = _safe_float(benchmark_signal.get("avg_success_rate"))
                 domain_match = _candidate_domain_match(context_features.get("domain"), model.dataset_name)
-                candidate_archives = _match_candidate_archives(
+                archive_feedback_summary = _build_candidate_archive_signal(
                     deployment=deployment,
                     model=model,
                     deployment_archives=archives_by_deployment.get(deployment.deployment_id, []),
@@ -2163,7 +2364,8 @@ def _build_model_score_summaries(
                     request_domain=str(context_features.get("domain") or "general"),
                     requested_language=requested_language,
                 )
-                archive_feedback_summary = _build_candidate_archive_feedback_summary(candidate_archives)
+                recent_requests = int(archive_feedback_summary.get("archive_count") or 0)
+                avg_triple_count = _safe_float(archive_feedback_summary.get("avg_triple_count"))
                 baseline_breakdown = _selection_score_breakdown(
                     objective=objective,
                     success_rate=avg_success,

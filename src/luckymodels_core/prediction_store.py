@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from .schemas import PredictionArchiveRecord, utc_now
+from .deployment_revision import effective_revision_started_at, ensure_runtime_signature, initialize_deployment_revision_metadata
+from .schemas import DeploymentRecord, PredictionArchiveRecord, utc_now
 
 
 class PredictionStore:
@@ -26,6 +27,7 @@ class PredictionStore:
         deployment_id: str,
         model_id: str,
         profile_name: str,
+        deployment: DeploymentRecord | None = None,
         archive_source: str = "deployment_predict",
         service_url: str | None,
         scene: str | None,
@@ -43,6 +45,8 @@ class PredictionStore:
         task_routing_feedback_adjustment_snapshot: dict | None = None,
         task_routing_selected_model_ids: list[str] | None = None,
     ) -> PredictionArchiveRecord:
+        if deployment is not None:
+            deployment = initialize_deployment_revision_metadata(deployment)
         archive = PredictionArchiveRecord(
             archive_id=f"pred-{uuid4().hex[:12]}",
             deployment_id=deployment_id,
@@ -67,6 +71,9 @@ class PredictionStore:
             task_routing_unsupervised_adjustment_snapshot=dict(task_routing_unsupervised_adjustment_snapshot or {}),
             task_routing_feedback_adjustment_snapshot=dict(task_routing_feedback_adjustment_snapshot or {}),
             task_routing_selected_model_ids=list(task_routing_selected_model_ids or []),
+            deployment_revision=int(deployment.runtime_revision) if deployment is not None else None,
+            revision_started_at=effective_revision_started_at(deployment) if deployment is not None else None,
+            runtime_signature=ensure_runtime_signature(deployment) if deployment is not None else None,
         )
         archives = self.list()
         archives.append(archive)

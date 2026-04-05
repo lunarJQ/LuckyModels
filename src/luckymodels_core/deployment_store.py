@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .deployment_revision import initialize_deployment_revision_metadata
 from .schemas import DeploymentCreateRequest, DeploymentRecord, utc_now
 
 
@@ -24,7 +25,7 @@ class DeploymentStore:
 
         with self.deployments_file.open("r", encoding="utf-8") as handle:
             data = json.load(handle) or []
-        return [DeploymentRecord.model_validate(item) for item in data]
+        return [initialize_deployment_revision_metadata(DeploymentRecord.model_validate(item)) for item in data]
 
     def create(self, request: DeploymentCreateRequest) -> DeploymentRecord:
         deployment = DeploymentRecord(
@@ -46,6 +47,7 @@ class DeploymentStore:
 
     def update(self, deployment: DeploymentRecord) -> DeploymentRecord:
         deployment.updated_at = utc_now()
+        deployment = initialize_deployment_revision_metadata(deployment)
         deployments = self.list()
         updated: list[DeploymentRecord] = []
         found = False

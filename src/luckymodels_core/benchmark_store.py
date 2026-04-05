@@ -10,6 +10,7 @@ from .benchmark_evidence import (
     infer_benchmark_scene,
     select_latest_effective_benchmarks,
 )
+from .deployment_revision import effective_revision_started_at, ensure_runtime_signature, initialize_deployment_revision_metadata
 from .schemas import BenchmarkCreateRequest, BenchmarkRecord, DeploymentRecord, ModelSummary
 
 
@@ -36,6 +37,8 @@ class BenchmarkStore:
         deployment: DeploymentRecord | None = None,
         model: ModelSummary | None = None,
     ) -> BenchmarkRecord:
+        if deployment is not None:
+            deployment = initialize_deployment_revision_metadata(deployment)
         scene = infer_benchmark_scene(
             model=model,
             explicit_scene=request.scene,
@@ -52,6 +55,9 @@ class BenchmarkStore:
             trigger_source=request.trigger_source,
             benchmark_scope_key=build_benchmark_scope_key(request.deployment_id, scene),
             deployment_signature=build_deployment_signature(deployment) if deployment is not None else None,
+            deployment_revision=int(deployment.runtime_revision) if deployment is not None else None,
+            revision_started_at=effective_revision_started_at(deployment) if deployment is not None else None,
+            runtime_signature=ensure_runtime_signature(deployment) if deployment is not None else None,
             is_effective=False,
             superseded_by=None,
             request_text=request.text,

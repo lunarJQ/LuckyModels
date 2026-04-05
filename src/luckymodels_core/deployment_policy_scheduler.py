@@ -10,6 +10,11 @@ from typing import Any, Callable
 from .benchmark_evidence import default_benchmark_text, infer_benchmark_scene
 from .benchmark_runner import run_benchmark
 from .deployment_policy_store import DeploymentPolicyAutomationStore
+from .deployment_revision import (
+    advance_deployment_revision,
+    classify_runtime_change,
+    initialize_deployment_revision_metadata,
+)
 from .deployment_store import DeploymentStore
 from .inference_activity_tracker import InferenceActivityTracker
 from .launcher import launch_runtime_process, stop_runtime_process, wait_for_runtime
@@ -988,6 +993,16 @@ class DeploymentPolicyScheduler:
         previous_gpu_ids = list(deployment.gpu_ids or [])
         previous_use_gpu = bool(deployment.use_gpu)
         previous_pid = deployment.pid
+        previous_provider_preference = deployment.provider_preference
+        previous_profile_path = deployment.profile_path
+        previous_profile_runtime = deployment.profile_runtime
+        previous_device = deployment.device
+        previous_execution = dict(deployment.execution or {})
+        previous_runtime_revision = deployment.runtime_revision
+        previous_revision_started_at = deployment.revision_started_at
+        previous_previous_revision_started_at = deployment.previous_revision_started_at
+        previous_revision_change_level = deployment.revision_change_level
+        previous_runtime_signature = deployment.runtime_signature
 
         if profile_name not in model.resolved_profiles:
             profile_name = (
@@ -1013,14 +1028,35 @@ class DeploymentPolicyScheduler:
                 )
 
         try:
+            target_profile_path = model.resolved_profiles[profile_name]
+            target_provider_preference = "cuda" if use_gpu else "cpu"
+            change_level, target_runtime_signature = classify_runtime_change(
+                deployment,
+                manifest_path=model.summary.package_root + "/manifest.yaml",
+                profile_name=profile_name,
+                profile_path=target_profile_path,
+                use_gpu=bool(use_gpu),
+                gpu_ids=[int(item) for item in gpu_ids] if use_gpu else [],
+                provider_preference=target_provider_preference,
+            )
             if deployment.pid:
                 stop_runtime_process(deployment.pid)
 
             deployment.manifest_path = model.summary.package_root + "/manifest.yaml"
             deployment.profile_name = profile_name
-            deployment.profile_path = model.resolved_profiles[profile_name]
+            deployment.profile_path = target_profile_path
             deployment.use_gpu = bool(use_gpu)
             deployment.gpu_ids = [int(item) for item in gpu_ids] if use_gpu else []
+            deployment.provider_preference = target_provider_preference
+            try:
+                profile = load_profile(target_profile_path)
+                deployment.profile_runtime = profile.runtime
+                deployment.execution = dict(profile.execution or {})
+                deployment.device = "cuda" if deployment.use_gpu else str(profile.device or "cpu")
+            except Exception:  # noqa: BLE001
+                deployment.profile_runtime = None
+                deployment.execution = {}
+                deployment.device = "cuda" if deployment.use_gpu else "cpu"
             deployment.log_path = deployment.log_path or str(self.settings.logs_root / "deployments" / f"{deployment.deployment_id}.log")
             deployment.service_url = deployment_store.ensure_service_url(deployment)
             deployment.notes = " | ".join(
@@ -1042,6 +1078,7 @@ class DeploymentPolicyScheduler:
                     log_path=deployment.log_path,
                     gpu_ids=deployment.gpu_ids,
                     use_gpu=deployment.use_gpu,
+                    provider_preference=deployment.provider_preference,
                 )
                 deployment.pid = pid
                 deployment.service_url = service_url
@@ -1050,6 +1087,13 @@ class DeploymentPolicyScheduler:
                 deployment.pid = None
                 deployment.status = "planned"
 
+            deployment = initialize_deployment_revision_metadata(deployment)
+            if change_level != "none":
+                deployment = advance_deployment_revision(
+                    deployment,
+                    change_level=change_level,
+                    runtime_signature=target_runtime_signature,
+                )
             deployment_store.update(deployment)
             return DeploymentPolicyAutomationAction(
                 action_type=action_type,
@@ -1060,10 +1104,20 @@ class DeploymentPolicyScheduler:
             )
         except Exception as exc:  # noqa: BLE001
             deployment.profile_name = previous_profile_name
+            deployment.profile_path = previous_profile_path
             deployment.use_gpu = previous_use_gpu
             deployment.gpu_ids = previous_gpu_ids
+            deployment.provider_preference = previous_provider_preference
+            deployment.profile_runtime = previous_profile_runtime
+            deployment.device = previous_device
+            deployment.execution = previous_execution
             deployment.pid = previous_pid
             deployment.status = previous_status
+            deployment.runtime_revision = previous_runtime_revision
+            deployment.revision_started_at = previous_revision_started_at
+            deployment.previous_revision_started_at = previous_previous_revision_started_at
+            deployment.revision_change_level = previous_revision_change_level
+            deployment.runtime_signature = previous_runtime_signature
             deployment_store.update(deployment)
             return DeploymentPolicyAutomationAction(
                 action_type=action_type,

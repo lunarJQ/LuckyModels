@@ -238,6 +238,11 @@ class DeploymentRecord(BaseModel):
     profile_path: str | None = None
     log_path: str | None = None
     pid: int | None = None
+    runtime_revision: int = 1
+    revision_started_at: str | None = None
+    previous_revision_started_at: str | None = None
+    revision_change_level: str = "initial"
+    runtime_signature: str | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     notes: str | None = None
@@ -292,6 +297,9 @@ class BenchmarkRecord(BaseModel):
     trigger_source: str = "manual"
     benchmark_scope_key: str | None = None
     deployment_signature: str | None = None
+    deployment_revision: int | None = None
+    revision_started_at: str | None = None
+    runtime_signature: str | None = None
     is_effective: bool = True
     superseded_by: str | None = None
     request_text: str
@@ -335,6 +343,9 @@ class PredictionArchiveRecord(BaseModel):
     task_routing_unsupervised_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
     task_routing_feedback_adjustment_snapshot: dict[str, float] = Field(default_factory=dict)
     task_routing_selected_model_ids: list[str] = Field(default_factory=list)
+    deployment_revision: int | None = None
+    revision_started_at: str | None = None
+    runtime_signature: str | None = None
     feedback_status: str = "pending"
     feedback_note: str | None = None
     feedback_updated_at: str | None = None

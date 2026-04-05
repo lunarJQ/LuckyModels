@@ -6,6 +6,11 @@ from urllib.request import Request, urlopen
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from luckymodels_core.deployment_revision import (
+    advance_deployment_revision,
+    classify_runtime_change,
+    initialize_deployment_revision_metadata,
+)
 from luckymodels_core.launcher import (
     launch_runtime_process,
     process_is_running,
@@ -93,6 +98,7 @@ def create_deployment(request: DeploymentCreateRequest) -> DeploymentRecord:
         profile_device=deployment.device,
         gpu_ids=deployment.gpu_ids,
     )
+    deployment = initialize_deployment_revision_metadata(deployment)
     _validate_runtime_backend_choice(
         settings=settings,
         use_gpu=deployment.use_gpu,
@@ -197,6 +203,7 @@ def predict_with_deployment(
                 deployment_id=deployment.deployment_id,
                 model_id=deployment.model_id,
                 profile_name=deployment.profile_name,
+                deployment=deployment,
                 service_url=deployment.service_url,
                 scene=request.scene,
                 request_text=request.text,
@@ -242,18 +249,30 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
     if not deployment.profile_path or not Path(deployment.profile_path).exists():
         raise HTTPException(status_code=400, detail="Deployment profile_path is missing or invalid")
 
-    deployment.use_gpu, deployment.gpu_ids, device_note = _resolve_runtime_device(
+    resolved_use_gpu, resolved_gpu_ids, device_note = _resolve_runtime_device(
         model=model,
         requested_use_gpu=deployment.use_gpu,
         requested_gpu_ids=deployment.gpu_ids,
         profile_path=deployment.profile_path,
     )
     settings = get_settings()
-    deployment.provider_preference = _resolve_provider_preference(
+    resolved_provider_preference = _resolve_provider_preference(
         requested_preference=deployment.provider_preference,
-        use_gpu=deployment.use_gpu,
+        use_gpu=resolved_use_gpu,
         settings=settings,
     )
+    change_level, runtime_signature = classify_runtime_change(
+        deployment,
+        manifest_path=deployment.manifest_path,
+        profile_name=deployment.profile_name,
+        profile_path=deployment.profile_path,
+        use_gpu=resolved_use_gpu,
+        gpu_ids=resolved_gpu_ids,
+        provider_preference=resolved_provider_preference,
+    )
+    deployment.use_gpu = resolved_use_gpu
+    deployment.gpu_ids = resolved_gpu_ids
+    deployment.provider_preference = resolved_provider_preference
     deployment.device = _resolve_display_device(
         use_gpu=deployment.use_gpu,
         provider_preference=deployment.provider_preference,
@@ -281,6 +300,14 @@ def restart_deployment(deployment_id: str) -> DeploymentRecord:
         provider_preference=deployment.provider_preference,
     )
     deployment = _hydrate_deployment_runtime_snapshot(deployment)
+    if change_level != "none":
+        deployment = advance_deployment_revision(
+            deployment,
+            change_level=change_level,
+            runtime_signature=runtime_signature,
+        )
+    else:
+        deployment = initialize_deployment_revision_metadata(deployment)
     deployment.pid = pid
     deployment.service_url = service_url
     deployment.status = "running" if wait_for_runtime(service_url) else "starting"

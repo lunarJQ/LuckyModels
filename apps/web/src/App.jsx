@@ -4635,14 +4635,14 @@ function TaskRoutingPage({
       {isAdminTaskRoutingView ? (
         <>
           <section className="page-shell card section-shell">
-            <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表专门回答“为什么选中这些 deployment”。论文里它可以支撑任务调度不是拍脑袋，而是有评分依据。" />
+            <SectionHeader kicker="解释区" title="候选部署与执行明细" note="这一表专门回答“为什么选中这些 deployment”。这里的评分对象是 deployment 实例，不是抽象模型名；同一模型的不同 deployment 或不同 profile 会分别计算评分。" />
             {taskRoutingResult ? (
               <>
                 <div className="banner banner-muted">
-                  这张表看什么：看平台为什么选中这些 deployment，没有选中谁。重点看 `score`、`得分拆解`、`领域匹配` 和最后一列 `说明`。
+                  这张表看什么：看平台为什么选中这些 deployment，没有选中谁。重点看 `score`、`得分拆解`、`领域匹配` 和最后一列 `说明`。这里每一行都是一个 deployment 实例。
                 </div>
                 <div className="banner banner-muted">
-                  术语提示：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。
+                  术语提示：`得分拆解` 代表各 deployment 在准确、覆盖、时延等维度的评分贡献；`领域匹配` 表示它与当前文本领域的贴合度；`资源级别` 表示其运行成本或资源档位。若某个 deployment 缺少自身 benchmark 或归档证据，系统才会有限借用同模型的同类证据做补充。
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -5283,8 +5283,8 @@ function TaskRoutingHistoryPage({ derived }) {
         </div>
         <div className="banner banner-muted">
           {selectedHistoryDecision
-            ? "阅读顺序建议：先看“单条决策详情”，再看表 1 的本次决策影响概览和表 2 的本次决策评分权重变化；随后看“模型部署表现变化”，最后再用执行路径与融合策略核对这条记录在平台中的定位。"
-            : "阅读顺序建议：先看“单条决策详情”，再看“各目标历史累计概览”和“目标调度评分权重（历史累计）”；随后看“历史部署表现变化”，最后再用“执行路径分布”和“融合策略历史”核对长期统计。"}
+            ? "阅读顺序建议：先看“单条决策详情”，再看表 1 的本次决策影响概览和表 2 的本次决策评分权重变化；随后看“Deployment 表现变化”，最后再用执行路径与融合策略核对这条记录在平台中的定位。"
+            : "阅读顺序建议：先看“单条决策详情”，再看“各目标历史累计概览”和“目标调度评分权重（历史累计）”；随后看“历史 Deployment 表现变化”，最后再用“执行路径分布”和“融合策略历史”核对长期统计。"}
         </div>
         <div className="relation-list">
           {(feedbackOverview.insights || []).map((item, index) => (
@@ -5561,13 +5561,13 @@ function TaskRoutingHistoryPage({ derived }) {
       <section className="page-shell card section-shell score-evolution-section">
         <SectionHeader
           kicker="历史部署"
-          title="模型部署表现变化"
+          title="Deployment 表现变化"
           note={selectedHistoryDecision
-            ? "当前按单条调度记录过滤，只展示这次任务调度实际用到的模型所对应的部署表现变化。"
-            : "当前处于全部记录视角，展示当前目标分类下全部模型部署的历史表现变化。"}
+            ? "当前按单条调度记录过滤，只展示这次任务调度实际用到的 deployment 表现变化。这里的评分单位始终是 deployment 实例。"
+            : "当前处于全部记录视角，展示当前目标分类下全部 deployment 的历史表现变化。这里的评分单位始终是 deployment 实例，而不是抽象模型名。"}
         />
         <div className="banner banner-muted">
-          这张表看什么：看模型部署在历史学习后的评分变化。若上方选择“全部记录”，这里是当前目标分类下的全量 deployment；若选中某条决策记录，这里会缩成这次调度实际用到的模型部署。
+          这张表看什么：看 deployment 在历史学习后的评分变化。若上方选择“全部记录”，这里是当前目标分类下的全量 deployment；若选中某条决策记录，这里会缩成这次调度实际用到的 deployment。
         </div>
         <div className="form-grid">
           <label className="stack-field">
@@ -6151,7 +6151,7 @@ function DeploymentPerformancePage({ derived }) {
         <SectionHeader
           kicker="全量总表"
           title="Deployment 表现变化总览"
-          note="这页统一看所有 Deployment 在任务调度与推理实验两条链路中的表现层变化。即使某个 Deployment 从未参与过任务调度或推理实验，也会保留在总表里。"
+          note="这页统一看所有 Deployment 在任务调度与推理实验两条链路中的表现层变化。这里的评分对象是 deployment 实例；即使某个 Deployment 从未参与过任务调度或推理实验，也会保留在总表里。"
         />
         <div className="metrics">
           <MetricCard title="Deployment 总数" value={rows.length} note="包含当前平台全部 deployment" />
@@ -6227,7 +6227,7 @@ function DeploymentPerformancePage({ derived }) {
         <SectionHeader
           kicker="表现层"
           title="所有 Deployment 表现变化"
-          note="表内同时展示任务调度表现概览、表现层拆解、表现层净变化，以及造成这些变化的任务调度记录与推理记录。变化来源记录默认各展示最近 3 条。"
+          note="表内同时展示任务调度表现概览、表现层拆解、表现层净变化，以及造成这些变化的任务调度记录与推理记录。这里每一行对应一个 deployment 实例；变化来源记录默认各展示最近 3 条。"
         />
         <div className="table-wrap">
           <table className="weight-profile-table score-evolution-table score-evolution-primary-table deployment-performance-table">
