@@ -10,6 +10,7 @@ from .bert_utils import (
     decode_bio_spans,
     create_inference_session,
     infer_do_lower_case,
+    infer_fixed_sequence_length,
     load_vocab,
     load_relation_maps,
     provider_list,
@@ -32,6 +33,7 @@ class PRGCAdapter(BaseAdapter):
         self.sessions_loaded = False
         self.id2relation: dict[int, str] = {}
         self.relation2id: dict[str, int] = {}
+        self.runtime_max_length: int | None = None
         self.vocab: dict[str, int] = {}
 
     def load(self) -> None:
@@ -52,6 +54,10 @@ class PRGCAdapter(BaseAdapter):
             self.providers,
             self.profile,
         )
+        self.runtime_max_length = infer_fixed_sequence_length(
+            self.stage1_session,
+            input_name="input_ids",
+        )
         self.providers = list(self.stage1_session.get_providers())
         self.session_backend = "onnxruntime"
         self.sessions_loaded = True
@@ -65,6 +71,7 @@ class PRGCAdapter(BaseAdapter):
             "session_backend": self.session_backend,
             "providers": self.providers,
             "execution": self.profile.execution,
+            "runtime_max_length": self.runtime_max_length,
             "predict_ready": True,
         }
 
@@ -92,7 +99,8 @@ class PRGCAdapter(BaseAdapter):
 
         started = perf_counter()
         options = options or {}
-        max_length = int(options.get("max_length") or self.manifest.manifest.inference.max_length)
+        configured_max_length = int(options.get("max_length") or self.manifest.manifest.inference.max_length)
+        max_length = int(self.runtime_max_length or configured_max_length)
         rel_threshold = float(options.get("relation_threshold", options.get("rel_threshold", 0.5)))
         corres_threshold = float(options.get("corres_threshold", 0.5))
         tokenized = tokenize_with_wordpiece_vocab(
@@ -202,6 +210,7 @@ class PRGCAdapter(BaseAdapter):
                     }
                     for relation_id in selected_relations[:32]
                 ],
+                "runtime_max_length": self.runtime_max_length,
                 "valid_range": [tokenized.valid_start, tokenized.valid_end],
                 "tokens": tokenized.tokens,
             }

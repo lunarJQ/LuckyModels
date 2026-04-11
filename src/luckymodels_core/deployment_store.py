@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -8,6 +9,8 @@ from uuid import uuid4
 
 from .deployment_revision import initialize_deployment_revision_metadata
 from .schemas import DeploymentCreateRequest, DeploymentRecord, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class DeploymentStore:
@@ -20,11 +23,7 @@ class DeploymentStore:
         self.deployments_file.parent.mkdir(parents=True, exist_ok=True)
 
     def list(self) -> list[DeploymentRecord]:
-        if not self.deployments_file.exists():
-            return []
-
-        with self.deployments_file.open("r", encoding="utf-8") as handle:
-            data = json.load(handle) or []
+        data = self._load_deployments_payload()
         return [initialize_deployment_revision_metadata(DeploymentRecord.model_validate(item)) for item in data]
 
     def create(self, request: DeploymentCreateRequest) -> DeploymentRecord:
@@ -41,8 +40,7 @@ class DeploymentStore:
         )
         deployments = self.list()
         deployments.append(deployment)
-        with self.deployments_file.open("w", encoding="utf-8") as handle:
-            json.dump([item.model_dump() for item in deployments], handle, ensure_ascii=False, indent=2)
+        self._write_deployments_payload([item.model_dump() for item in deployments])
         return deployment
 
     def update(self, deployment: DeploymentRecord) -> DeploymentRecord:
@@ -61,8 +59,7 @@ class DeploymentStore:
         if not found:
             updated.append(deployment)
 
-        with self.deployments_file.open("w", encoding="utf-8") as handle:
-            json.dump([item.model_dump() for item in updated], handle, ensure_ascii=False, indent=2)
+        self._write_deployments_payload([item.model_dump() for item in updated])
         return deployment
 
     def delete(self, deployment_id: str) -> DeploymentRecord | None:
@@ -78,9 +75,30 @@ class DeploymentStore:
         if deleted is None:
             return None
 
-        with self.deployments_file.open("w", encoding="utf-8") as handle:
-            json.dump([item.model_dump() for item in remaining], handle, ensure_ascii=False, indent=2)
+        self._write_deployments_payload([item.model_dump() for item in remaining])
         return deleted
+
+    def _load_deployments_payload(self) -> list[dict]:
+        if not self.deployments_file.exists():
+            return []
+
+        raw = self.deployments_file.read_text(encoding="utf-8").strip()
+        if not raw:
+            logger.warning("Deployment store file is empty: %s", self.deployments_file)
+            return []
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.exception("Deployment store file is invalid JSON: %s", self.deployments_file)
+            return []
+        return payload or []
+
+    def _write_deployments_payload(self, payload: list[dict]) -> None:
+        temp_file = self.deployments_file.with_suffix(f"{self.deployments_file.suffix}.tmp")
+        with temp_file.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        temp_file.replace(self.deployments_file)
 
     def build_service_url(self, port: int) -> str:
         return f"http://{self.SERVICE_HOST}:{int(port)}"

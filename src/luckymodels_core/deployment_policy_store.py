@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .schemas import (
@@ -8,6 +9,8 @@ from .schemas import (
     DeploymentPolicyAutomationState,
     DeploymentPolicyAutomationUpdateRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DeploymentPolicyAutomationStore:
@@ -18,8 +21,15 @@ class DeploymentPolicyAutomationStore:
     def get(self) -> DeploymentPolicyAutomationState:
         if not self.state_file.exists():
             return DeploymentPolicyAutomationState()
-        with self.state_file.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle) or {}
+        raw = self.state_file.read_text(encoding="utf-8").strip()
+        if not raw:
+            logger.warning("Deployment policy automation state file is empty: %s", self.state_file)
+            return DeploymentPolicyAutomationState()
+        try:
+            payload = json.loads(raw) or {}
+        except json.JSONDecodeError:
+            logger.exception("Deployment policy automation state file is invalid JSON: %s", self.state_file)
+            return DeploymentPolicyAutomationState()
         return DeploymentPolicyAutomationState.model_validate(payload)
 
     def update(self, request: DeploymentPolicyAutomationUpdateRequest) -> DeploymentPolicyAutomationState:
@@ -63,5 +73,7 @@ class DeploymentPolicyAutomationStore:
         return state
 
     def _write(self, state: DeploymentPolicyAutomationState) -> None:
-        with self.state_file.open("w", encoding="utf-8") as handle:
+        temp_file = self.state_file.with_suffix(f"{self.state_file.suffix}.tmp")
+        with temp_file.open("w", encoding="utf-8") as handle:
             json.dump(state.model_dump(), handle, ensure_ascii=False, indent=2)
+        temp_file.replace(self.state_file)

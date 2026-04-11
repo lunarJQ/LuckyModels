@@ -4,6 +4,7 @@ import json
 import math
 from time import perf_counter
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .schemas import BenchmarkCreateRequest, BenchmarkRecord
@@ -92,8 +93,20 @@ def _post_predict(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
-        body = response.read().decode("utf-8")
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = ""
+        try:
+            body = exc.read().decode("utf-8")
+            payload = json.loads(body)
+            detail = str(payload.get("detail") or "").strip()
+        except Exception:  # noqa: BLE001
+            detail = ""
+        if detail:
+            raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        raise
     return json.loads(body)
 
 

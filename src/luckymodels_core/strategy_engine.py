@@ -809,17 +809,26 @@ def _build_archive_weight_adjustments(
 
     for archive in prediction_archives:
         model = model_lookup.get(archive.model_id)
-        if model is None:
+        if model is not None:
+            if not _archive_matches_request_context(
+                archive=archive,
+                model=model,
+                requested_language=requested_language,
+                request_scene=request_scene,
+                request_domain=request_domain,
+            ):
+                continue
+            matched_archives.append(archive)
             continue
-        if not _archive_matches_request_context(
+
+        if _task_routing_archive_matches_request_context(
             archive=archive,
-            model=model,
             requested_language=requested_language,
             request_scene=request_scene,
             request_domain=request_domain,
+            objective=objective,
         ):
-            continue
-        matched_archives.append(archive)
+            matched_archives.append(archive)
 
     unsupervised_adjustments = _zero_weight_vector()
     feedback_adjustments = _zero_weight_vector()
@@ -1294,6 +1303,11 @@ def _build_task_candidates(
     for item in prediction_archives:
         archives_by_deployment[item.deployment_id].append(item)
         archives_by_model[item.model_id].append(item)
+        if item.archive_source == "task_routing":
+            for selected_model_id in item.task_routing_selected_model_ids or []:
+                normalized_model_id = str(selected_model_id or "").strip()
+                if normalized_model_id:
+                    archives_by_model[normalized_model_id].append(item)
 
     allowed_models = set(candidate_model_ids or [])
     normalized_model_family = str(requested_model_family or "").strip().lower()
@@ -1331,6 +1345,7 @@ def _build_task_candidates(
             request_scene=request_scene,
             request_domain=str(context_features.get("domain") or "general"),
             requested_language=requested_language,
+            objective=objective,
         )
         recent_requests = int(archive_feedback_summary.get("archive_count") or 0)
         avg_triple_count = _safe_float(archive_feedback_summary.get("avg_triple_count"))
@@ -1433,7 +1448,24 @@ def _selection_score_breakdown(
         explicit_reason_denominator = max(1, unsatisfied_with_reason_count)
         if unsatisfied_with_reason_count and missing_too_many_count:
             missing_ratio = missing_too_many_count / explicit_reason_denominator
-            coverage_score = max(0.0, coverage_score - min(0.12, (0.02 + missing_ratio * 0.08) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "coverage")))
+            coverage_score = max(
+                0.0,
+                coverage_score - min(
+                    0.18,
+                    (0.03 + missing_ratio * 0.11)
+                    * max(feedback_scale, 0.16)
+                    * _objective_feedback_gain(objective, "coverage"),
+                ),
+            )
+            stability_score = max(
+                0.0,
+                stability_score - min(
+                    0.06,
+                    (0.012 + missing_ratio * 0.04)
+                    * max(feedback_scale, 0.16)
+                    * _objective_feedback_gain(objective, "stability"),
+                ),
+            )
         if unsatisfied_with_reason_count and false_positive_too_many_count:
             false_positive_ratio = false_positive_too_many_count / explicit_reason_denominator
             accuracy_score = max(0.0, accuracy_score - min(0.12, (0.03 + false_positive_ratio * 0.07) * max(feedback_scale, 0.12) * _objective_feedback_gain(objective, "accuracy")))
@@ -1502,6 +1534,46 @@ def _archive_matches_request_context(
         archive_scene = _normalize_scene(archive.scene)
         if archive_scene != normalized_scene and archive_scene not in {request_domain, "general"}:
             return False
+    return True
+
+
+def _task_routing_archive_matches_request_context(
+    *,
+    archive: PredictionArchiveRecord,
+    requested_language: str,
+    request_scene: str | None,
+    request_domain: str,
+    objective: str | None = None,
+) -> bool:
+    if archive.archive_source != "task_routing":
+        return False
+    if objective is not None and str(archive.task_routing_objective or "").strip().lower() != str(objective or "").strip().lower():
+        return False
+
+    normalized_scene = _normalize_scene(request_scene)
+    archive_scene = _normalize_scene(archive.scene)
+    if normalized_scene and archive_scene and archive_scene != normalized_scene:
+        return False
+
+    archive_language = ""
+    response_payload = archive.response_payload or {}
+    archive_language = str(
+        response_payload.get("requested_language")
+        or response_payload.get("inferred_language")
+        or response_payload.get("language")
+        or ""
+    ).strip().lower()
+    if requested_language and archive_language and archive_language != requested_language:
+        return False
+
+    effective_scene = archive_scene or normalized_scene
+    if request_domain != "general":
+        if effective_scene and request_domain not in str(effective_scene):
+            return False
+        if not effective_scene and request_domain == "industrial":
+            text = str(archive.request_text or "")
+            if infer_domain(text=text, scene=archive.scene) != request_domain:
+                return False
     return True
 
 
@@ -1680,6 +1752,7 @@ def _build_candidate_archive_signal(
     request_scene: str | None,
     request_domain: str,
     requested_language: str,
+    objective: str,
 ) -> dict[str, float | int | None]:
     deployment = initialize_deployment_revision_metadata(deployment)
     matched_deployment_archives = [
@@ -1711,7 +1784,25 @@ def _build_candidate_archive_signal(
             request_domain=request_domain,
         )
     ]
+    task_routing_archives = [
+        item
+        for item in model_archives
+        if _task_routing_archive_matches_request_context(
+            archive=item,
+            requested_language=requested_language,
+            request_scene=request_scene,
+            request_domain=request_domain,
+            objective=None,
+        )
+    ]
     primary_archives = current_archives or fallback_archives
+    if task_routing_archives:
+        merged_archives: dict[str, PredictionArchiveRecord] = {
+            item.archive_id: item for item in primary_archives
+        }
+        for item in task_routing_archives:
+            merged_archives[item.archive_id] = item
+        primary_archives = list(merged_archives.values())
     if not primary_archives and prior_archives:
         return _build_candidate_archive_feedback_summary(prior_archives)
     if not primary_archives:
@@ -2363,6 +2454,7 @@ def _build_model_score_summaries(
                     request_scene=scene,
                     request_domain=str(context_features.get("domain") or "general"),
                     requested_language=requested_language,
+                    objective=objective,
                 )
                 recent_requests = int(archive_feedback_summary.get("archive_count") or 0)
                 avg_triple_count = _safe_float(archive_feedback_summary.get("avg_triple_count"))

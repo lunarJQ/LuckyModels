@@ -20,6 +20,7 @@ app.mount("/static", StaticFiles(directory=str(ui_dist), check_dir=False), name=
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    get_access_store().logout()
     strategies.start_strategy_scheduler()
 
 
